@@ -301,3 +301,30 @@ def info(input_path: str) -> None:
 
         attrs = get_zarr_attrs(input_path)
         click.echo(json.dumps(attrs, indent=2))
+
+
+@cli.command("header")
+@click.argument("input_path", type=click.Path(exists=True))
+def header(input_path: str) -> None:
+    """Print the validated nrrdz metadata as JSON.
+
+    Accepts either an NRRD file or a nrrdz Zarr store. For NRRD files the
+    header is converted to nrrdz metadata first. Output is the model
+    serialized with exclude_none (absent-means-unknown convention).
+    """
+    path = Path(input_path)
+
+    if path.suffix in (".nrrd", ".nhdr"):
+        import nrrd as nrrd_lib
+
+        from .convert import _header_to_metadata
+
+        _data, hdr = nrrd_lib.read(str(path), index_order="C")
+        ndim = int(hdr["dimension"])
+        meta, _dim_names, _extra = _header_to_metadata(hdr, ndim)
+    else:
+        from .zarr_io import read_nrrdz_metadata
+
+        meta = read_nrrdz_metadata(input_path)
+
+    click.echo(json.dumps(meta.model_dump(exclude_none=True), indent=2))
