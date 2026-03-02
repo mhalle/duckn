@@ -287,23 +287,25 @@ def _compute_geometry(
 
     # Slice direction and spacing
     if len(datasets) > 1:
-        slice_vec = positions[1] - positions[0]
-        slice_spacing = float(np.linalg.norm(slice_vec))
-        if slice_spacing > 0:
-            slice_direction = (slice_vec / np.linalg.norm(slice_vec) * slice_spacing).tolist()
-        else:
-            slice_direction = (slice_normal * 1.0).tolist()
+        # Project positions onto slice normal and compute spacing
+        projections = [float(np.dot(p, slice_normal)) for p in positions]
+        diffs = np.diff(projections)
+        # Use median spacing — robust to outlier gaps at series edges
+        slice_spacing = float(np.median(diffs))
+        if slice_spacing <= 0:
+            slice_spacing = float(np.mean(diffs))
 
-        # Check uniformity
+        # Always use cross-product normal for direction — robust to
+        # irregular first/last slice positions
+        slice_direction = (slice_normal * slice_spacing).tolist()
+
+        # Warn on non-uniform spacing
         if len(datasets) > 2:
-            projections = [float(np.dot(p, slice_normal)) for p in positions]
-            diffs = np.diff(projections)
-            mean_spacing = float(np.mean(diffs))
-            if mean_spacing != 0 and np.max(np.abs(diffs - mean_spacing)) > 0.01 * abs(mean_spacing):
+            if slice_spacing != 0 and np.max(np.abs(diffs - slice_spacing)) > 0.01 * abs(slice_spacing):
                 warnings.warn(
                     f"Non-uniform slice spacing detected (range: "
                     f"{float(np.min(diffs)):.4f} to {float(np.max(diffs)):.4f}, "
-                    f"mean: {mean_spacing:.4f}). Using mean spacing.",
+                    f"median: {slice_spacing:.4f}). Using median spacing.",
                     stacklevel=3,
                 )
     else:
