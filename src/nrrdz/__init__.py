@@ -9,6 +9,7 @@ from .models import (
     ConversionParameter,
     Designation,
     DicomClassification,
+    DicomExtension,
     DwmriAcquisition,
     DwmriAxisExtension,
     DwmriExtension,
@@ -25,7 +26,7 @@ from .models import (
 )
 from .zarr_io import get_zarr_attrs, read_nrrdz, read_nrrdz_metadata
 
-__all__ = [
+__all__ = [  # noqa: RUF022
     "AxisKind",
     "AxisMetadata",
     "Centering",
@@ -33,6 +34,7 @@ __all__ = [
     "ConversionParameter",
     "Designation",
     "DicomClassification",
+    "DicomExtension",
     "DwmriAcquisition",
     "DwmriAxisExtension",
     "DwmriExtension",
@@ -45,6 +47,7 @@ __all__ = [
     "UnitObject",
     "UnitSystemEntry",
     "ValueTransform",
+    "dicom_to_zarr",
     "get_zarr_attrs",
     "nrrd_to_zarr",
     "nrrd_to_zarr_zerocopy",
@@ -54,3 +57,11 @@ __all__ = [
     "zarr_to_nrrd",
     "zarr_to_nrrd_zerocopy",
 ]
+
+
+def __getattr__(name: str) -> object:
+    if name == "dicom_to_zarr":
+        from .dicom_convert import dicom_to_zarr
+
+        return dicom_to_zarr
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

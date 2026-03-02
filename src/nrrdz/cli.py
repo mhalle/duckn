@@ -271,6 +271,58 @@ def roundtrip(
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+@cli.command("from-dicom")
+@click.argument("input_path", type=click.Path(exists=True))
+@click.argument("output_path", type=click.Path())
+@click.option("--chunks", default=None, help="Chunk shape, e.g. 64,64,32")
+@click.option(
+    "--compressor",
+    type=click.Choice(["zstd", "gzip", "none"]),
+    default="zstd",
+    help="Compression codec (default: zstd)",
+)
+@click.option("--level", type=int, default=3, help="Compression level (default: 3)")
+@click.option("--overwrite", is_flag=True, help="Overwrite existing output")
+@click.option(
+    "--anonymized/--no-anonymized",
+    default=None,
+    help="Override anonymization flag (auto-detect if omitted)",
+)
+@click.option("--no-tags", is_flag=True, help="Skip DICOM tag extraction")
+def from_dicom(
+    input_path: str,
+    output_path: str,
+    chunks: str | None,
+    compressor: str,
+    level: int,
+    overwrite: bool,
+    anonymized: bool | None,
+    no_tags: bool,
+) -> None:
+    """Convert DICOM file(s) to a nrrdz Zarr v3 store.
+
+    INPUT_PATH is a directory of single-frame .dcm files (one series)
+    or a single enhanced multi-frame DICOM file.
+    """
+    from .dicom_convert import dicom_to_zarr
+
+    parsed_chunks = None
+    if chunks is not None:
+        parsed_chunks = tuple(int(c) for c in chunks.split(","))
+
+    dicom_to_zarr(
+        input_path,
+        output_path,
+        chunks=parsed_chunks,
+        compressor=compressor,
+        level=level,
+        overwrite=overwrite,
+        anonymized=anonymized,
+        tags=not no_tags,
+    )
+    click.echo(f"Wrote {output_path}")
+
+
 @cli.command("info")
 @click.argument("input_path", type=click.Path(exists=True))
 def info(input_path: str) -> None:

@@ -6,7 +6,7 @@ import math
 from enum import StrEnum
 from typing import Annotated, Any, Union
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -403,6 +403,24 @@ class DwmriExtension(BaseModel):
     gradient_frame: str | None = None
     acquisition: DwmriAcquisition | None = None
     legacy: dict[str, Any] | None = None
+
+
+# ---------------------------------------------------------------------------
+# DICOM provenance extension models
+# ---------------------------------------------------------------------------
+
+
+class DicomExtension(BaseModel):
+    """DICOM provenance extension (dicom-spec.md §3)."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    version: str
+    anonymized: bool | None = None
+    source_transfer_syntax: str | None = None
+    standard_version: str | None = None
+    schema_url: str | None = Field(None, alias="schema")
+    tags: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------

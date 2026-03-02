@@ -15,6 +15,9 @@ dependencies = [
     "click>=8.0",
 ]
 
+[project.optional-dependencies]
+dicom = ["pydicom>=2.4"]
+
 [project.scripts]
 nrrdz = "nrrdz.cli:cli"
 
