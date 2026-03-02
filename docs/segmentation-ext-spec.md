@@ -441,7 +441,7 @@ Following the NRRD-Zarr convention's "absent means unknown" principle:
 
 | `.seg.nrrd` field | NRRD-Zarr segmentation extension field |
 |---|---|
-| `Segmentation_SourceRepresentation` | `source_representation` |
+| `Segmentation_MasterRepresentation` / `Segmentation_SourceRepresentation` | `source_representation` |
 | `Segmentation_ContainedRepresentationNames` | `contained_representations` (array) |
 | `Segmentation_ConversionParameters` | `conversion_parameters` (object) |
 | `Segmentation_ReferenceImageExtentOffset` | `reference_extent_offset` (array) |
@@ -458,6 +458,16 @@ Following the NRRD-Zarr convention's "absent means unknown" principle:
 | `SegmentN_Tags` TerminologyEntry — category/type/modifier/region | `segments[n].dicom` (object) |
 | `SegmentN_Tags` TerminologyEntry — type code (e.g., SCT code for the structure) | `segments[n].designations` (first entry) |
 | `SegmentN_Tags` TerminologyEntry — context names | Omitted (application state) |
+
+### Parsing Notes
+
+Implementers converting `.seg.nrrd` files should be aware of the following encoding differences:
+
+- **Master vs Source representation**: 3D Slicer renamed `Segmentation_MasterRepresentation` to `Segmentation_SourceRepresentation` around version 5.3. Converters should accept either key.
+- **Representation names**: `.seg.nrrd` uses title-case names (e.g., `"Binary labelmap"`, `"Closed surface"`). Normalize to kebab-case (`"binary-labelmap"`, `"closed-surface"`).
+- **Pipe-delimited lists**: `Segmentation_ContainedRepresentationNames` and `Segmentation_ConversionParameters` use `|` and `&` as delimiters, often with trailing separators. Split on the delimiter and drop empty elements.
+- **Tags string**: `SegmentN_Tags` is a `|`-delimited sequence of `key:value` pairs. Strip the `Segmentation.` prefix from tag keys (e.g., `Segmentation.Status` → `Status`). The `TerminologyEntry` key is parsed into the `dicom` and `designations` fields per the mapping table above.
+- **Escaped newlines in descriptions**: `ConversionParameters` description strings may contain literal `\n` escape sequences representing newlines.
 
 ---
 
