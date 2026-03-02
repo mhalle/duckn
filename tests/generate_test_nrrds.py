@@ -19,7 +19,7 @@ import numpy as np
 import nrrd
 
 from nrrdz import nrrd_to_zarr, nrrd_to_zarr_zerocopy, zarr_to_nrrd, zarr_to_nrrd_zerocopy
-from nrrdz.convert import _NRRD_SPEC_FIELDS
+from nrrdz.convert import _NRRD_SPEC_FIELDS, _nrrd_dtype
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 REAL_WORLD_DIR = DATA_DIR / "real-world"
@@ -784,7 +784,7 @@ def main() -> int:
             continue
 
         endian = header.get("endian", "little").lower().strip()
-        dtype_size = np.dtype(header.get("type", "uint8")).itemsize
+        dtype_size = _nrrd_dtype(header).itemsize
         if dtype_size > 1 and endian != "little":
             print(f"      {name} ({mb:.0f} MB) ... SKIP (endian={endian})")
             continue
