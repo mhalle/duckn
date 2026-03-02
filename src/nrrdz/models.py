@@ -276,6 +276,95 @@ class NrrdMetadata(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Segmentation extension models
+# ---------------------------------------------------------------------------
+
+
+class SourceRepresentation(StrEnum):
+    BINARY_LABELMAP = "binary-labelmap"
+    FRACTIONAL_LABELMAP = "fractional-labelmap"
+
+
+class TerminologyEntry(BaseModel):
+    """Entry in the terminologies registry (coding system provenance)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    version: str | None = None
+    url: str | None = None
+
+
+class ConversionParameter(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    value: str
+    description: str | None = None
+
+
+class CodedEntry(BaseModel):
+    """Reusable coded-concept shape (scheme/code/meaning)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scheme: str
+    code: str
+    meaning: str
+    display: dict[str, str] | None = None
+    url: str | None = None
+
+
+class Designation(CodedEntry):
+    """A coded entry with an optional modifier."""
+
+    modifier: CodedEntry | None = None
+
+
+class DicomClassification(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    category: CodedEntry | None = None
+    type: CodedEntry | None = None
+    type_modifier: CodedEntry | None = None
+    anatomic_region: CodedEntry | None = None
+    anatomic_region_modifier: CodedEntry | None = None
+
+
+class Segment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str | None = None
+    display: dict[str, str] | None = None
+    name_auto_generated: bool | None = None
+    color: list[float] | None = None
+    color_auto_generated: bool | None = None
+    label_value: int | list[int]
+    layer: int | None = None
+    extent: list[int] | None = None
+    designations: list[Designation] | None = None
+    dicom: DicomClassification | None = None
+    tags: dict[str, str] | None = None
+
+
+class SegmentationExtension(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: str
+    source_representation: SourceRepresentation | None = None
+    contained_representations: list[str] | None = None
+    conversion_parameters: dict[str, ConversionParameter] | None = None
+    reference_extent_offset: list[int] | None = None
+    terminologies: dict[str, TerminologyEntry] | None = None
+    segments: list[Segment]
+
+
+# ---------------------------------------------------------------------------
+# Standalone validation against array shape
+# ---------------------------------------------------------------------------
+
+
 def validate_against_shape(meta: NrrdMetadata, shape: tuple[int, ...]) -> None:
     """Validate that metadata is consistent with the given array shape.
 
