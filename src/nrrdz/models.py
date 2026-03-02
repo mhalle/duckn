@@ -362,6 +362,50 @@ class SegmentationExtension(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# DWI extension models
+# ---------------------------------------------------------------------------
+
+
+class DwmriAcquisition(BaseModel):
+    """MR acquisition parameters for DWI preprocessing (§4.1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    phase_encoding_direction: str | None = None
+    total_readout_time: float | None = None
+    effective_echo_spacing: float | None = None
+    echo_time: float | None = None
+    repetition_time: float | None = None
+    multiband_acceleration_factor: int | None = None
+    parallel_reduction_factor_in_plane: int | None = None
+    slice_timing: list[float] | None = None
+
+
+class DwmriAxisExtension(BaseModel):
+    """Per-axis DWI fields on the list axis (§4.2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    gradients: list[list[float]] | None = None
+    b_matrices: list[list[float]] | None = None
+    b_values: list[float] | None = None
+    nex: dict[str, int] | None = None
+
+
+class DwmriExtension(BaseModel):
+    """Top-level DWI extension (§4.1)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: str
+    b_value: float
+    b_value_units: str | None = None
+    gradient_frame: str | None = None
+    acquisition: DwmriAcquisition | None = None
+    legacy: dict[str, Any] | None = None
+
+
+# ---------------------------------------------------------------------------
 # Standalone validation against array shape
 # ---------------------------------------------------------------------------
 

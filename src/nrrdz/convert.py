@@ -12,9 +12,10 @@ import numpy as np
 import zarr
 
 from .models import (
-    AxisKind, AxisMetadata, Centering, NrrdMetadata,
-    SegmentationExtension, SpaceName, _SPACE_ABBREVS,
+    AxisKind, AxisMetadata, Centering, DwmriAxisExtension, DwmriExtension,
+    NrrdMetadata, SegmentationExtension, SpaceName, _SPACE_ABBREVS,
 )
+from .dwi_nrrd import parse_dwi_keyvalues, serialize_dwi_extension
 from .seg_nrrd import parse_seg_keyvalues, serialize_seg_extension
 
 
@@ -293,6 +294,19 @@ def _header_to_metadata(
         seg_ext, remaining = parse_seg_keyvalues(keyvalues)
         if seg_ext is not None:
             extensions["segmentation"] = seg_ext.model_dump(exclude_none=True)
+
+        dwi_ext, dwi_axis_ext, remaining = parse_dwi_keyvalues(remaining)
+        if dwi_ext is not None:
+            extensions["dwmri"] = dwi_ext.model_dump(exclude_none=True)
+        if dwi_axis_ext is not None:
+            dwi_axis_dict = dwi_axis_ext.model_dump(exclude_none=True)
+            for ax in axes:
+                if ax.kind in (AxisKind.LIST, AxisKind.VECTOR):
+                    ax_exts = dict(ax.extensions) if ax.extensions else {}
+                    ax_exts["dwmri"] = dwi_axis_dict
+                    ax.extensions = ax_exts
+                    break
+
         if remaining:
             extensions["keyvalues"] = remaining
         if extensions:
@@ -436,6 +450,16 @@ def _metadata_to_header(
         if "segmentation" in meta.extensions:
             seg_ext = SegmentationExtension(**meta.extensions["segmentation"])
             for k, v in serialize_seg_extension(seg_ext).items():
+                header[k] = v
+        if "dwmri" in meta.extensions:
+            dwi_axis_dict = None
+            for ax in (meta.axes or []):
+                if ax.extensions and "dwmri" in ax.extensions:
+                    dwi_axis_dict = ax.extensions["dwmri"]
+                    break
+            dwi_top = DwmriExtension(**meta.extensions["dwmri"])
+            dwi_axis = DwmriAxisExtension(**dwi_axis_dict) if dwi_axis_dict else DwmriAxisExtension()
+            for k, v in serialize_dwi_extension(dwi_top, dwi_axis).items():
                 header[k] = v
         if "keyvalues" in meta.extensions:
             for k, v in meta.extensions["keyvalues"].items():
