@@ -1,6 +1,6 @@
 """nrrdz: NRRD-Zarr axis-rich array metadata convention for Zarr V3."""
 
-from .convert import nrrd_to_zarr, zarr_to_nrrd
+from .convert import nrrd_to_zarr, nrrd_to_zarr_zerocopy, zarr_to_nrrd, zarr_to_nrrd_zerocopy
 from .models import (
     AxisKind,
     AxisMetadata,
@@ -25,8 +25,10 @@ __all__ = [
     "ValueTransform",
     "get_zarr_attrs",
     "nrrd_to_zarr",
+    "nrrd_to_zarr_zerocopy",
     "read_nrrdz",
     "read_nrrdz_metadata",
     "validate_against_shape",
     "zarr_to_nrrd",
+    "zarr_to_nrrd_zerocopy",
 ]

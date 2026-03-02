@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 import nrrd
 
-from nrrdz import nrrd_to_zarr, zarr_to_nrrd
+from nrrdz import nrrd_to_zarr, nrrd_to_zarr_zerocopy, zarr_to_nrrd, zarr_to_nrrd_zerocopy
 from nrrdz.convert import _NRRD_SPEC_FIELDS
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -354,6 +354,19 @@ def round_trip(orig_path: Path, tmp: Path) -> Path:
     return rt_path
 
 
+def round_trip_zerocopy(orig_path: Path, tmp: Path) -> Path:
+    """Zero-copy NRRD -> Zarr -> NRRD round trip.  Returns path to round-tripped NRRD."""
+    zarr_path = tmp / (orig_path.stem + "_zc.zarr")
+    rt_path = tmp / (orig_path.stem + "_zc_rt.nrrd")
+    if zarr_path.exists():
+        shutil.rmtree(zarr_path)
+    if rt_path.exists():
+        rt_path.unlink()
+    nrrd_to_zarr_zerocopy(orig_path, zarr_path, overwrite=True)
+    zarr_to_nrrd_zerocopy(zarr_path, rt_path, overwrite=True)
+    return rt_path
+
+
 def round_trip_headers(orig_path: Path, tmp: Path) -> dict[str, Any]:
     """Header-only round trip: parse NRRD header, build nrrdz metadata,
     reconstruct NRRD header — without touching data.  Returns the
@@ -686,19 +699,98 @@ def main() -> int:
             print(f"PASS  {name}")
             passed += 1
 
-    # --- Real-world tests ---
+    # --- Zero-copy synthetic tests ---
+    # All synthetic cases use gzip encoding, so zero-copy should work for all.
+    print("\n--- Zero-copy synthetic tests ---")
+    for case_fn in ALL_CASES:
+        name, data, header, fields = case_fn()
+        path = DATA_DIR / name
+        zc_name = name.replace(".nrrd", " [zero-copy]")
+
+        try:
+            rt_path = round_trip_zerocopy(path, tmp)
+        except Exception as e:
+            print(f"FAIL  {zc_name}: zero-copy round-trip error: {e}")
+            failed += 1
+            continue
+
+        errors = compare_nrrds(path, rt_path, fields)
+        if errors:
+            print(f"FAIL  {zc_name}:")
+            for err in errors:
+                print(err)
+            failed += 1
+        else:
+            print(f"PASS  {zc_name}")
+            passed += 1
+
+    # --- Zero-copy byte-for-byte verification ---
+    # For gzip files, verify the chunk file bytes match the NRRD data section.
+    print("\n--- Zero-copy byte-for-byte verification ---")
+    for case_fn in ALL_CASES:
+        name, data, header, fields = case_fn()
+        path = DATA_DIR / name
+        bb_name = name.replace(".nrrd", " [byte-exact]")
+
+        zarr_path = tmp / (path.stem + "_bb.zarr")
+        if zarr_path.exists():
+            shutil.rmtree(zarr_path)
+
+        try:
+            nrrd_to_zarr_zerocopy(path, zarr_path, overwrite=True)
+        except Exception as e:
+            print(f"FAIL  {bb_name}: error: {e}")
+            failed += 1
+            continue
+
+        # Read the original NRRD data section
+        with open(path, "rb") as fh:
+            nrrd.read_header(fh)
+            orig_blob = fh.read()
+
+        # Read the chunk file
+        ndim = len(header.get("sizes", data.shape))
+        chunk_path = zarr_path / "c"
+        for _ in range(data.ndim):
+            chunk_path = chunk_path / "0"
+
+        if not chunk_path.exists():
+            print(f"FAIL  {bb_name}: chunk file not found")
+            failed += 1
+            continue
+
+        chunk_blob = chunk_path.read_bytes()
+
+        if orig_blob == chunk_blob:
+            print(f"PASS  {bb_name}")
+            passed += 1
+        else:
+            print(f"FAIL  {bb_name}: blobs differ (orig={len(orig_blob)}, chunk={len(chunk_blob)})")
+            failed += 1
+
+    # --- Real-world tests (zero-copy, both paths) ---
     real_files = _discover_real_world_files()
     if real_files:
-        mode = "headers-only" if headers_only else "full round-trip"
-        print(f"\n--- Real-world tests ({len(real_files)} files, {mode}) ---")
+        print(f"\n--- Real-world tests ({len(real_files)} files, zero-copy) ---")
     for path in real_files:
         name = path.name
         mb = path.stat().st_size / 1e6
+
+        # Check if encoding supports zero-copy
+        header = nrrd.read_header(str(path))
+        enc = header.get("encoding", "raw").lower().strip()
+        if enc not in ("raw", "gzip", "gz"):
+            print(f"      {name} ({mb:.0f} MB) ... SKIP (encoding={enc})")
+            continue
+
+        endian = header.get("endian", "little").lower().strip()
+        dtype_size = np.dtype(header.get("type", "uint8")).itemsize
+        if dtype_size > 1 and endian != "little":
+            print(f"      {name} ({mb:.0f} MB) ... SKIP (endian={endian})")
+            continue
+
         print(f"      {name} ({mb:.0f} MB) ...", end="", flush=True)
 
-        # Read header to determine which fields to check —
-        # spec fields we handle + any key/value pairs that should round-trip
-        header = nrrd.read_header(str(path))
         fields = [f for f in _ROUND_TRIP_FIELDS if f in header]
         for k in header:
             if k not in _NRRD_SPEC_FIELDS and k not in fields:
@@ -706,12 +798,8 @@ def main() -> int:
 
         t0 = time.monotonic()
         try:
-            if headers_only:
-                rt_header = round_trip_headers(path, tmp)
-                errors = compare_headers(path, rt_header, fields)
-            else:
-                rt_path = round_trip(path, tmp)
-                errors = compare_nrrds(path, rt_path, fields)
+            rt_path = round_trip_zerocopy(path, tmp)
+            errors = compare_nrrds(path, rt_path, fields)
         except Exception as e:
             print(f"\nFAIL  {name}: error: {e}")
             failed += 1

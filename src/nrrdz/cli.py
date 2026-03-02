@@ -10,7 +10,7 @@ from pathlib import Path
 
 import click
 
-from .convert import nrrd_to_zarr, zarr_to_nrrd
+from .convert import nrrd_to_zarr, nrrd_to_zarr_zerocopy, zarr_to_nrrd, zarr_to_nrrd_zerocopy
 from .models import NrrdMetadata
 
 
@@ -31,6 +31,7 @@ def cli() -> None:
 )
 @click.option("--level", type=int, default=3, help="Compression level (default: 3)")
 @click.option("--overwrite", is_flag=True, help="Overwrite existing output")
+@click.option("--zerocopy", is_flag=True, help="Use zero-copy mode (raw/gzip only)")
 def to_zarr(
     input_path: str,
     output_path: str,
@@ -38,21 +39,30 @@ def to_zarr(
     compressor: str,
     level: int,
     overwrite: bool,
+    zerocopy: bool,
 ) -> None:
     """Convert an NRRD file to a nrrdz Zarr v3 store."""
-    parsed_chunks = None
-    if chunks is not None:
-        parsed_chunks = tuple(int(c) for c in chunks.split(","))
+    if zerocopy:
+        nrrd_to_zarr_zerocopy(
+            input_path,
+            output_path,
+            overwrite=overwrite,
+        )
+        click.echo(f"Wrote {output_path} (zero-copy)")
+    else:
+        parsed_chunks = None
+        if chunks is not None:
+            parsed_chunks = tuple(int(c) for c in chunks.split(","))
 
-    nrrd_to_zarr(
-        input_path,
-        output_path,
-        chunks=parsed_chunks,
-        compressor=compressor,
-        level=level,
-        overwrite=overwrite,
-    )
-    click.echo(f"Wrote {output_path}")
+        nrrd_to_zarr(
+            input_path,
+            output_path,
+            chunks=parsed_chunks,
+            compressor=compressor,
+            level=level,
+            overwrite=overwrite,
+        )
+        click.echo(f"Wrote {output_path}")
 
 
 @cli.command("to-nrrd")
@@ -65,20 +75,30 @@ def to_zarr(
     help="NRRD encoding (default: gzip)",
 )
 @click.option("--overwrite", is_flag=True, help="Overwrite existing output")
+@click.option("--zerocopy", is_flag=True, help="Use zero-copy mode (requires zero-copy store)")
 def to_nrrd(
     input_path: str,
     output_path: str,
     encoding: str,
     overwrite: bool,
+    zerocopy: bool,
 ) -> None:
     """Convert a nrrdz Zarr v3 store to an NRRD file."""
-    zarr_to_nrrd(
-        input_path,
-        output_path,
-        encoding=encoding,
-        overwrite=overwrite,
-    )
-    click.echo(f"Wrote {output_path}")
+    if zerocopy:
+        zarr_to_nrrd_zerocopy(
+            input_path,
+            output_path,
+            overwrite=overwrite,
+        )
+        click.echo(f"Wrote {output_path} (zero-copy)")
+    else:
+        zarr_to_nrrd(
+            input_path,
+            output_path,
+            encoding=encoding,
+            overwrite=overwrite,
+        )
+        click.echo(f"Wrote {output_path}")
 
 
 @cli.command("roundtrip")
@@ -102,12 +122,14 @@ def to_nrrd(
     default=None,
     help="Output NRRD path (default: overwrite input)",
 )
+@click.option("--zerocopy", is_flag=True, help="Use zero-copy for both directions")
 def roundtrip(
     input_path: str,
     compressor: str,
     level: int,
     encoding: str,
     output: str | None,
+    zerocopy: bool,
 ) -> None:
     """Round-trip an NRRD file through nrrdz Zarr and back.
 
@@ -127,13 +149,22 @@ def roundtrip(
     rt_path = tmp / (input_p.stem + "_rt.nrrd")
 
     try:
-        # Forward
-        click.echo(f"NRRD -> Zarr  ({input_p.name})")
-        nrrd_to_zarr(input_p, zarr_path, compressor=compressor, level=level)
+        if zerocopy:
+            # Zero-copy forward
+            click.echo(f"NRRD -> Zarr  ({input_p.name}) [zero-copy]")
+            nrrd_to_zarr_zerocopy(input_p, zarr_path)
 
-        # Back
-        click.echo(f"Zarr -> NRRD")
-        zarr_to_nrrd(zarr_path, rt_path, encoding=encoding)
+            # Zero-copy back
+            click.echo(f"Zarr -> NRRD [zero-copy]")
+            zarr_to_nrrd_zerocopy(zarr_path, rt_path)
+        else:
+            # Regular forward
+            click.echo(f"NRRD -> Zarr  ({input_p.name})")
+            nrrd_to_zarr(input_p, zarr_path, compressor=compressor, level=level)
+
+            # Regular back
+            click.echo(f"Zarr -> NRRD")
+            zarr_to_nrrd(zarr_path, rt_path, encoding=encoding)
 
         # Compare
         click.echo("Comparing ...")
