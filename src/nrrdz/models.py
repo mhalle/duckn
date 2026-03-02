@@ -358,6 +358,7 @@ class SegmentationExtension(BaseModel):
     reference_extent_offset: list[int] | None = None
     terminologies: dict[str, TerminologyEntry] | None = None
     segments: list[Segment]
+    legacy: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------

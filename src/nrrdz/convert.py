@@ -11,7 +11,11 @@ import nrrd
 import numpy as np
 import zarr
 
-from .models import AxisKind, AxisMetadata, Centering, NrrdMetadata, SpaceName, _SPACE_ABBREVS
+from .models import (
+    AxisKind, AxisMetadata, Centering, NrrdMetadata,
+    SegmentationExtension, SpaceName, _SPACE_ABBREVS,
+)
+from .seg_nrrd import parse_seg_keyvalues, serialize_seg_extension
 
 
 # NRRD spec fields (`: ` delimiter).  Anything else is a key/value pair (`:=`).
@@ -285,7 +289,14 @@ def _header_to_metadata(
         if k not in _NRRD_SPEC_FIELDS:
             keyvalues[k] = str(v)
     if keyvalues:
-        meta_kwargs["extensions"] = {"keyvalues": keyvalues}
+        extensions: dict[str, Any] = {}
+        seg_ext, remaining = parse_seg_keyvalues(keyvalues)
+        if seg_ext is not None:
+            extensions["segmentation"] = seg_ext.model_dump(exclude_none=True)
+        if remaining:
+            extensions["keyvalues"] = remaining
+        if extensions:
+            meta_kwargs["extensions"] = extensions
 
     meta = NrrdMetadata(**meta_kwargs)
 
@@ -421,9 +432,14 @@ def _metadata_to_header(
             header["sample units"] = meta.sample_units.symbol  # type: ignore[union-attr]
 
     # --- Restore NRRD key/value pairs ---
-    if meta.extensions and "keyvalues" in meta.extensions:
-        for k, v in meta.extensions["keyvalues"].items():
-            header[k] = v
+    if meta.extensions:
+        if "segmentation" in meta.extensions:
+            seg_ext = SegmentationExtension(**meta.extensions["segmentation"])
+            for k, v in serialize_seg_extension(seg_ext).items():
+                header[k] = v
+        if "keyvalues" in meta.extensions:
+            for k, v in meta.extensions["keyvalues"].items():
+                header[k] = v
 
     return header
 
