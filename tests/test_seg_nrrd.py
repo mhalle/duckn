@@ -465,53 +465,8 @@ def test_real_world_round_trip(seg_file: Path):
 
 
 # ---------------------------------------------------------------------------
-# Legacy fidelity tests: original strings should survive round-trip
+# Legacy fidelity tests: unmodified model replays original strings
 # ---------------------------------------------------------------------------
-
-
-def test_legacy_preserves_context_strings():
-    """Original Slicer context strings should survive round-trip."""
-    ctx1 = "Segmentation category and type - 3D Slicer General Anatomy list"
-    ctx2 = "Anatomic codes - DICOM master list"
-    kv = {
-        "Segment0_ID": "S1",
-        "Segment0_LabelValue": "1",
-        "Segment0_Tags": (
-            f"TerminologyEntry:{ctx1}"
-            "~SCT^85756007^Tissue~SCT^85756007^Tissue~^^"
-            f"~{ctx2}~^^~^^|"
-        ),
-    }
-    ext, _ = parse_seg_keyvalues(kv)
-    flat = serialize_seg_extension(ext)
-    assert ctx1 in flat["Segment0_Tags"]
-    assert ctx2 in flat["Segment0_Tags"]
-
-
-def test_legacy_preserves_representation_key():
-    """SourceRepresentation key should stay as SourceRepresentation."""
-    kv = {
-        "Segmentation_SourceRepresentation": "Binary labelmap",
-        "Segment0_ID": "S1",
-        "Segment0_LabelValue": "1",
-    }
-    ext, _ = parse_seg_keyvalues(kv)
-    flat = serialize_seg_extension(ext)
-    assert "Segmentation_SourceRepresentation" in flat
-    assert "Segmentation_MasterRepresentation" not in flat
-
-
-def test_legacy_master_representation_key():
-    """MasterRepresentation key should stay as MasterRepresentation."""
-    kv = {
-        "Segmentation_MasterRepresentation": "Binary labelmap",
-        "Segment0_ID": "S1",
-        "Segment0_LabelValue": "1",
-    }
-    ext, _ = parse_seg_keyvalues(kv)
-    flat = serialize_seg_extension(ext)
-    assert "Segmentation_MasterRepresentation" in flat
-    assert "Segmentation_SourceRepresentation" not in flat
 
 
 @pytest.mark.parametrize(
@@ -519,8 +474,8 @@ def test_legacy_master_representation_key():
     SEG_NRRD_FILES,
     ids=[f.name for f in SEG_NRRD_FILES],
 )
-def test_real_world_byte_exact_tags(seg_file: Path):
-    """Tags values should be byte-exact after round-trip (with legacy)."""
+def test_real_world_byte_exact_with_legacy(seg_file: Path):
+    """Unmodified model should replay original strings byte-exactly."""
     header = nrrd.read_header(str(seg_file))
     keyvalues: dict[str, str] = {}
     for k, v in header.items():
@@ -534,10 +489,34 @@ def test_real_world_byte_exact_tags(seg_file: Path):
     ext, _ = parse_seg_keyvalues(keyvalues)
     flat = serialize_seg_extension(ext)
 
-    # Check Tags values are identical
+    # Every consumed seg key should come back byte-exact
     for key in keyvalues:
-        if key.endswith("_Tags"):
+        if key.startswith("Segment") or key.startswith("Segmentation_"):
             assert flat.get(key) == keyvalues[key], (
-                f"{key} mismatch:\n  orig: {keyvalues[key]}\n  got:  {flat.get(key)}"
+                f"{key} mismatch:\n  orig: {keyvalues[key]!r}\n  got:  {flat.get(key)!r}"
             )
+
+
+def test_legacy_dropped_when_model_modified():
+    """If the model is modified, legacy should be ignored and fresh strings generated."""
+    kv = {
+        "Segmentation_SourceRepresentation": "Binary labelmap",
+        "Segment0_ID": "S1",
+        "Segment0_LabelValue": "1",
+        "Segment0_Tags": (
+            "TerminologyEntry:Segmentation category and type - 3D Slicer General Anatomy list"
+            "~SCT^85756007^Tissue~SCT^85756007^Tissue~^^"
+            "~Anatomic codes - DICOM master list~^^~^^|"
+        ),
+    }
+    ext, _ = parse_seg_keyvalues(kv)
+
+    # Modify the model
+    ext.segments[0].name = "Modified"
+
+    flat = serialize_seg_extension(ext)
+    # Should use generated values, not legacy
+    assert flat["Segment0_Name"] == "Modified"
+    # Key falls back to MasterRepresentation (generated default)
+    assert "Segmentation_MasterRepresentation" in flat
 

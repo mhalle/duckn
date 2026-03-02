@@ -85,10 +85,10 @@ def _parse_coded_entry(triplet: str) -> CodedEntry | None:
 
 def _parse_terminology_entry(
     raw: str,
-) -> tuple[DicomClassification | None, Designation | None, set[str], str, str]:
+) -> tuple[DicomClassification | None, Designation | None, set[str]]:
     """Parse a TerminologyEntry value (``~``-delimited, 7 slots).
 
-    Returns (dicom, designation, schemes_seen, context1, context2).
+    Returns (dicom, designation, schemes_seen).
     """
     slots = raw.split("~")
     # Pad to 7 slots
@@ -97,9 +97,6 @@ def _parse_terminology_entry(
 
     # slots: 0=context1, 1=category, 2=type, 3=type_modifier,
     #         4=context2, 5=anatomic_region, 6=anatomic_region_modifier
-    context1 = slots[0]
-    context2 = slots[4]
-
     category = _parse_coded_entry(slots[1])
     type_entry = _parse_coded_entry(slots[2])
     type_modifier = _parse_coded_entry(slots[3])
@@ -130,21 +127,20 @@ def _parse_terminology_entry(
             modifier=type_modifier,
         )
 
-    return dicom, designation, schemes, context1, context2
+    return dicom, designation, schemes
 
 
 def _parse_tags(
     raw: str,
-) -> tuple[dict[str, str] | None, DicomClassification | None, list[Designation] | None, set[str], dict[str, str]]:
+) -> tuple[dict[str, str] | None, DicomClassification | None, list[Designation] | None, set[str]]:
     """Parse ``SegmentN_Tags`` value.
 
-    Returns (tags, dicom, designations, schemes_seen, legacy).
+    Returns (tags, dicom, designations, schemes_seen).
     """
     tags: dict[str, str] = {}
     dicom: DicomClassification | None = None
     designations: list[Designation] | None = None
     all_schemes: set[str] = set()
-    legacy: dict[str, str] = {}
 
     for pair in raw.split("|"):
         pair = pair.strip()
@@ -157,27 +153,22 @@ def _parse_tags(
         value = pair[colon_idx + 1 :]
 
         if key == "TerminologyEntry":
-            dicom, designation, schemes, ctx1, ctx2 = _parse_terminology_entry(value)
+            dicom, designation, schemes = _parse_terminology_entry(value)
             all_schemes |= schemes
             if designation is not None:
                 designations = [designation]
-            legacy["terminology_context1"] = ctx1
-            legacy["terminology_context2"] = ctx2
         else:
             # Strip "Segmentation." prefix from tag keys
             tag_key = key.removeprefix("Segmentation.")
             tags[tag_key] = value
 
-    return tags or None, dicom, designations, all_schemes, legacy
+    return tags or None, dicom, designations, all_schemes
 
 
 def _parse_segment(
     index: int, kv: dict[str, str]
-) -> tuple[Segment, set[str], dict[str, str]]:
-    """Build a Segment from ``SegmentN_*`` keys.
-
-    Returns (segment, schemes, legacy).
-    """
+) -> tuple[Segment, set[str]]:
+    """Build a Segment from ``SegmentN_*`` keys.  Returns (segment, schemes)."""
     prefix = f"Segment{index}_"
 
     seg_id = kv[f"{prefix}ID"]
@@ -191,8 +182,6 @@ def _parse_segment(
     tags_raw = kv.get(f"{prefix}Tags")
 
     kwargs: dict[str, Any] = {"id": seg_id}
-    seg_legacy: dict[str, str] = {}
-
     if name is not None:
         kwargs["name"] = name
     if name_auto is not None:
@@ -212,9 +201,8 @@ def _parse_segment(
 
     schemes: set[str] = set()
     if tags_raw is not None:
-        tags, dicom, designations, tag_schemes, tag_legacy = _parse_tags(tags_raw)
+        tags, dicom, designations, tag_schemes = _parse_tags(tags_raw)
         schemes = tag_schemes
-        seg_legacy.update(tag_legacy)
         if tags is not None:
             kwargs["tags"] = tags
         if dicom is not None:
@@ -222,7 +210,7 @@ def _parse_segment(
         if designations is not None:
             kwargs["designations"] = designations
 
-    return Segment(**kwargs), schemes, seg_legacy
+    return Segment(**kwargs), schemes
 
 
 def parse_seg_keyvalues(
@@ -252,18 +240,14 @@ def parse_seg_keyvalues(
     if not seg_indices:
         return None, keyvalues
 
-    # Partition keys into segmentation vs remaining
+    # Partition keys into consumed (segmentation) vs remaining
+    consumed: dict[str, str] = {}
     remaining: dict[str, str] = {}
     for key in keyvalues:
-        if not key.startswith("Segmentation_") and not _SEG_KEY_RE.match(key):
+        if key.startswith("Segmentation_") or _SEG_KEY_RE.match(key):
+            consumed[key] = keyvalues[key]
+        else:
             remaining[key] = keyvalues[key]
-
-    # --- Legacy: track original key name ---
-    legacy: dict[str, Any] = {}
-    if "Segmentation_SourceRepresentation" in keyvalues:
-        legacy["representation_key"] = "source"
-    elif "Segmentation_MasterRepresentation" in keyvalues:
-        legacy["representation_key"] = "master"
 
     # --- Global fields ---
     ext_kwargs: dict[str, Any] = {"version": "1.0"}
@@ -293,12 +277,10 @@ def parse_seg_keyvalues(
     # --- Per-segment ---
     all_schemes: set[str] = set()
     segments: list[Segment] = []
-    seg_legacy_list: list[dict[str, str]] = []
     for idx in seg_indices:
-        seg, schemes, seg_leg = _parse_segment(idx, keyvalues)
+        seg, schemes = _parse_segment(idx, keyvalues)
         segments.append(seg)
         all_schemes |= schemes
-        seg_legacy_list.append(seg_leg)
 
     ext_kwargs["segments"] = segments
 
@@ -310,13 +292,8 @@ def parse_seg_keyvalues(
             terminologies[scheme] = TerminologyEntry(name=name)
         ext_kwargs["terminologies"] = terminologies
 
-    # --- Collect legacy ---
-    # Only store non-empty per-segment legacy entries
-    non_empty = [lg for lg in seg_legacy_list if lg]
-    if non_empty:
-        legacy["segments"] = seg_legacy_list
-    if legacy:
-        ext_kwargs["legacy"] = legacy
+    # --- Legacy: stash original key/value strings for lossless back-conversion ---
+    ext_kwargs["legacy"] = {"keyvalues": consumed}
 
     return SegmentationExtension(**ext_kwargs), remaining
 
@@ -361,13 +338,8 @@ def _serialize_conversion_parameters(
 def _serialize_terminology_entry(
     dicom: DicomClassification | None,
     designation: Designation | None,
-    seg_legacy: dict[str, str] | None = None,
 ) -> str:
-    """Reconstruct the ``~``-delimited TerminologyEntry value.
-
-    Uses original context strings from legacy if available, otherwise
-    falls back to generic names.
-    """
+    """Reconstruct the ``~``-delimited TerminologyEntry value."""
     if dicom is None and designation is None:
         return ""
 
@@ -377,7 +349,6 @@ def _serialize_terminology_entry(
         dicom.anatomic_region_modifier if dicom else None
     )
 
-    # type and type_modifier: prefer dicom fields, fall back to designation
     if dicom and dicom.type:
         type_entry = _coded_entry_triplet(dicom.type)
         type_modifier = _coded_entry_triplet(dicom.type_modifier)
@@ -390,21 +361,12 @@ def _serialize_terminology_entry(
         type_entry = "^^"
         type_modifier = "^^"
 
-    # Context strings: use legacy if available
-    if seg_legacy:
-        ctx1 = seg_legacy.get("terminology_context1", "Segmentation category and type")
-        ctx2 = seg_legacy.get("terminology_context2", "Anatomic codes")
-    else:
-        ctx1 = "Segmentation category and type"
-        ctx2 = "Anatomic codes"
-
+    ctx1 = "Segmentation category and type"
+    ctx2 = "Anatomic codes"
     return f"{ctx1}~{category}~{type_entry}~{type_modifier}~{ctx2}~{anatomic_region}~{anatomic_region_modifier}"
 
 
-def _serialize_tags(
-    seg: Segment,
-    seg_legacy: dict[str, str] | None = None,
-) -> str:
+def _serialize_tags(seg: Segment) -> str:
     """Build the ``|``-delimited Tags value for a segment."""
     pairs: list[str] = []
 
@@ -412,9 +374,8 @@ def _serialize_tags(
         for key, val in seg.tags.items():
             pairs.append(f"Segmentation.{key}:{val}")
 
-    # Reconstruct TerminologyEntry if we have dicom or designations
     designation = seg.designations[0] if seg.designations else None
-    term_val = _serialize_terminology_entry(seg.dicom, designation, seg_legacy)
+    term_val = _serialize_terminology_entry(seg.dicom, designation)
     if term_val:
         pairs.append(f"TerminologyEntry:{term_val}")
 
@@ -423,23 +384,14 @@ def _serialize_tags(
     return "|".join(pairs) + "|"
 
 
-def serialize_seg_extension(ext: SegmentationExtension) -> dict[str, str]:
-    """Convert a SegmentationExtension back to flat NRRD key/value pairs.
-
-    Uses ``ext.legacy`` (if present) to reproduce original formatting
-    for context strings, color values, and representation key names.
-    """
+def _generate_from_model(ext: SegmentationExtension) -> dict[str, str]:
+    """Generate flat key/value pairs from model data (no legacy)."""
     kv: dict[str, str] = {}
-    legacy = ext.legacy or {}
 
-    # --- Global fields ---
     if ext.source_representation is not None:
-        rep_key_suffix = legacy.get("representation_key", "master")
-        if rep_key_suffix == "source":
-            key_name = "Segmentation_SourceRepresentation"
-        else:
-            key_name = "Segmentation_MasterRepresentation"
-        kv[key_name] = _denormalize_representation(str(ext.source_representation))
+        kv["Segmentation_MasterRepresentation"] = _denormalize_representation(
+            str(ext.source_representation)
+        )
 
     if ext.contained_representations:
         kv["Segmentation_ContainedRepresentationNames"] = (
@@ -456,13 +408,8 @@ def serialize_seg_extension(ext: SegmentationExtension) -> dict[str, str]:
             str(x) for x in ext.reference_extent_offset
         )
 
-    # --- Per-segment fields ---
-    seg_legacy_list: list[dict[str, str]] = legacy.get("segments", [])
-
     for i, seg in enumerate(ext.segments):
         p = f"Segment{i}_"
-        seg_leg = seg_legacy_list[i] if i < len(seg_legacy_list) else None
-
         kv[f"{p}ID"] = seg.id
         if seg.name is not None:
             kv[f"{p}Name"] = seg.name
@@ -481,8 +428,54 @@ def serialize_seg_extension(ext: SegmentationExtension) -> dict[str, str]:
         if seg.extent is not None:
             kv[f"{p}Extent"] = " ".join(str(x) for x in seg.extent)
 
-        tags_str = _serialize_tags(seg, seg_leg)
+        tags_str = _serialize_tags(seg)
         if tags_str:
             kv[f"{p}Tags"] = tags_str
 
     return kv
+
+
+def serialize_seg_extension(ext: SegmentationExtension) -> dict[str, str]:
+    """Convert a SegmentationExtension back to flat NRRD key/value pairs.
+
+    Generates key/value pairs from the model, then for each key checks
+    whether the legacy dict has an original value that would parse back
+    to the same model data.  If so, the original string is used to
+    preserve formatting.  If not (or no legacy), the generated string
+    is used.
+    """
+    generated = _generate_from_model(ext)
+
+    legacy_kv: dict[str, str] = {}
+    if ext.legacy and "keyvalues" in ext.legacy:
+        legacy_kv = ext.legacy["keyvalues"]
+
+    if not legacy_kv:
+        return generated
+
+    # Re-parse legacy to see if it still matches the current model.
+    # If the legacy parses to an identical extension (ignoring legacy itself),
+    # use the original strings for any key the legacy has.
+    try:
+        legacy_ext, _ = parse_seg_keyvalues(legacy_kv)
+    except Exception:
+        return generated
+
+    if legacy_ext is None:
+        return generated
+
+    # Compare model data (excluding legacy) to check equivalence
+    current_dump = ext.model_dump(exclude={"legacy"}, exclude_none=True)
+    legacy_dump = legacy_ext.model_dump(exclude={"legacy"}, exclude_none=True)
+
+    if current_dump != legacy_dump:
+        # Model was modified — generate fresh
+        return generated
+
+    # Model unchanged — replay original strings, filling in any
+    # keys that exist in generated but not in legacy (shouldn't happen
+    # for unmodified data, but just in case).
+    result: dict[str, str] = {}
+    for key, val in generated.items():
+        result[key] = legacy_kv.get(key, val)
+    return result
