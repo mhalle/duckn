@@ -156,7 +156,7 @@ def _header_to_metadata(
     header: dict[str, Any],
     ndim: int,
     *,
-    reverse_axes: bool = True,
+    axis_order: str = "slowest_first",
 ) -> tuple[NrrdMetadata, list[str] | None, dict[str, Any]]:
     """Build NrrdMetadata from a pynrrd header dict.
 
@@ -164,7 +164,9 @@ def _header_to_metadata(
     ----------
     header : dict from pynrrd's read() or read_header()
     ndim : number of array dimensions
-    reverse_axes : if True, reverse per-axis fields from NRRD order to C order
+    axis_order : "slowest_first" reverses per-axis fields from NRRD
+        (fastest-first) order to array (slowest-first) order.
+        "fastest_first" keeps NRRD native order.
 
     Returns
     -------
@@ -172,6 +174,8 @@ def _header_to_metadata(
     dimension_names : list of strings or None
     extra_attrs : dict of extra attributes (e.g., content)
     """
+    reverse = axis_order == "slowest_first"
+
     # --- Per-axis fields from NRRD header ---
     kinds_raw = header.get("kinds")
     centerings_raw = header.get("centerings")
@@ -186,7 +190,7 @@ def _header_to_metadata(
             return None
         return list(reversed(arr))
 
-    if reverse_axes:
+    if reverse:
         kinds = _rev(kinds_raw)
         centerings = _rev(centerings_raw)
         space_dirs = _rev(space_dirs_raw)
@@ -335,7 +339,7 @@ def _header_to_metadata(
 def _metadata_to_header(
     meta: NrrdMetadata,
     *,
-    reverse_axes: bool = True,
+    axis_order: str = "slowest_first",
     dim_names: tuple[str, ...] | list[str] | None = None,
     content: str | None = None,
 ) -> dict[str, Any]:
@@ -344,7 +348,9 @@ def _metadata_to_header(
     Parameters
     ----------
     meta : NrrdMetadata from zarr attributes
-    reverse_axes : if True, reverse axes from C order to NRRD order
+    axis_order : "slowest_first" reverses axes from array (slowest-first)
+        order back to NRRD (fastest-first) order for writing.
+        "fastest_first" keeps axes as-is (already in NRRD order).
     dim_names : dimension names from zarr metadata
     content : content string from zarr attributes
 
@@ -352,6 +358,8 @@ def _metadata_to_header(
     -------
     header : dict suitable for pynrrd's write() or manual header writing
     """
+    reverse = axis_order == "slowest_first"
+
     header: dict[str, Any] = {}
 
     # --- space ---
@@ -373,7 +381,7 @@ def _metadata_to_header(
     # --- Per-axis fields ---
     axes = meta.axes or []
     if axes:
-        if reverse_axes:
+        if reverse:
             nrrd_axes = list(reversed(axes))
         else:
             nrrd_axes = list(axes)
@@ -429,7 +437,7 @@ def _metadata_to_header(
 
     # --- labels from dimension_names ---
     if dim_names is not None:
-        if reverse_axes:
+        if reverse:
             nrrd_labels = list(reversed(dim_names))
         else:
             nrrd_labels = list(dim_names)
@@ -590,9 +598,7 @@ def nrrd_to_zarr(
 
     compressors_list = _build_compressors(compressor, level)
 
-    meta, dimension_names, extra_attrs = _header_to_metadata(
-        header, ndim, reverse_axes=True
-    )
+    meta, dimension_names, extra_attrs = _header_to_metadata(header, ndim)
 
     if chunks is None:
         chunks = _auto_chunks(shape, data.dtype)
@@ -654,7 +660,6 @@ def zarr_to_nrrd(
 
     header = _metadata_to_header(
         meta,
-        reverse_axes=True,
         dim_names=dim_names,
         content=content,
     )
@@ -684,8 +689,10 @@ def nrrd_to_zarr_zerocopy(
     - Data must be little-endian (or single-byte type)
     - File must not use a detached header
 
-    The Zarr store uses NRRD axis order (fastest-first), so ``shape`` in
-    ``zarr.json`` matches NRRD ``sizes`` directly.
+    The Zarr store uses slowest-first axis order (matching the normal path),
+    with the NRRD shape reversed.  The raw bytes are identical under both
+    orderings because fastest-first ``(x,y,z)`` and slowest-first ``(z,y,x)``
+    have the same memory layout.
     """
     nrrd_path = Path(nrrd_path)
     zarr_path = Path(zarr_path)
@@ -734,18 +741,16 @@ def nrrd_to_zarr_zerocopy(
         # Read raw data blob (compressed or raw bytes)
         raw_blob = fh.read()
 
-    # Shape in NRRD order (fastest-first) -- NOT reversed
+    # Shape: reverse NRRD sizes to slowest-first order for Zarr
     sizes = [int(s) for s in header["sizes"]]
-    shape = tuple(sizes)
+    shape = tuple(reversed(sizes))
     ndim = len(shape)
 
     # Build codecs matching the NRRD encoding
     serializer, compressors = _codecs_for_encoding(encoding)
 
-    # Build metadata (NRRD order, no reversal)
-    meta, dimension_names, extra_attrs = _header_to_metadata(
-        header, ndim, reverse_axes=False
-    )
+    # Build metadata in slowest-first order (same as normal path)
+    meta, dimension_names, extra_attrs = _header_to_metadata(header, ndim)
 
     # Serialize metadata and add legacy info for round-trip
     nrrd_dict = meta.model_dump(exclude_none=True)
@@ -811,8 +816,8 @@ def zarr_to_nrrd_zerocopy(
 
     Copies the chunk data blob directly into the NRRD file without
     decompression or recompression.  Requires the store to have been
-    created by ``nrrd_to_zarr_zerocopy`` (single chunk, NRRD axis order,
-    ``legacy`` metadata present).
+    created by ``nrrd_to_zarr_zerocopy`` (single chunk, ``legacy``
+    metadata present).
     """
     zarr_path = Path(zarr_path)
     nrrd_path = Path(nrrd_path)
@@ -841,10 +846,10 @@ def zarr_to_nrrd_zerocopy(
             if nrrd_type is None:
                 raise ValueError(f"Cannot map dtype {dtype_str} to NRRD type")
 
-        # Shape is in NRRD order (fastest-first)
+        # Shape is in slowest-first order; reverse to NRRD sizes
         shape = arr.shape
         ndim = arr.ndim
-        sizes = list(shape)
+        sizes = list(reversed(shape))
 
         # Read chunk as raw bytes
         if is_zip:
@@ -864,13 +869,12 @@ def zarr_to_nrrd_zerocopy(
                 raise FileNotFoundError(f"Chunk file not found: {chunk_path}")
             raw_blob = chunk_path.read_bytes()
 
-        # Build NRRD header (no axis reversal -- already in NRRD order)
+        # Build NRRD header (reverse from slowest-first back to NRRD order)
         dim_names = arr.metadata.dimension_names
         content = arr.attrs.get("content")
 
     header = _metadata_to_header(
         meta,
-        reverse_axes=False,
         dim_names=dim_names,
         content=content,
     )

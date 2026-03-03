@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import zarr
 
-from nrrdz.convert import nrrd_to_zarr, zarr_to_nrrd
+from nrrdz.convert import nrrd_to_zarr, nrrd_to_zarr_zerocopy, zarr_to_nrrd, zarr_to_nrrd_zerocopy
 from nrrdz.models import NrrdMetadata
 from nrrdz.zarr_io import get_zarr_attrs, open_store, read_nrrdz, read_nrrdz_metadata
 
@@ -196,6 +196,76 @@ class TestOpenStore:
         # If the store was properly closed, we can open and read it
         out_data, meta = read_nrrdz(zip_path)
         assert out_data.shape == (2, 3, 4)
+
+
+# ---------------------------------------------------------------------------
+# Zero-copy axis order consistency
+# ---------------------------------------------------------------------------
+
+
+class TestZeroCopyAxisOrder:
+    def test_zerocopy_read_nrrdz_matches_normal(self, tmp_path):
+        """Zero-copy store read via read_nrrdz() matches normal path data."""
+        nrrd_path = tmp_path / "test.nrrd"
+        data = _write_simple_nrrd(nrrd_path)
+
+        normal_path = tmp_path / "normal.zarr"
+        nrrd_to_zarr(nrrd_path, normal_path)
+
+        zerocopy_path = tmp_path / "zerocopy.zarr"
+        nrrd_to_zarr_zerocopy(nrrd_path, zerocopy_path)
+
+        normal_data, normal_meta = read_nrrdz(normal_path)
+        zc_data, zc_meta = read_nrrdz(zerocopy_path)
+
+        # Data must match when read through arr[:]
+        np.testing.assert_array_equal(zc_data, normal_data)
+        np.testing.assert_array_equal(zc_data, data)
+
+        # Metadata axis order must match
+        assert zc_meta.space == normal_meta.space
+        np.testing.assert_allclose(zc_meta.space_origin, normal_meta.space_origin)
+        for i in range(len(normal_meta.axes)):
+            if normal_meta.axes[i].space_direction is not None:
+                np.testing.assert_allclose(
+                    zc_meta.axes[i].space_direction,
+                    normal_meta.axes[i].space_direction,
+                )
+
+    def test_zerocopy_shape_matches_normal(self, tmp_path):
+        """Zero-copy store has same shape as normal store."""
+        nrrd_path = tmp_path / "test.nrrd"
+        _write_simple_nrrd(nrrd_path)
+
+        normal_path = tmp_path / "normal.zarr"
+        nrrd_to_zarr(nrrd_path, normal_path)
+
+        zerocopy_path = tmp_path / "zerocopy.zarr"
+        nrrd_to_zarr_zerocopy(nrrd_path, zerocopy_path)
+
+        with open_store(normal_path, mode="r") as store:
+            normal_shape = zarr.open_array(store, mode="r").shape
+
+        with open_store(zerocopy_path, mode="r") as store:
+            zc_shape = zarr.open_array(store, mode="r").shape
+
+        assert zc_shape == normal_shape
+
+    def test_zerocopy_nrrd_round_trip(self, tmp_path):
+        """Zero-copy NRRD -> Zarr -> NRRD round-trip preserves data."""
+        nrrd = pytest.importorskip("nrrd")
+
+        nrrd_path = tmp_path / "input.nrrd"
+        data = _write_simple_nrrd(nrrd_path)
+
+        zarr_path = tmp_path / "zerocopy.zarr"
+        nrrd_to_zarr_zerocopy(nrrd_path, zarr_path)
+
+        output_nrrd = tmp_path / "output.nrrd"
+        zarr_to_nrrd_zerocopy(zarr_path, output_nrrd)
+
+        out_data, _ = nrrd.read(str(output_nrrd), index_order="C")
+        np.testing.assert_array_equal(out_data, data)
 
 
 # ---------------------------------------------------------------------------
