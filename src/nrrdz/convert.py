@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from .models import (
 )
 from .dwi_nrrd import parse_dwi_keyvalues, serialize_dwi_extension
 from .seg_nrrd import parse_seg_keyvalues, serialize_seg_extension
+from .zarr_io import _is_zip_path, open_store
 
 
 # NRRD spec fields (`: ` delimiter).  Anything else is a key/value pair (`:=`).
@@ -595,20 +597,21 @@ def nrrd_to_zarr(
     if chunks is None:
         chunks = _auto_chunks(shape, data.dtype)
 
-    store = zarr.storage.LocalStore(str(zarr_path))
     attrs = {"nrrd": meta.model_dump(exclude_none=True)}
     attrs.update(extra_attrs)
 
-    zarr.create_array(
-        store,
-        data=data,
-        chunks=chunks,
-        compressors=compressors_list,
-        dimension_names=dimension_names,
-        attributes=attrs,
-        overwrite=overwrite,
-        fill_value=0,
-    )
+    is_zip = _is_zip_path(zarr_path)
+    with open_store(zarr_path, mode="w", overwrite=overwrite) as store:
+        zarr.create_array(
+            store,
+            data=data,
+            chunks=chunks,
+            compressors=compressors_list,
+            dimension_names=dimension_names,
+            attributes=attrs,
+            overwrite=False if is_zip else overwrite,
+            fill_value=0,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -639,15 +642,15 @@ def zarr_to_nrrd(
     if nrrd_path.exists() and not overwrite:
         raise FileExistsError(f"{nrrd_path} already exists (use --overwrite)")
 
-    store = zarr.storage.LocalStore(str(zarr_path))
-    arr = zarr.open_array(store, mode="r")
-    data = arr[:]
-    nrrd_attrs = arr.attrs.get("nrrd", {})
+    with open_store(zarr_path, mode="r") as store:
+        arr = zarr.open_array(store, mode="r")
+        data = arr[:]
+        nrrd_attrs = arr.attrs.get("nrrd", {})
 
-    meta = NrrdMetadata(**nrrd_attrs)
+        meta = NrrdMetadata(**nrrd_attrs)
 
-    dim_names = arr.metadata.dimension_names
-    content = arr.attrs.get("content")
+        dim_names = arr.metadata.dimension_names
+        content = arr.attrs.get("content")
 
     header = _metadata_to_header(
         meta,
@@ -757,29 +760,40 @@ def nrrd_to_zarr_zerocopy(
     attrs.update(extra_attrs)
 
     # Remove existing store if overwriting
+    is_zip = _is_zip_path(zarr_path)
     if zarr_path.exists() and overwrite:
-        shutil.rmtree(zarr_path)
+        if is_zip:
+            os.remove(zarr_path)
+        else:
+            shutil.rmtree(zarr_path)
 
     # Create Zarr array (metadata only, no data written)
-    store = zarr.storage.LocalStore(str(zarr_path))
-    zarr.create_array(
-        store,
-        shape=shape,
-        dtype=dtype,
-        chunks=shape,  # single chunk = full array
-        serializer=serializer,
-        compressors=compressors,
-        dimension_names=dimension_names,
-        attributes=attrs,
-        fill_value=0,
-    )
+    with open_store(zarr_path, mode="w") as store:
+        zarr.create_array(
+            store,
+            shape=shape,
+            dtype=dtype,
+            chunks=shape,  # single chunk = full array
+            serializer=serializer,
+            compressors=compressors,
+            dimension_names=dimension_names,
+            attributes=attrs,
+            fill_value=0,
+        )
 
-    # Write raw blob directly as the single chunk file
-    chunk_path = zarr_path / "c"
-    for _ in range(ndim):
-        chunk_path = chunk_path / "0"
-    chunk_path.parent.mkdir(parents=True, exist_ok=True)
-    chunk_path.write_bytes(raw_blob)
+        if is_zip:
+            # Write chunk via store API (ZipStore has no filesystem paths)
+            chunk_key = "c/" + "/".join("0" for _ in range(ndim))
+            from zarr.core.sync import sync
+
+            sync(store.set(chunk_key, raw_blob))
+        else:
+            # Write raw blob directly as the single chunk file
+            chunk_path = zarr_path / "c"
+            for _ in range(ndim):
+                chunk_path = chunk_path / "0"
+            chunk_path.parent.mkdir(parents=True, exist_ok=True)
+            chunk_path.write_bytes(raw_blob)
 
 
 # ---------------------------------------------------------------------------
@@ -806,41 +820,54 @@ def zarr_to_nrrd_zerocopy(
     if nrrd_path.exists() and not overwrite:
         raise FileExistsError(f"{nrrd_path} already exists (use --overwrite)")
 
-    store = zarr.storage.LocalStore(str(zarr_path))
-    arr = zarr.open_array(store, mode="r")
-    nrrd_attrs = arr.attrs.get("nrrd", {})
-    meta = NrrdMetadata(**nrrd_attrs)
+    is_zip = _is_zip_path(zarr_path)
 
-    # Get legacy info
-    legacy: dict[str, Any] = {}
-    if meta.extensions:
-        legacy = meta.extensions.get("legacy", {})
+    with open_store(zarr_path, mode="r") as store:
+        arr = zarr.open_array(store, mode="r")
+        nrrd_attrs = arr.attrs.get("nrrd", {})
+        meta = NrrdMetadata(**nrrd_attrs)
 
-    # Determine encoding and NRRD type
-    encoding = legacy.get("encoding", "raw")
-    nrrd_type = legacy.get("nrrd_type")
-    if nrrd_type is None:
-        dtype_str = str(arr.dtype)
-        nrrd_type = _DTYPE_TO_NRRD_TYPE.get(dtype_str)
+        # Get legacy info
+        legacy: dict[str, Any] = {}
+        if meta.extensions:
+            legacy = meta.extensions.get("legacy", {})
+
+        # Determine encoding and NRRD type
+        encoding = legacy.get("encoding", "raw")
+        nrrd_type = legacy.get("nrrd_type")
         if nrrd_type is None:
-            raise ValueError(f"Cannot map dtype {dtype_str} to NRRD type")
+            dtype_str = str(arr.dtype)
+            nrrd_type = _DTYPE_TO_NRRD_TYPE.get(dtype_str)
+            if nrrd_type is None:
+                raise ValueError(f"Cannot map dtype {dtype_str} to NRRD type")
 
-    # Shape is in NRRD order (fastest-first)
-    shape = arr.shape
-    ndim = arr.ndim
-    sizes = list(shape)
+        # Shape is in NRRD order (fastest-first)
+        shape = arr.shape
+        ndim = arr.ndim
+        sizes = list(shape)
 
-    # Read chunk file as raw bytes
-    chunk_path = zarr_path / "c"
-    for _ in range(ndim):
-        chunk_path = chunk_path / "0"
-    if not chunk_path.exists():
-        raise FileNotFoundError(f"Chunk file not found: {chunk_path}")
-    raw_blob = chunk_path.read_bytes()
+        # Read chunk as raw bytes
+        if is_zip:
+            chunk_key = "c/" + "/".join("0" for _ in range(ndim))
+            from zarr.core.buffer import default_buffer_prototype
+            from zarr.core.sync import sync
 
-    # Build NRRD header (no axis reversal -- already in NRRD order)
-    dim_names = arr.metadata.dimension_names
-    content = arr.attrs.get("content")
+            buf = sync(store.get(chunk_key, prototype=default_buffer_prototype()))
+            if buf is None:
+                raise FileNotFoundError(f"Chunk key not found in zip: {chunk_key}")
+            raw_blob = buf.to_bytes()
+        else:
+            chunk_path = zarr_path / "c"
+            for _ in range(ndim):
+                chunk_path = chunk_path / "0"
+            if not chunk_path.exists():
+                raise FileNotFoundError(f"Chunk file not found: {chunk_path}")
+            raw_blob = chunk_path.read_bytes()
+
+        # Build NRRD header (no axis reversal -- already in NRRD order)
+        dim_names = arr.metadata.dimension_names
+        content = arr.attrs.get("content")
+
     header = _metadata_to_header(
         meta,
         reverse_axes=False,

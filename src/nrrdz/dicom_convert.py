@@ -17,6 +17,7 @@ import numpy as np
 import zarr
 
 from .convert import _auto_chunks, _build_compressors
+from .zarr_io import _is_zip_path, open_store
 from .models import (
     AxisKind,
     AxisMetadata,
@@ -708,16 +709,17 @@ def dicom_to_zarr(
 
     compressors_list = _build_compressors(compressor, level)
 
-    store = zarr.storage.LocalStore(str(output_path))
     attrs = {"nrrd": meta.model_dump(exclude_none=True)}
 
-    zarr.create_array(
-        store,
-        data=volume,
-        chunks=chunks,
-        compressors=compressors_list,
-        dimension_names=["k", "j", "i"],
-        attributes=attrs,
-        overwrite=overwrite,
-        fill_value=0,
-    )
+    is_zip = _is_zip_path(output_path)
+    with open_store(output_path, mode="w", overwrite=overwrite) as store:
+        zarr.create_array(
+            store,
+            data=volume,
+            chunks=chunks,
+            compressors=compressors_list,
+            dimension_names=["k", "j", "i"],
+            attributes=attrs,
+            overwrite=False if is_zip else overwrite,
+            fill_value=0,
+        )

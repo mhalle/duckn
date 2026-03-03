@@ -15,6 +15,7 @@ import numpy as np
 import zarr
 
 from .convert import _auto_chunks, _build_compressors
+from .zarr_io import _is_zip_path, open_store
 from .models import (
     AxisKind,
     AxisMetadata,
@@ -375,19 +376,20 @@ def nifti_to_zarr(
     for i in range(4, ndim):
         dim_names.append(f"d{i}")
 
-    store = zarr.storage.LocalStore(str(output_path))
     attrs = {"nrrd": meta.model_dump(exclude_none=True)}
 
-    zarr.create_array(
-        store,
-        data=data,
-        chunks=chunks,
-        compressors=compressors_list,
-        dimension_names=dim_names,
-        attributes=attrs,
-        overwrite=overwrite,
-        fill_value=0,
-    )
+    is_zip = _is_zip_path(output_path)
+    with open_store(output_path, mode="w", overwrite=overwrite) as store:
+        zarr.create_array(
+            store,
+            data=data,
+            chunks=chunks,
+            compressors=compressors_list,
+            dimension_names=dim_names,
+            attributes=attrs,
+            overwrite=False if is_zip else overwrite,
+            fill_value=0,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -419,11 +421,11 @@ def zarr_to_nifti(
         raise FileExistsError(f"{output_path} already exists (use --overwrite)")
 
     # Read Zarr store
-    store = zarr.storage.LocalStore(str(input_path))
-    arr = zarr.open_array(store, mode="r")
-    data = arr[:]
-    nrrd_attrs = arr.attrs.get("nrrd", {})
-    meta = NrrdMetadata(**nrrd_attrs)
+    with open_store(input_path, mode="r") as store:
+        arr = zarr.open_array(store, mode="r")
+        data = arr[:]
+        nrrd_attrs = arr.attrs.get("nrrd", {})
+        meta = NrrdMetadata(**nrrd_attrs)
 
     ndim = data.ndim
 
