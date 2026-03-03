@@ -271,6 +271,70 @@ def roundtrip(
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+@cli.command("from-nifti")
+@click.argument("input_path", type=click.Path(exists=True))
+@click.argument("output_path", type=click.Path())
+@click.option("--chunks", default=None, help="Chunk shape, e.g. 64,64,32")
+@click.option(
+    "--compressor",
+    type=click.Choice(["zstd", "gzip", "none"]),
+    default="zstd",
+    help="Compression codec (default: zstd)",
+)
+@click.option("--level", type=int, default=3, help="Compression level (default: 3)")
+@click.option("--overwrite", is_flag=True, help="Overwrite existing output")
+def from_nifti(
+    input_path: str,
+    output_path: str,
+    chunks: str | None,
+    compressor: str,
+    level: int,
+    overwrite: bool,
+) -> None:
+    """Convert a NIfTI file to a nrrdz Zarr v3 store.
+
+    INPUT_PATH is a .nii or .nii.gz file.
+    """
+    from .nifti_convert import nifti_to_zarr
+
+    parsed_chunks = None
+    if chunks is not None:
+        parsed_chunks = tuple(int(c) for c in chunks.split(","))
+
+    nifti_to_zarr(
+        input_path,
+        output_path,
+        chunks=parsed_chunks,
+        compressor=compressor,
+        level=level,
+        overwrite=overwrite,
+    )
+    click.echo(f"Wrote {output_path}")
+
+
+@cli.command("to-nifti")
+@click.argument("input_path", type=click.Path(exists=True))
+@click.argument("output_path", type=click.Path())
+@click.option("--overwrite", is_flag=True, help="Overwrite existing output")
+def to_nifti_cmd(
+    input_path: str,
+    output_path: str,
+    overwrite: bool,
+) -> None:
+    """Convert a nrrdz Zarr v3 store to a NIfTI file.
+
+    OUTPUT_PATH should end in .nii or .nii.gz.
+    """
+    from .nifti_convert import zarr_to_nifti
+
+    zarr_to_nifti(
+        input_path,
+        output_path,
+        overwrite=overwrite,
+    )
+    click.echo(f"Wrote {output_path}")
+
+
 @cli.command("from-dicom")
 @click.argument("input_path", type=click.Path(exists=True))
 @click.argument("output_path", type=click.Path())

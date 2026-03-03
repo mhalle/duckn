@@ -424,6 +424,98 @@ class DicomExtension(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# NIfTI provenance extension models (nifti-spec.md)
+# ---------------------------------------------------------------------------
+
+
+class NiftiDimInfo(BaseModel):
+    """MRI encoding dimension identifiers (§4.2, 1-based)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    freq_dim: int | None = None
+    phase_dim: int | None = None
+    slice_dim: int | None = None
+
+
+class NiftiIntent(BaseModel):
+    """NIfTI intent code and parameters (§4.2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: int
+    name: str | None = None
+    p1: float | None = None
+    p2: float | None = None
+    p3: float | None = None
+
+
+class NiftiSliceTiming(BaseModel):
+    """Slice acquisition timing metadata (§4.2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str | None = None
+    start: int | None = None
+    end: int | None = None
+    duration: float | None = None
+
+
+class NiftiCal(BaseModel):
+    """Display calibration range (§4.2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    min: float | None = None
+    max: float | None = None
+
+
+class NiftiTags(BaseModel):
+    """NIfTI header fields not captured by convention fields (§4.2)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sform_code: int | None = None
+    qform_code: int | None = None
+    dim_info: NiftiDimInfo | None = None
+    intent: NiftiIntent | None = None
+    slice_timing: NiftiSliceTiming | None = None
+    toffset: float | None = None
+    cal: NiftiCal | None = None
+    descrip: str | None = None
+    aux_file: str | None = None
+
+
+class NiftiLegacyTags(BaseModel):
+    """Original NIfTI affine matrices stored for provenance."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sform: list[list[float]] | None = None
+    qform: list[list[float]] | None = None
+
+
+class NiftiLegacy(BaseModel):
+    """Legacy provenance data from the source NIfTI file."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tags: NiftiLegacyTags | None = None
+
+
+class NiftiExtension(BaseModel):
+    """NIfTI provenance extension (nifti-spec.md §4)."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    version: str
+    url: str | None = None
+    nifti_version: int | None = None
+    tags: NiftiTags | None = None
+    legacy: NiftiLegacy | None = None
+
+
+# ---------------------------------------------------------------------------
 # Standalone validation against array shape
 # ---------------------------------------------------------------------------
 

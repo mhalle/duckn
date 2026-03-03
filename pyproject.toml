@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dicom = ["pydicom>=2.4"]
+nifti = ["nibabel>=4.0"]
 
 [project.scripts]
 nrrdz = "nrrdz.cli:cli"
