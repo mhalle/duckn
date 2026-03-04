@@ -1,10 +1,10 @@
-NRRD-Zarr Round-Trip Converter: Specification and Action Plan
+duckn Round-Trip Converter: Specification and Action Plan
 Status: Draft
 Date: 2026-03-02
-Scope: Lossless round-trip conversion between .nrrd files and .nrrdz Zarr V3 stores
+Scope: Lossless round-trip conversion between .nrrd files and .duckn Zarr V3 stores
 
 1. Goals
-Convert a complete (non-detached) .nrrd file into a .nrrdz directory containing a single Zarr V3 array, and convert it back, such that the round-tripped .nrrd file is value-identical to the original. The data should pass through without decompression or recompression when possible.
+Convert a complete (non-detached) .nrrd file into a .duckn directory containing a single Zarr V3 array, and convert it back, such that the round-tripped .nrrd file is value-identical to the original. The data should pass through without decompression or recompression when possible.
 In scope
 
 Single .nrrd files (header + data in one file, not .nhdr + detached data).
@@ -12,7 +12,7 @@ Binary encodings: raw, gzip/gz.
 Little-endian data only.
 All standard NRRD header fields supported by pynrrd.
 Key/value pairs (key:=value syntax).
-pynrrd-compatible read() / read_header() functions for .nrrdz stores.
+pynrrd-compatible read() / read_header() functions for .duckn stores.
 
 Out of scope (first pass)
 
@@ -20,18 +20,18 @@ Detached headers (.nhdr + separate data file).
 ascii, hex, text encodings.
 Big-endian source data (reject with a clear error).
 bzip2 encoding (defer — requires non-standard Zarr codec via numcodecs).
-NRRD-Zarr extensions (DICOM, segmentation, DWMRI, etc.).
+duckn extensions (DICOM, segmentation, DWMRI, etc.).
 Multi-array Zarr groups / multi-resolution pyramids.
-Writing .nrrdz from scratch (only conversion from existing .nrrd).
+Writing .duckn from scratch (only conversion from existing .nrrd).
 
 
 2. File Layout
-2.1 The .nrrdz directory
-A .nrrdz store is a standard Zarr V3 directory store containing a single array at the root level.
-example.nrrdz/
-  zarr.json          # Zarr V3 array metadata + NRRD-Zarr convention attributes
+2.1 The .duckn directory
+A .duckn store is a standard Zarr V3 directory store containing a single array at the root level.
+example.duckn/
+  zarr.json          # Zarr V3 array metadata + duckn convention attributes
   c/0/0/0            # Single chunk file (for a 3D array; path depends on dimensionality)
-The directory name uses the .nrrdz extension by convention to distinguish it from generic Zarr stores. Any Zarr V3 reader can open it.
+The directory name uses the .duckn extension by convention to distinguish it from generic Zarr stores. Any Zarr V3 reader can open it.
 2.2 Chunk layout
 The array uses a single chunk spanning the full array shape. The chunk grid configuration is:
 json{
@@ -72,7 +72,7 @@ json"codecs": [
     "configuration": { "level": 5 }
   }
 ]
-Zero-copy path: When converting NRRD to nrrdz, the gzip-compressed data blob is copied byte-for-byte from the NRRD file into the Zarr chunk file — no decompression or recompression occurs. The reverse direction works the same way. The level field in the codec configuration records the default gzip level but does not affect the stored data.
+Zero-copy path: When converting NRRD to duckn, the gzip-compressed data blob is copied byte-for-byte from the NRRD file into the Zarr chunk file — no decompression or recompression occurs. The reverse direction works the same way. The level field in the codec configuration records the default gzip level but does not affect the stored data.
 3.3 Rejected encodings
 EncodingDispositionascii, text, txtReject with error: "ASCII encoding not supported"hexReject with error: "Hex encoding not supported"bzip2, bz2Reject with error: "bzip2 not yet supported" (future pass)
 3.4 Endianness
@@ -81,7 +81,7 @@ Only little-endian data is supported. If the NRRD header specifies endian: big, 
 4. Metadata Mapping
 4.1 Zarr-level fields (derived from NRRD header)
 Zarr V3 fieldSourceshapeheader['sizes'] — see §4.5 for axis orderingdata_typeMapped from header['type'] via NRRD-to-Zarr type tabledimension_namesheader['labels'] if present, else nullfill_value0 (or type-appropriate default)chunk_gridSingle chunk, chunk_shape = shapecodecsDerived from header['encoding'] per §3
-4.2 NRRD-Zarr convention fields (attributes.nrrd)
+4.2 duckn convention fields (attributes.nrrd)
 Mapped from the pynrrd header dict into the structured convention format.
 Convention fieldSource in pynrrd headerversionAlways "1.0"spaceheader['space']space_originheader['space origin'] as JSON array of numbersmeasurement_frameheader['measurement frame'] as nested JSON arrayssample_unitsheader['sample units']axes[i].kindheader['kinds'][i]axes[i].centeringheader['centerings'][i]axes[i].space_directionRow i of header['space directions'], omitted if NaN rowaxes[i].unitheader['units'][i] if presentaxes[i].thicknessheader['thicknesses'][i] if present and not NaN
 Spacings: The spacings field in NRRD is redundant when space directions is present (spacing = magnitude of the direction vector). It is not stored separately in the convention. When space directions is absent but spacings is present, the converter constructs axis-aligned direction vectors from the spacings.
@@ -143,7 +143,7 @@ The original type string is preserved in `legacy.nrrd_type` so it can be written
 
 **Zarr convention:** `shape[i]` describes dimension `i`; no memory-layout semantics are assigned to dimension order. Zarr's default `bytes` codec uses C order (last dimension varies fastest).
 
-**Conversion rule:** The `.nrrdz` store stores axes in the NRRD order (fastest-first). This means `shape` in `zarr.json` matches `header['sizes']` directly, and `axes[i]` describes the same axis as NRRD's axis `i`. The single chunk file contains bytes in NRRD's native memory order, which is what enables zero-copy.
+**Conversion rule:** The `.duckn` store stores axes in the NRRD order (fastest-first). This means `shape` in `zarr.json` matches `header['sizes']` directly, and `axes[i]` describes the same axis as NRRD's axis `i`. The single chunk file contains bytes in NRRD's native memory order, which is what enables zero-copy.
 
 A Zarr reader using C-order interpretation will see the axes in the opposite order from what a Fortran-order reader expects. The convention's `axes` array provides the semantic meaning regardless of ordering convention.
 
@@ -153,10 +153,10 @@ A Zarr reader using C-order interpretation will see the axes in the opposite ord
 
 ## 5. Conversion Procedures
 
-### 5.1 NRRD → nrrdz
+### 5.1 NRRD → duckn
 ```
 Input:  path/to/file.nrrd
-Output: path/to/file.nrrdz/   (directory)
+Output: path/to/file.duckn/   (directory)
 ```
 
 **Steps:**
@@ -164,13 +164,13 @@ Output: path/to/file.nrrdz/   (directory)
 1. **Parse NRRD header** using pynrrd's `read_header()`.
 2. **Validate** encoding, endianness, and that the file is not detached.
 3. **Compute data offset** — the byte position where data begins in the `.nrrd` file (after the header + blank line separator). Apply `line skip` and `byte skip` if present.
-4. **Create the `.nrrdz` directory structure** including chunk subdirectories.
+4. **Create the `.duckn` directory structure** including chunk subdirectories.
 5. **Copy the data blob** — read the data portion of the `.nrrd` file and write it directly as the chunk file. No decompression or recompression.
 6. **Build and write `zarr.json`** — construct Zarr V3 metadata from the parsed header, map fields per §4, write to store root.
 
-### 5.2 nrrdz → NRRD
+### 5.2 duckn → NRRD
 ```
-Input:  path/to/file.nrrdz/
+Input:  path/to/file.duckn/
 Output: path/to/file.nrrd
 Steps:
 
@@ -186,14 +186,14 @@ AspectIdentical?NotesArray valuesYesByte-for-byte in the data blobdtype / type s
 6. pynrrd-Compatible Read API
 6.1 Functions
 pythondef read(zarr_path: str, index_order: str = 'C') -> Tuple[np.ndarray, OrderedDict]:
-    """Read an .nrrdz store, returning (data, header) like pynrrd.read().
+    """Read a .duckn store, returning (data, header) like pynrrd.read().
     
     Default is C-order (unlike pynrrd's F-order default), since this is
     new code targeting modern Python conventions.
     """
 
 def read_header(zarr_path: str) -> OrderedDict:
-    """Read header from an .nrrdz store without loading data."""
+    """Read header from a .duckn store without loading data."""
 6.2 Header reconstruction
 The pynrrd-compatible header dict is reconstructed from zarr.json:
 pynrrd header keySource'type'legacy.nrrd_type, or reverse-mapped from Zarr data_type'dimension'len(shape)'sizes'np.array(shape)'encoding'legacy.encoding, or inferred from codec pipeline'endian''little' (always)'space'nrrd.space'space origin'np.array(nrrd.space_origin)'space directions'Matrix from axes[i].space_direction; NaN rows for non-spatial axes'kinds'[axes[i].kind for ...]'centerings'[axes[i].centering for ...]'units'[axes[i].unit for ...] if any present'thicknesses'[axes[i].thickness for ...] if any present'measurement frame'np.array(nrrd.measurement_frame)'sample units'nrrd.sample_units'space units'legacy.space_units'labels'dimension_names from Zarr metadata'content'legacy.content'old min'legacy.old_min'old max'legacy.old_max
@@ -267,10 +267,10 @@ json{
 Phase 1: Core converter (this pass)
 Deliverables: A Python package with four public functions:
 
-nrrd_to_nrrdz(nrrd_path, nrrdz_path=None) -> str — Convert NRRD file to nrrdz store. Returns output path.
-nrrdz_to_nrrd(nrrdz_path, nrrd_path=None) -> str — Convert nrrdz store to NRRD file. Returns output path.
-read(nrrdz_path, index_order='C') -> (np.ndarray, OrderedDict) — pynrrd-compatible read.
-read_header(nrrdz_path) -> OrderedDict — Header-only read.
+nrrd_to_duckn(nrrd_path, duckn_path=None) -> str — Convert NRRD file to duckn store. Returns output path.
+duckn_to_nrrd(duckn_path, nrrd_path=None) -> str — Convert duckn store to NRRD file. Returns output path.
+read(duckn_path, index_order='C') -> (np.ndarray, OrderedDict) — pynrrd-compatible read.
+read_header(duckn_path) -> OrderedDict — Header-only read.
 
 Dependencies: pynrrd, zarr (>= 3.0), numpy.
 Test matrix:
@@ -278,9 +278,9 @@ Test caseValidatesRound-trip raw-encoded scalar volumeBasic pipeline, raw codecR
 Phase 2: bzip2 support
 Add bzip2 via numcodecs.zarr3.BZ2. Evaluate interoperability implications — this codec is not in the Zarr V3 spec proper.
 Phase 3: Extension round-tripping
-Selectively promote legacy.keyvalues entries into structured NRRD-Zarr extensions for known patterns (DWMRI gradients, .seg.nrrd metadata, DICOM key/value pairs).
+Selectively promote legacy.keyvalues entries into structured duckn extensions for known patterns (DWMRI gradients, .seg.nrrd metadata, DICOM key/value pairs).
 Phase 4: Write from scratch
-Add write(nrrdz_path, data, header, index_order='C') for creating .nrrdz stores directly without an intermediate .nrrd file.
+Add write(duckn_path, data, header, index_order='C') for creating .duckn stores directly without an intermediate .nrrd file.
 Phase 5: Detached header support
 Support .nhdr + separate data file as input.
 

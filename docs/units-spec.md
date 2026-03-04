@@ -1,13 +1,13 @@
-# Units Specification for NRRD-Zarr
+# Units Specification for duckn
 
 **Status:** Draft
-**Applies to:** NRRD-Zarr convention version 1.1+
+**Applies to:** duckn convention version 1.1+
 
 ---
 
 ## 1. Purpose
 
-The NRRD-Zarr convention has two unit fields: per-axis `unit` and top-level `sample_units`. In version 1.0, both accept only bare strings (`"mm"`, `"s"`, `"HU"`). This works for the common cases in medical imaging, where the vocabulary is small and universally understood, but it has limitations:
+The duckn convention has two unit fields: per-axis `unit` and top-level `sample_units`. In version 1.0, both accept only bare strings (`"mm"`, `"s"`, `"HU"`). This works for the common cases in medical imaging, where the vocabulary is small and universally understood, but it has limitations:
 
 - A bare string is ambiguous. Is `"ms"` milliseconds or something else? Is `"um"` micrometers or a typo?
 - There is no machine-readable way to validate dimensional consistency (e.g., verifying that all spatial axes use compatible length units).
@@ -122,7 +122,7 @@ When the unit system is not specified and a reader needs to guess, UCUM is the s
 | Specification | https://www.unidata.ucar.edu/software/udunits/ |
 | Adopted by | CF Conventions (NetCDF), Earth system sciences |
 
-UDUNITS is the de facto standard in climate science, atmospheric science, and oceanography. It is the unit system used by the CF (Climate and Forecast) metadata conventions for NetCDF. If NRRD-Zarr is used for geospatial, environmental, or Earth observation data, UDUNITS codes will be natural for those communities.
+UDUNITS is the de facto standard in climate science, atmospheric science, and oceanography. It is the unit system used by the CF (Climate and Forecast) metadata conventions for NetCDF. If duckn is used for geospatial, environmental, or Earth observation data, UDUNITS codes will be natural for those communities.
 
 UDUNITS has a different grammar from UCUM. Examples:
 
@@ -422,11 +422,11 @@ A geospatial temperature field using CF-convention-style units:
 
 **Why `symbol` is separate from `code`.** In many unit systems, the canonical code differs from the conventional display symbol. UCUM uses `u` for micro (not `µ`), brackets for annotation units (`[hnsf'U]`), and caret for exponents (`m2` not `m²`). QUDT uses PascalCase local names (`MilliM`). The `symbol` field is what you show to humans; the `code` field is what you give to a parser. Collapsing these into one field forces a choice between human readability and machine parseability.
 
-**Why UCUM is recommended rather than required.** UCUM is the right default for medical imaging and clinical data, where it is already mandated by DICOM and FHIR. But the NRRD-Zarr convention is not exclusively a medical imaging format. Climate scientists use UDUNITS. Engineering and linked-data workflows use QUDT. Mandating UCUM would force these communities to translate their native unit vocabulary, adding friction for no gain. The recommendation is: use UCUM unless your domain has a better-established alternative.
+**Why UCUM is recommended rather than required.** UCUM is the right default for medical imaging and clinical data, where it is already mandated by DICOM and FHIR. But the duckn convention is not exclusively a medical imaging format. Climate scientists use UDUNITS. Engineering and linked-data workflows use QUDT. Mandating UCUM would force these communities to translate their native unit vocabulary, adding friction for no gain. The recommendation is: use UCUM unless your domain has a better-established alternative.
 
 **Why the `unit_systems` registry is optional.** For the overwhelmingly common case — UCUM units on a medical image — the registry adds verbosity without information. Everyone knows what UCUM is. The registry becomes useful when the file uses a less well-known system, a specific version matters for reproducibility, or multiple systems are used in the same file. Making it optional keeps the common case concise while supporting the uncommon case.
 
-**Why bare strings remain first-class.** The vast majority of NRRD-Zarr files will be medical images with millimeter spatial axes. Writing `"unit": "mm"` is clear, concise, and understood by every reader. Requiring `{"symbol": "mm", "scheme": "UCUM", "code": "mm"}` for this case would be a tax on simplicity with no practical benefit. Structured units are for when the extra precision matters — compound units, unusual quantities, cross-domain interoperability, or automated unit validation.
+**Why bare strings remain first-class.** The vast majority of duckn files will be medical images with millimeter spatial axes. Writing `"unit": "mm"` is clear, concise, and understood by every reader. Requiring `{"symbol": "mm", "scheme": "UCUM", "code": "mm"}` for this case would be a tax on simplicity with no practical benefit. Structured units are for when the extra precision matters — compound units, unusual quantities, cross-domain interoperability, or automated unit validation.
 
 **Relationship to the segmentation extension's `terminologies`.** The `unit_systems` registry follows the same pattern: a top-level object registering the coding systems used elsewhere in the file, with keys that match the `scheme` values in data objects. This is deliberate. The convention already has a precedent for "declare your vocabularies in a registry, reference them by short key." Units follow the same design.
 

@@ -1,4 +1,4 @@
-# Segmentation Extension for NRRD-Zarr
+# Segmentation Extension for duckn
 
 **Extension name:** `segmentation`
 **Version:** 1.0
@@ -8,7 +8,7 @@
 
 ## 1. Purpose
 
-This document defines the `segmentation` extension for the NRRD-Zarr convention. It replaces the `.seg.nrrd` metadata encoding — where segment properties were flattened into NRRD key/value pairs with `SegmentN_` prefixes and `~^|&`-delimited substructure — with a clean JSON representation.
+This document defines the `segmentation` extension for the duckn convention. It replaces the `.seg.nrrd` metadata encoding — where segment properties were flattened into NRRD key/value pairs with `SegmentN_` prefixes and `~^|&`-delimited substructure — with a clean JSON representation.
 
 The data model is the same. What changes is the encoding: structured objects replace string packing.
 
@@ -23,7 +23,7 @@ A segment can carry multiple designations from different ontologies simultaneous
 
 ## 2. Data Layout
 
-A segmentation is a Zarr array whose voxel values encode segment membership. For binary labelmaps, these are integer labels; for fractional labelmaps, they are continuous values. Spatial embedding (origin, directions, space) is described by the NRRD-Zarr convention fields as usual.
+A segmentation is a Zarr array whose voxel values encode segment membership. For binary labelmaps, these are integer labels; for fractional labelmaps, they are continuous values. Spatial embedding (origin, directions, space) is described by the duckn convention fields as usual.
 
 ### Non-overlapping segments
 
@@ -415,7 +415,7 @@ When converting to DICOM SEG, a writer should use the `dicom` block if present. 
 
 ### 4.4 Absence and Omission
 
-Following the NRRD-Zarr convention's "absent means unknown" principle:
+Following the duckn convention's "absent means unknown" principle:
 
 - If a segment has no designations, omit the `designations` field. Do not include an empty array.
 - If a segment has no DICOM classification, omit the `dicom` field. Do not include an empty object.
@@ -428,7 +428,7 @@ Following the NRRD-Zarr convention's "absent means unknown" principle:
 
 - The length of `segments` is independent of any axis size — multiple segments can share a label value across layers, and multiple segments can exist in the same layer with different label values.
 - Where a segment specifies a `layer`, there must be a `list`-kind axis in the array, and the `layer` value must be a valid index into that axis.
-- Where a `kind` constraint requires a specific axis size (from the NRRD-Zarr convention), the corresponding `shape` element must match.
+- Where a `kind` constraint requires a specific axis size (from the duckn convention), the corresponding `shape` element must match.
 - `scheme` values used in `designations` or `dicom` coded entries should have a corresponding key in the top-level `terminologies` registry. This is not strictly required (the file is valid without it), but it provides provenance and discoverability.
 - When `label_value` is a single integer: it must be unique within a given layer. Two segments in the same layer with the same scalar `label_value` would be ambiguous.
 - When `label_value` is an array: no two segments in the same layer may have identical `label_value` arrays (compared as sets). Individual label values *may* appear in multiple segments' arrays — this is the mechanism for representing overlapping structures. However, the overall set of label values for each segment must be distinct.
@@ -439,7 +439,7 @@ Following the NRRD-Zarr convention's "absent means unknown" principle:
 
 ## 6. Mapping from `.seg.nrrd`
 
-| `.seg.nrrd` field | NRRD-Zarr segmentation extension field |
+| `.seg.nrrd` field | duckn segmentation extension field |
 |---|---|
 | `Segmentation_MasterRepresentation` / `Segmentation_SourceRepresentation` | `source_representation` |
 | `Segmentation_ContainedRepresentationNames` | `contained_representations` (array) |
@@ -915,7 +915,7 @@ A segmentation with the smallest useful metadata:
 
 **Why `name` is independent of designations.** Users name segments in ways that don't match any ontology: "suspect lesion #3", "Bob's left kidney", "ROI for dosimetry". The display name is a user-facing label that should be preserved exactly as given. Ontology codes are for interoperability; `name` is for the human in the loop. The optional `display` dict allows the display name itself to be multilingual — for example, a segmentation created in a German-speaking hospital can carry both the German and English segment names, independent of what any ontology calls the structure.
 
-**Why `color` is here at all.** Color is technically a display hint, which the NRRD-Zarr convention generally avoids. However, segment color is so universally used in segmentation workflows — and so tightly bound to segment identity — that omitting it would force every application to reinvent a color-assignment scheme. It is a recommended display color, not a mandate.
+**Why `color` is here at all.** Color is technically a display hint, which the duckn convention generally avoids. However, segment color is so universally used in segmentation workflows — and so tightly bound to segment identity — that omitting it would force every application to reinvent a color-assignment scheme. It is a recommended display color, not a mandate.
 
 **Why `segments` is an array, not a map.** Segments have a natural ordering (the order in which they were created or appear in the UI). An array preserves this. The `id` field provides stable lookup when ordering is irrelevant.
 

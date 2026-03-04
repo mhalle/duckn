@@ -1,4 +1,4 @@
-# NIfTI Provenance Extension for NRRD-Zarr
+# NIfTI Provenance Extension for duckn
 
 **Extension name:** `nifti`
 **Version:** 1.0
@@ -8,7 +8,7 @@
 
 ## 1. Purpose
 
-This document defines the `nifti` extension for the NRRD-Zarr convention. It preserves NIfTI-1 and NIfTI-2 header fields that cannot be losslessly derived from NRRD-Zarr convention fields or Zarr array parameters, enabling round-trip conversion between NIfTI and NRRD-Zarr without metadata loss.
+This document defines the `nifti` extension for the duckn convention. It preserves NIfTI-1 and NIfTI-2 header fields that cannot be losslessly derived from duckn convention fields or Zarr array parameters, enabling round-trip conversion between NIfTI and duckn without metadata loss.
 
 The extension carries only what would otherwise be lost. NIfTI's spatial information — the sform affine, its coordinate space code, voxel sizes, and spatial units — decomposes losslessly into the convention's `space`, `space_origin`, per-axis `space_direction`, and per-axis `unit` fields. NIfTI's data type and dimensions map to Zarr's `data_type` and `shape`. The value rescaling slope and intercept map to the convention's `value_transforms`. None of these appear here.
 
@@ -16,9 +16,9 @@ What remains is acquisition metadata (slice timing, phase/frequency encoding), s
 
 ---
 
-## 2. Relationship to NRRD-Zarr Convention Fields
+## 2. Relationship to duckn Convention Fields
 
-The following table shows which NIfTI header fields are already captured by Zarr or the NRRD-Zarr convention and are therefore excluded from this extension.
+The following table shows which NIfTI header fields are already captured by Zarr or the duckn convention and are therefore excluded from this extension.
 
 | NIfTI field | Captured by | Notes |
 |---|---|---|
@@ -42,7 +42,7 @@ Fields not in this table and not in §4 (e.g., `glmin`, `glmax`, `data_type` as 
 
 ## 3. Sform Decomposition
 
-The NIfTI sform is a 4×4 affine matrix. The NRRD-Zarr convention decomposes it completely:
+The NIfTI sform is a 4×4 affine matrix. The duckn convention decomposes it completely:
 
 - **Translation column** (elements `[0:3, 3]`) → `space_origin`
 - **Rotation-scaling columns** (columns 0–2 of the 3×3 submatrix) → `axes[i].space_direction` for each spatial axis
@@ -227,9 +227,9 @@ The convention's top-level `intent` field captures the broad purpose (e.g., `"st
 
 Omit the entire field when `intent_code` is 0 (NIFTI_INTENT_NONE).
 
-**Mapping between NIfTI intent codes and NRRD-Zarr `intent`:**
+**Mapping between NIfTI intent codes and duckn `intent`:**
 
-| NIfTI intent code | NIfTI name | NRRD-Zarr `intent` | Parameters |
+| NIfTI intent code | NIfTI name | duckn `intent` | Parameters |
 |---|---|---|---|
 | 2 (CORREL) | Correlation | `"statistical-map"` | `p1` = DOF |
 | 3 (TTEST) | T-statistic | `"statistical-map"` | `p1` = DOF |
@@ -305,7 +305,7 @@ Display calibration range — the suggested minimum and maximum values for displ
 
 These are display hints, not data extremes. `cal_min` = `cal_max` = 0 means "no calibration specified" — omit the field in that case. Omit individual sub-fields that are zero when the other is non-zero.
 
-The NRRD-Zarr convention deliberately excludes display hints. This field exists solely for NIfTI round-trip fidelity.
+The duckn convention deliberately excludes display hints. This field exists solely for NIfTI round-trip fidelity.
 
 #### `descrip`
 
@@ -743,11 +743,11 @@ The "absent means unknown" principle applies: omit keys whose values are at thei
 
 **Why `tags` is a separate namespace.** Without the `tags` object, NIfTI header field names like `intent`, `cal`, and `descrip` share the same JSON namespace as extension metadata like `version` and `nifti_version`. As the extension evolves, the collision risk grows. The `tags` object makes the boundary explicit: everything inside is a NIfTI header field, everything outside is about the extension. This follows the same pattern as the DICOM extension's `tags` namespace.
 
-**Why preserve `sform_code` separately.** The NRRD-Zarr convention's `space` field captures the geometric orientation (RAS) but not the semantic distinction between "aligned to scanner," "aligned to atlas," and "in MNI coordinates." For neuroimaging workflows where the distinction between native space and standard space matters, the raw code is needed.
+**Why preserve `sform_code` separately.** The duckn convention's `space` field captures the geometric orientation (RAS) but not the semantic distinction between "aligned to scanner," "aligned to atlas," and "in MNI coordinates." For neuroimaging workflows where the distinction between native space and standard space matters, the raw code is needed.
 
 **Why the convention fields are authoritative and the original matrices are legacy.** The convention's `space_origin` and `space_direction` fields are the single source of truth for spatial information. On write-back, both the sform and qform are reconstructed from these fields. The original 4×4 matrices are stored as `legacy_sform` and `legacy_qform` for provenance — they let a human or tool inspect what the source NIfTI file contained, but they do not participate in the spatial mapping. This avoids the classic NIfTI problem of two conflicting affines: once the data enters the convention, there is one spatial mapping, period. The legacy matrices and the two code integers are enough to understand the original file's intent without perpetuating the ambiguity.
 
-**Why `cal_min`/`cal_max` are included despite being display hints.** The NRRD-Zarr convention excludes display preferences by design. However, this extension's purpose is round-trip fidelity, not convention purity. Display calibration values are part of the NIfTI header and are used by viewers (FSLeyes, MRIcron, FreeSurfer) to set initial window/level. Dropping them changes the user experience on round-trip.
+**Why `cal_min`/`cal_max` are included despite being display hints.** The duckn convention excludes display preferences by design. However, this extension's purpose is round-trip fidelity, not convention purity. Display calibration values are part of the NIfTI header and are used by viewers (FSLeyes, MRIcron, FreeSurfer) to set initial window/level. Dropping them changes the user experience on round-trip.
 
 **Why `dim_info` uses 1-based indexing.** This matches NIfTI's own convention, where dimension indices in `dim_info` are 1-based (1 = first spatial dimension). A converter must account for the axis ordering difference between NIfTI and Zarr when mapping these indices.
 

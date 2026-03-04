@@ -1,4 +1,4 @@
-# NRRD-Zarr: Axis-Rich Array Metadata Convention for Zarr V3
+# duckn: Axis-Rich Array Metadata Convention for Zarr V3
 
 **Status:** Draft proposal
 **Version:** 0.1
@@ -6,6 +6,8 @@
 ---
 
 ## 1. Purpose
+
+duckn builds on the semantic richness of the NRRD file format — a nested convention layered inside Zarr V3, hence the name (short for "turducken"). The convention uses the `"nrrd"` attribute key to credit these NRRD semantics and preserve compatibility with earlier drafts.
 
 This document defines a metadata convention for Zarr V3 arrays that encodes the semantic richness of the NRRD file format — structured axis metadata, spatial orientation, measurement frames — within Zarr's standard `attributes` mechanism.
 

@@ -2,7 +2,7 @@
 
 ## Problem
 
-nrrdz has two code paths for NRRD-to-Zarr conversion:
+duckn has two code paths for NRRD-to-Zarr conversion:
 
 | Path | Axis order in Zarr | Shape |
 |------|--------------------|-------|
@@ -15,7 +15,7 @@ The zero-copy path adopted `fastest_first` order to match NRRD's native memory l
 
 The internal parameter `axis_order` uses two values:
 
-- **`slowest_first`** — the slowest-varying axis is first in the shape. This is the default for nrrdz stores and the convention used by NumPy, Zarr, and most array libraries.
+- **`slowest_first`** — the slowest-varying axis is first in the shape. This is the default for duckn stores and the convention used by NumPy, Zarr, and most array libraries.
 - **`fastest_first`** — the fastest-varying axis is first in the shape. This is the native axis order used by NRRD files.
 
 These names describe the memory layout directly without referencing programming languages.
@@ -100,4 +100,4 @@ axis_order: Literal["slowest_first", "fastest_first"] = "slowest_first"
 
 ## Result
 
-After this change, every nrrdz store uses `slowest_first` axis order regardless of how it was created. `read_nrrdz()`, `arr[:]`, and all metadata queries return data in consistent axis order. The zero-copy round-trip remains bit-exact — the raw bytes are never decompressed or recompressed.
+After this change, every duckn store uses `slowest_first` axis order regardless of how it was created. `read_nrrdz()`, `arr[:]`, and all metadata queries return data in consistent axis order. The zero-copy round-trip remains bit-exact — the raw bytes are never decompressed or recompressed.
