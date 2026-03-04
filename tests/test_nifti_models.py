@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from nrrdz.models import NiftiExtension, NiftiTags
+from duckn.models import NiftiExtension, NiftiTags
 
 
 # -- §7.1 Structural MRI (simple case) ----------------------------------------

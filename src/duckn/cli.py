@@ -1,4 +1,4 @@
-"""Click CLI for nrrdz."""
+"""Click CLI for duckn."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from .models import NrrdMetadata
 
 @click.group()
 def cli() -> None:
-    """nrrdz: convert between NRRD and nrrdz Zarr v3 stores."""
+    """duckn: convert between NRRD and duckn Zarr v3 stores."""
 
 
 @cli.command("to-zarr")
@@ -41,7 +41,7 @@ def to_zarr(
     overwrite: bool,
     zerocopy: bool,
 ) -> None:
-    """Convert an NRRD file to a nrrdz Zarr v3 store."""
+    """Convert an NRRD file to a duckn Zarr v3 store."""
     if zerocopy:
         nrrd_to_zarr_zerocopy(
             input_path,
@@ -83,7 +83,7 @@ def to_nrrd(
     overwrite: bool,
     zerocopy: bool,
 ) -> None:
-    """Convert a nrrdz Zarr v3 store to an NRRD file."""
+    """Convert a duckn Zarr v3 store to an NRRD file."""
     if zerocopy:
         zarr_to_nrrd_zerocopy(
             input_path,
@@ -131,7 +131,7 @@ def roundtrip(
     output: str | None,
     zerocopy: bool,
 ) -> None:
-    """Round-trip an NRRD file through nrrdz Zarr and back.
+    """Round-trip an NRRD file through duckn Zarr and back.
 
     Converts INPUT_PATH to a temporary Zarr store, then back to NRRD.
     Compares data and headers and reports any differences.
@@ -144,7 +144,7 @@ def roundtrip(
     from .convert import _NRRD_SPEC_FIELDS
 
     input_p = Path(input_path)
-    tmp = Path(tempfile.mkdtemp(prefix="nrrdz_rt_"))
+    tmp = Path(tempfile.mkdtemp(prefix="duckn_rt_"))
     zarr_path = tmp / (input_p.stem + ".zarr")
     rt_path = tmp / (input_p.stem + "_rt.nrrd")
 
@@ -291,7 +291,7 @@ def from_nifti(
     level: int,
     overwrite: bool,
 ) -> None:
-    """Convert a NIfTI file to a nrrdz Zarr v3 store.
+    """Convert a NIfTI file to a duckn Zarr v3 store.
 
     INPUT_PATH is a .nii or .nii.gz file.
     """
@@ -321,7 +321,7 @@ def to_nifti_cmd(
     output_path: str,
     overwrite: bool,
 ) -> None:
-    """Convert a nrrdz Zarr v3 store to a NIfTI file.
+    """Convert a duckn Zarr v3 store to a NIfTI file.
 
     OUTPUT_PATH should end in .nii or .nii.gz.
     """
@@ -363,7 +363,7 @@ def from_dicom(
     anonymized: bool | None,
     no_tags: bool,
 ) -> None:
-    """Convert DICOM file(s) to a nrrdz Zarr v3 store.
+    """Convert DICOM file(s) to a duckn Zarr v3 store.
 
     INPUT_PATH is a directory of single-frame .dcm files (one series)
     or a single enhanced multi-frame DICOM file.
@@ -390,7 +390,7 @@ def from_dicom(
 @cli.command("info")
 @click.argument("input_path", type=click.Path(exists=True))
 def info(input_path: str) -> None:
-    """Print nrrdz metadata as JSON."""
+    """Print duckn metadata as JSON."""
     path = Path(input_path)
 
     if path.suffix == ".nrrd" or path.suffix == ".nhdr":
@@ -422,10 +422,10 @@ def info(input_path: str) -> None:
 @cli.command("header")
 @click.argument("input_path", type=click.Path(exists=True))
 def header(input_path: str) -> None:
-    """Print the validated nrrdz metadata as JSON.
+    """Print the validated duckn metadata as JSON.
 
-    Accepts either an NRRD file or a nrrdz Zarr store. For NRRD files the
-    header is converted to nrrdz metadata first. Output is the model
+    Accepts either an NRRD file or a duckn Zarr store. For NRRD files the
+    header is converted to duckn metadata first. Output is the model
     serialized with exclude_none (absent-means-unknown convention).
     """
     path = Path(input_path)
@@ -439,8 +439,8 @@ def header(input_path: str) -> None:
         ndim = int(hdr["dimension"])
         meta, _dim_names, _extra = _header_to_metadata(hdr, ndim)
     else:
-        from .zarr_io import read_nrrdz_metadata
+        from .zarr_io import read_duckn_metadata
 
-        meta = read_nrrdz_metadata(input_path)
+        meta = read_duckn_metadata(input_path)
 
     click.echo(json.dumps(meta.model_dump(exclude_none=True), indent=2))

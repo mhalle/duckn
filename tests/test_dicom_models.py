@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from nrrdz.models import DicomExtension
+from duckn.models import DicomExtension
 
 
 # -- §8.1 CT Volume (anonymized, full acquisition metadata) -------------------

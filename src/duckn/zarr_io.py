@@ -52,8 +52,8 @@ def open_store(path: str | Path, *, mode: str = "r", overwrite: bool = False):
         yield zarr.storage.LocalStore(str(path))
 
 
-def read_nrrdz(path: str | Path) -> tuple[np.ndarray, NrrdMetadata]:
-    """Read a nrrdz Zarr v3 array and return (data, metadata).
+def read_duckn(path: str | Path) -> tuple[np.ndarray, NrrdMetadata]:
+    """Read a duckn Zarr v3 array and return (data, metadata).
 
     Returns
     -------
@@ -68,7 +68,7 @@ def read_nrrdz(path: str | Path) -> tuple[np.ndarray, NrrdMetadata]:
     return data, meta
 
 
-def read_nrrdz_metadata(path: str | Path) -> NrrdMetadata:
+def read_duckn_metadata(path: str | Path) -> NrrdMetadata:
     """Read only the nrrd metadata from a Zarr store (no data loaded)."""
     with open_store(path, mode="r") as store:
         arr = zarr.open_array(store, mode="r")

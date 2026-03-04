@@ -1,4 +1,4 @@
-"""Tests for NIfTI to nrrdz Zarr conversion.
+"""Tests for NIfTI to duckn Zarr conversion.
 
 Uses synthetic nibabel NIfTI images — no real .nii files needed for unit tests.
 """
@@ -15,8 +15,8 @@ nibabel = pytest.importorskip("nibabel")
 
 import nibabel as nib
 
-from nrrdz.models import NiftiExtension, NrrdMetadata
-from nrrdz.nifti_convert import nifti_to_zarr, zarr_to_nifti
+from duckn.models import NiftiExtension, NrrdMetadata
+from duckn.nifti_convert import nifti_to_zarr, zarr_to_nifti
 
 
 # ---------------------------------------------------------------------------
@@ -611,7 +611,7 @@ class TestFreshExport:
     def test_no_nifti_extension(self, tmp_path):
         """Zarr with no NIfTI extension → valid NIfTI from convention fields."""
         import zarr
-        from nrrdz.models import AxisKind, AxisMetadata, Centering, NrrdMetadata, SpaceName
+        from duckn.models import AxisKind, AxisMetadata, Centering, NrrdMetadata, SpaceName
 
         data = np.arange(8 * 8 * 4, dtype=np.int16).reshape(8, 8, 4)
         affine = np.diag([2.0, 2.0, 3.0, 1.0])
@@ -659,7 +659,7 @@ class TestFreshExport:
     def test_scanner_xyz_maps_to_code_1(self, tmp_path):
         """scanner-xyz space → sform_code=1."""
         import zarr
-        from nrrdz.models import AxisKind, AxisMetadata, Centering, NrrdMetadata, SpaceName
+        from duckn.models import AxisKind, AxisMetadata, Centering, NrrdMetadata, SpaceName
 
         data = np.zeros((4, 4, 4), dtype=np.float32)
         meta = NrrdMetadata(
@@ -698,7 +698,7 @@ class TestFreshExport:
     def test_oblique_affine_from_convention(self, tmp_path):
         """Oblique space_directions → correct oblique sform."""
         import zarr
-        from nrrdz.models import AxisKind, AxisMetadata, Centering, NrrdMetadata, SpaceName
+        from duckn.models import AxisKind, AxisMetadata, Centering, NrrdMetadata, SpaceName
 
         data = np.zeros((4, 4, 4), dtype=np.float32)
         meta = NrrdMetadata(
@@ -740,7 +740,7 @@ class TestFreshExport:
     def test_value_transforms_from_convention(self, tmp_path):
         """value_transforms without NIfTI extension → scl_slope/scl_inter."""
         import zarr
-        from nrrdz.models import (
+        from duckn.models import (
             AxisKind, AxisMetadata, Centering, NrrdMetadata, SpaceName, ValueTransform,
         )
 
@@ -787,7 +787,7 @@ class TestFreshExport:
     def test_dicom_sourced_zarr_to_nifti(self, tmp_path):
         """Zarr from DICOM conversion (LPS, no NIfTI extension) → NIfTI."""
         import zarr
-        from nrrdz.models import AxisKind, AxisMetadata, Centering, NrrdMetadata, SpaceName
+        from duckn.models import AxisKind, AxisMetadata, Centering, NrrdMetadata, SpaceName
 
         data = np.zeros((30, 512, 512), dtype=np.int16)
         meta = NrrdMetadata(

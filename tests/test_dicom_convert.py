@@ -1,4 +1,4 @@
-"""Tests for DICOM to nrrdz Zarr conversion.
+"""Tests for DICOM to duckn Zarr conversion.
 
 Uses synthetic pydicom Dataset objects — no real .dcm files needed for unit tests.
 """
@@ -17,7 +17,7 @@ from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 from pydicom.sequence import Sequence as DicomSequence
 from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
-from nrrdz.dicom_convert import (
+from duckn.dicom_convert import (
     DicomGeometry,
     _build_nrrd_metadata,
     _compute_geometry,
@@ -29,7 +29,7 @@ from nrrdz.dicom_convert import (
     _sort_datasets,
     dicom_to_zarr,
 )
-from nrrdz.models import NrrdMetadata, SpaceName
+from duckn.models import NrrdMetadata, SpaceName
 
 
 # ---------------------------------------------------------------------------

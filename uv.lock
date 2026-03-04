@@ -45,6 +45,38 @@ wheels = [
 ]
 
 [[package]]
+name = "duckn"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "click" },
+    { name = "numpy" },
+    { name = "pydantic" },
+    { name = "pynrrd" },
+    { name = "zarr" },
+]
+
+[package.optional-dependencies]
+dicom = [
+    { name = "pydicom" },
+]
+nifti = [
+    { name = "nibabel" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "click", specifier = ">=8.0" },
+    { name = "nibabel", marker = "extra == 'nifti'", specifier = ">=4.0" },
+    { name = "numpy", specifier = ">=1.24" },
+    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pydicom", marker = "extra == 'dicom'", specifier = ">=2.4" },
+    { name = "pynrrd", specifier = ">=1.0" },
+    { name = "zarr", specifier = ">=3.0" },
+]
+provides-extras = ["dicom", "nifti"]
+
+[[package]]
 name = "google-crc32c"
 version = "1.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -75,32 +107,28 @@ wheels = [
 ]
 
 [[package]]
-name = "nrrdz"
-version = "0.1.0"
-source = { editable = "." }
+name = "importlib-resources"
+version = "6.5.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/cf/8c/f834fbf984f691b4f7ff60f50b514cc3de5cc08abfc3295564dd89c5e2e7/importlib_resources-6.5.2.tar.gz", hash = "sha256:185f87adef5bcc288449d98fb4fba07cea78bc036455dd44c5fc4a2fe78fed2c", size = 44693, upload-time = "2025-01-03T18:51:56.698Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a4/ed/1f1afb2e9e7f38a545d628f864d562a5ae64fe6f7a10e28ffb9b185b4e89/importlib_resources-6.5.2-py3-none-any.whl", hash = "sha256:789cfdc3ed28c78b67a06acb8126751ced69a3d5f79c095a98298cd8a760ccec", size = 37461, upload-time = "2025-01-03T18:51:54.306Z" },
+]
+
+[[package]]
+name = "nibabel"
+version = "5.4.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "click" },
+    { name = "importlib-resources", marker = "python_full_version < '3.12'" },
     { name = "numpy" },
-    { name = "pydantic" },
-    { name = "pynrrd" },
-    { name = "zarr" },
+    { name = "packaging" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
-
-[package.optional-dependencies]
-dicom = [
-    { name = "pydicom" },
+sdist = { url = "https://files.pythonhosted.org/packages/9a/9c/1b474d75c589ffc7081470bc034717513ded2cd8838cb3eb1fc1f128a8ba/nibabel-5.4.0.tar.gz", hash = "sha256:2087118d37e2cfcca3bbdb9b60d93460aa3b0cb984962a264be4798dbf90f333", size = 4646448, upload-time = "2026-03-02T18:12:41.757Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/61/20/a655b1ee047c27cff1b63a714136b78580ee0e048e1e04769f13d2e61bbf/nibabel-5.4.0-py3-none-any.whl", hash = "sha256:1a386d27343952b980be0415d2629ebba41b50ac40abfc457a17f2fed79edfbe", size = 3300995, upload-time = "2026-03-02T18:12:39.461Z" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "click", specifier = ">=8.0" },
-    { name = "numpy", specifier = ">=1.24" },
-    { name = "pydantic", specifier = ">=2.0" },
-    { name = "pydicom", marker = "extra == 'dicom'", specifier = ">=2.4" },
-    { name = "pynrrd", specifier = ">=1.0" },
-    { name = "zarr", specifier = ">=3.0" },
-]
-provides-extras = ["dicom"]
 
 [[package]]
 name = "numcodecs"

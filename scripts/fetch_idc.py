@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch a DICOM series from IDC via DICOMweb and convert to nrrdz Zarr.
+"""Fetch a DICOM series from IDC via DICOMweb and convert to duckn Zarr.
 
 Usage:
     python scripts/fetch_idc.py <SeriesInstanceUID> <output.zarr>
@@ -145,7 +145,7 @@ def _extract_dicom_part(resp: requests.Response) -> bytes:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Fetch IDC DICOM series → nrrdz Zarr")
+    parser = argparse.ArgumentParser(description="Fetch IDC DICOM series → duckn Zarr")
     parser.add_argument("series_uid", help="SeriesInstanceUID")
     parser.add_argument("output", help="Output .zarr path")
     parser.add_argument("--keep-dicom", action="store_true", help="Keep downloaded .dcm files")
@@ -154,7 +154,7 @@ def main():
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
-    from nrrdz.dicom_convert import dicom_to_zarr
+    from duckn.dicom_convert import dicom_to_zarr
 
     # Resolve series
     print(f"Looking up series {args.series_uid}...")

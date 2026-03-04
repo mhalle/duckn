@@ -1,4 +1,4 @@
-"""Bidirectional conversion between NRRD files and nrrdz Zarr stores."""
+"""Bidirectional conversion between NRRD files and duckn Zarr stores."""
 
 from __future__ import annotations
 
@@ -565,7 +565,7 @@ def _write_nrrd_header(
 
 
 # ---------------------------------------------------------------------------
-# NRRD -> nrrdz Zarr
+# NRRD -> duckn Zarr
 # ---------------------------------------------------------------------------
 
 
@@ -578,7 +578,7 @@ def nrrd_to_zarr(
     level: int = 3,
     overwrite: bool = False,
 ) -> None:
-    """Convert an NRRD file to a nrrdz Zarr v3 store.
+    """Convert an NRRD file to a duckn Zarr v3 store.
 
     Uses pynrrd to decompress and zarr to recompress the data.
     Per-axis fields are stored in C order (slowest-first).
@@ -621,7 +621,7 @@ def nrrd_to_zarr(
 
 
 # ---------------------------------------------------------------------------
-# nrrdz Zarr -> NRRD
+# duckn Zarr -> NRRD
 # ---------------------------------------------------------------------------
 
 
@@ -632,7 +632,7 @@ def zarr_to_nrrd(
     encoding: str = "gzip",
     overwrite: bool = False,
 ) -> None:
-    """Convert a nrrdz Zarr v3 store to an NRRD file.
+    """Convert a duckn Zarr v3 store to an NRRD file.
 
     Reads the data through zarr and writes via pynrrd.
     Expects per-axis fields in C order (slowest-first).
@@ -669,7 +669,7 @@ def zarr_to_nrrd(
 
 
 # ---------------------------------------------------------------------------
-# Zero-copy: NRRD -> nrrdz Zarr
+# Zero-copy: NRRD -> duckn Zarr
 # ---------------------------------------------------------------------------
 
 
@@ -679,7 +679,7 @@ def nrrd_to_zarr_zerocopy(
     *,
     overwrite: bool = False,
 ) -> None:
-    """Convert an NRRD file to a nrrdz Zarr v3 store using zero-copy.
+    """Convert an NRRD file to a duckn Zarr v3 store using zero-copy.
 
     Copies the compressed (or raw) data blob directly from the NRRD file
     into the Zarr chunk file without decompression or recompression.
@@ -802,7 +802,7 @@ def nrrd_to_zarr_zerocopy(
 
 
 # ---------------------------------------------------------------------------
-# Zero-copy: nrrdz Zarr -> NRRD
+# Zero-copy: duckn Zarr -> NRRD
 # ---------------------------------------------------------------------------
 
 
@@ -812,7 +812,7 @@ def zarr_to_nrrd_zerocopy(
     *,
     overwrite: bool = False,
 ) -> None:
-    """Convert a nrrdz Zarr v3 store to an NRRD file using zero-copy.
+    """Convert a duckn Zarr v3 store to an NRRD file using zero-copy.
 
     Copies the chunk data blob directly into the NRRD file without
     decompression or recompression.  Requires the store to have been

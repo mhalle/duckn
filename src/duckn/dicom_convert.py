@@ -1,9 +1,9 @@
-"""DICOM to nrrdz Zarr v3 conversion.
+"""DICOM to duckn Zarr v3 conversion.
 
 Reads DICOM files (single-frame series directory or enhanced multi-frame)
-and writes a nrrdz Zarr v3 store with the DICOM provenance extension.
+and writes a duckn Zarr v3 store with the DICOM provenance extension.
 
-Requires pydicom: install with ``pip install nrrdz[dicom]``.
+Requires pydicom: install with ``pip install duckn[dicom]``.
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ def _require_pydicom() -> None:
     except ImportError:
         raise ImportError(
             "pydicom is required for DICOM conversion. "
-            "Install it with: pip install nrrdz[dicom]"
+            "Install it with: pip install duckn[dicom]"
         ) from None
 
 
@@ -677,7 +677,7 @@ def dicom_to_zarr(
     anonymized: bool | None = None,
     tags: bool = True,
 ) -> None:
-    """Convert DICOM file(s) to a nrrdz Zarr v3 store.
+    """Convert DICOM file(s) to a duckn Zarr v3 store.
 
     Parameters
     ----------

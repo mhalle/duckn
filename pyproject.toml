@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "nrrdz"
+name = "duckn"
 version = "0.1.0"
-description = "NRRD-Zarr: axis-rich array metadata convention for Zarr V3"
+description = "duckn: axis-rich array metadata convention for Zarr V3"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0",
@@ -20,7 +20,7 @@ dicom = ["pydicom>=2.4"]
 nifti = ["nibabel>=4.0"]
 
 [project.scripts]
-nrrdz = "nrrdz.cli:cli"
+duckn = "duckn.cli:cli"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/nrrdz"]
+packages = ["src/duckn"]

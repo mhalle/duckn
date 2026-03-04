@@ -1,9 +1,9 @@
-"""Bidirectional conversion between NIfTI files and nrrdz Zarr stores.
+"""Bidirectional conversion between NIfTI files and duckn Zarr stores.
 
-Reads NIfTI-1/NIfTI-2 files via nibabel and writes nrrdz Zarr v3 stores
+Reads NIfTI-1/NIfTI-2 files via nibabel and writes duckn Zarr v3 stores
 with the NIfTI provenance extension. Also converts back from Zarr to NIfTI.
 
-Requires nibabel: install with ``pip install nrrdz[nifti]``.
+Requires nibabel: install with ``pip install duckn[nifti]``.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def _require_nibabel() -> None:
     except ImportError:
         raise ImportError(
             "nibabel is required for NIfTI conversion. "
-            "Install it with: pip install nrrdz[nifti]"
+            "Install it with: pip install duckn[nifti]"
         ) from None
 
 
@@ -125,7 +125,7 @@ def nifti_to_zarr(
     level: int = 3,
     overwrite: bool = False,
 ) -> None:
-    """Convert a NIfTI file to a nrrdz Zarr v3 store.
+    """Convert a NIfTI file to a duckn Zarr v3 store.
 
     Parameters
     ----------
@@ -403,7 +403,7 @@ def zarr_to_nifti(
     *,
     overwrite: bool = False,
 ) -> None:
-    """Convert a nrrdz Zarr v3 store to a NIfTI file.
+    """Convert a duckn Zarr v3 store to a NIfTI file.
 
     Parameters
     ----------

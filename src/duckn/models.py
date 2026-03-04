@@ -1,4 +1,4 @@
-"""Pydantic v2 models for the nrrdz metadata convention."""
+"""Pydantic v2 models for the duckn metadata convention."""
 
 from __future__ import annotations
 

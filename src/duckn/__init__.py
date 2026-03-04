@@ -1,4 +1,4 @@
-"""nrrdz: NRRD-Zarr axis-rich array metadata convention for Zarr V3."""
+"""duckn: axis-rich array metadata convention for Zarr V3."""
 
 from .convert import nrrd_to_zarr, nrrd_to_zarr_zerocopy, zarr_to_nrrd, zarr_to_nrrd_zerocopy
 from .models import (
@@ -32,7 +32,7 @@ from .models import (
     ValueTransform,
     validate_against_shape,
 )
-from .zarr_io import get_zarr_attrs, open_store, read_nrrdz, read_nrrdz_metadata
+from .zarr_io import get_zarr_attrs, open_store, read_duckn, read_duckn_metadata
 
 __all__ = [  # noqa: RUF022
     "AxisKind",
@@ -69,8 +69,8 @@ __all__ = [  # noqa: RUF022
     "nrrd_to_zarr",
     "nrrd_to_zarr_zerocopy",
     "open_store",
-    "read_nrrdz",
-    "read_nrrdz_metadata",
+    "read_duckn",
+    "read_duckn_metadata",
     "validate_against_shape",
     "zarr_to_nifti",
     "zarr_to_nrrd",

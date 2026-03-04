@@ -8,9 +8,9 @@ import numpy as np
 import pytest
 import zarr
 
-from nrrdz.convert import nrrd_to_zarr, nrrd_to_zarr_zerocopy, zarr_to_nrrd, zarr_to_nrrd_zerocopy
-from nrrdz.models import NrrdMetadata
-from nrrdz.zarr_io import get_zarr_attrs, open_store, read_nrrdz, read_nrrdz_metadata
+from duckn.convert import nrrd_to_zarr, nrrd_to_zarr_zerocopy, zarr_to_nrrd, zarr_to_nrrd_zerocopy
+from duckn.models import NrrdMetadata
+from duckn.zarr_io import get_zarr_attrs, open_store, read_duckn, read_duckn_metadata
 
 
 # ---------------------------------------------------------------------------
@@ -40,7 +40,7 @@ def _write_simple_nrrd(path: Path) -> np.ndarray:
 
 class TestNrrdZipRoundTrip:
     def test_nrrd_to_zip_and_read(self, tmp_path):
-        """NRRD -> .zarr.zip, then read back with read_nrrdz()."""
+        """NRRD -> .zarr.zip, then read back with read_duckn()."""
         nrrd_path = tmp_path / "test.nrrd"
         data = _write_simple_nrrd(nrrd_path)
 
@@ -51,20 +51,20 @@ class TestNrrdZipRoundTrip:
         assert zip_path.is_file()
 
         # Read back
-        out_data, meta = read_nrrdz(zip_path)
+        out_data, meta = read_duckn(zip_path)
         np.testing.assert_array_equal(out_data, data)
         assert meta.space == "right-anterior-superior"
         np.testing.assert_allclose(meta.space_origin, [10.0, 20.0, 30.0])
 
-    def test_read_nrrdz_metadata_from_zip(self, tmp_path):
-        """read_nrrdz_metadata works with .zarr.zip."""
+    def test_read_duckn_metadata_from_zip(self, tmp_path):
+        """read_duckn_metadata works with .zarr.zip."""
         nrrd_path = tmp_path / "test.nrrd"
         _write_simple_nrrd(nrrd_path)
 
         zip_path = tmp_path / "test.zarr.zip"
         nrrd_to_zarr(nrrd_path, zip_path)
 
-        meta = read_nrrdz_metadata(zip_path)
+        meta = read_duckn_metadata(zip_path)
         assert meta.space == "right-anterior-superior"
         assert meta.axes is not None
         assert len(meta.axes) == 3
@@ -123,7 +123,7 @@ class TestZipOverwrite:
         nrrd_to_zarr(nrrd_path, zip_path)
         nrrd_to_zarr(nrrd_path, zip_path, overwrite=True)
 
-        out_data, _ = read_nrrdz(zip_path)
+        out_data, _ = read_duckn(zip_path)
         np.testing.assert_array_equal(out_data, data)
 
 
@@ -138,7 +138,7 @@ class TestNiftiZipRoundTrip:
         nibabel = pytest.importorskip("nibabel")
         import nibabel as nib
 
-        from nrrdz.nifti_convert import nifti_to_zarr, zarr_to_nifti
+        from duckn.nifti_convert import nifti_to_zarr, zarr_to_nifti
 
         # Create a synthetic NIfTI
         data = np.arange(64, dtype=np.int16).reshape(4, 4, 4)
@@ -156,7 +156,7 @@ class TestNiftiZipRoundTrip:
         assert zip_path.exists()
 
         # Read back metadata
-        meta = read_nrrdz_metadata(zip_path)
+        meta = read_duckn_metadata(zip_path)
         assert meta.space is not None
 
         # zip -> NIfTI
@@ -194,7 +194,7 @@ class TestOpenStore:
         nrrd_to_zarr(nrrd_path, zip_path)
 
         # If the store was properly closed, we can open and read it
-        out_data, meta = read_nrrdz(zip_path)
+        out_data, meta = read_duckn(zip_path)
         assert out_data.shape == (2, 3, 4)
 
 
@@ -204,8 +204,8 @@ class TestOpenStore:
 
 
 class TestZeroCopyAxisOrder:
-    def test_zerocopy_read_nrrdz_matches_normal(self, tmp_path):
-        """Zero-copy store read via read_nrrdz() matches normal path data."""
+    def test_zerocopy_read_duckn_matches_normal(self, tmp_path):
+        """Zero-copy store read via read_duckn() matches normal path data."""
         nrrd_path = tmp_path / "test.nrrd"
         data = _write_simple_nrrd(nrrd_path)
 
@@ -215,8 +215,8 @@ class TestZeroCopyAxisOrder:
         zerocopy_path = tmp_path / "zerocopy.zarr"
         nrrd_to_zarr_zerocopy(nrrd_path, zerocopy_path)
 
-        normal_data, normal_meta = read_nrrdz(normal_path)
-        zc_data, zc_meta = read_nrrdz(zerocopy_path)
+        normal_data, normal_meta = read_duckn(normal_path)
+        zc_data, zc_meta = read_duckn(zerocopy_path)
 
         # Data must match when read through arr[:]
         np.testing.assert_array_equal(zc_data, normal_data)
@@ -278,7 +278,7 @@ class TestInfoOnZip:
         """nrrdz info works on .zarr.zip files."""
         from click.testing import CliRunner
 
-        from nrrdz.cli import cli
+        from duckn.cli import cli
 
         nrrd_path = tmp_path / "test.nrrd"
         _write_simple_nrrd(nrrd_path)

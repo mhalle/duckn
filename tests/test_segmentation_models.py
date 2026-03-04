@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from nrrdz.models import SegmentationExtension
+from duckn.models import SegmentationExtension
 
 
 # -- §7.1 Non-Overlapping Labelmap with Multi-Ontology Designations ----------

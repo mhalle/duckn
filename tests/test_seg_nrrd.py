@@ -7,8 +7,8 @@ from pathlib import Path
 import nrrd
 import pytest
 
-from nrrdz.models import SegmentationExtension
-from nrrdz.seg_nrrd import parse_seg_keyvalues, serialize_seg_extension
+from duckn.models import SegmentationExtension
+from duckn.seg_nrrd import parse_seg_keyvalues, serialize_seg_extension
 
 DATA_DIR = Path(__file__).parent / "data" / "real-world"
 

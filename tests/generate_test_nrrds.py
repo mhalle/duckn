@@ -18,8 +18,8 @@ from typing import Any
 import numpy as np
 import nrrd
 
-from nrrdz import nrrd_to_zarr, nrrd_to_zarr_zerocopy, zarr_to_nrrd, zarr_to_nrrd_zerocopy
-from nrrdz.convert import _NRRD_SPEC_FIELDS, _nrrd_dtype
+from duckn import nrrd_to_zarr, nrrd_to_zarr_zerocopy, zarr_to_nrrd, zarr_to_nrrd_zerocopy
+from duckn.convert import _NRRD_SPEC_FIELDS, _nrrd_dtype
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
 REAL_WORLD_DIR = DATA_DIR / "real-world"
@@ -368,16 +368,16 @@ def round_trip_zerocopy(orig_path: Path, tmp: Path) -> Path:
 
 
 def round_trip_headers(orig_path: Path, tmp: Path) -> dict[str, Any]:
-    """Header-only round trip: parse NRRD header, build nrrdz metadata,
+    """Header-only round trip: parse NRRD header, build duckn metadata,
     reconstruct NRRD header — without touching data.  Returns the
     reconstructed header dict."""
-    from nrrdz.convert import (
+    from duckn.convert import (
         _NRRD_SPEC_FIELDS,
         _clean_float_list,
         _is_nan_vector,
         _transpose_matrix,
     )
-    from nrrdz.models import NrrdMetadata, SpaceName, _SPACE_ABBREVS, _SPACE_DIMENSIONS
+    from duckn.models import NrrdMetadata, SpaceName, _SPACE_ABBREVS, _SPACE_DIMENSIONS
 
     header = nrrd.read_header(str(orig_path))
     ndim = header["dimension"]
@@ -415,7 +415,7 @@ def round_trip_headers(orig_path: Path, tmp: Path) -> dict[str, Any]:
             if not _is_nan_vector(space_dirs[i]):
                 spatial_axis_indices.append(i)
 
-    from nrrdz.models import AxisMetadata
+    from duckn.models import AxisMetadata
     axes = []
     spatial_count = 0
     for i in range(ndim):
@@ -666,7 +666,7 @@ def main() -> int:
     headers_only = "--headers-only" in sys.argv
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = Path(tempfile.mkdtemp(prefix="nrrdz_test_"))
+    tmp = Path(tempfile.mkdtemp(prefix="duckn_test_"))
 
     passed = 0
     failed = 0

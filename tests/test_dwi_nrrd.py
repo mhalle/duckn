@@ -7,8 +7,8 @@ from pathlib import Path
 import nrrd
 import pytest
 
-from nrrdz.models import DwmriAxisExtension, DwmriExtension
-from nrrdz.dwi_nrrd import parse_dwi_keyvalues, serialize_dwi_extension
+from duckn.models import DwmriAxisExtension, DwmriExtension
+from duckn.dwi_nrrd import parse_dwi_keyvalues, serialize_dwi_extension
 
 DATA_DIR = Path(__file__).parent / "data" / "real-world"
 DWI_NRRD = DATA_DIR / "dwi.nrrd"
@@ -346,7 +346,7 @@ def test_model_validates():
 @pytest.mark.skipif(not DWI_NRRD.exists(), reason="dwi.nrrd not found")
 def test_nrrd_to_zarr_dwi_metadata(tmp_path):
     """nrrd_to_zarr should produce extensions.dwmri and per-axis gradients."""
-    from nrrdz.convert import nrrd_to_zarr
+    from duckn.convert import nrrd_to_zarr
     import zarr
 
     zarr_path = tmp_path / "dwi.zarr"
@@ -385,7 +385,7 @@ def test_nrrd_to_zarr_dwi_metadata(tmp_path):
 @pytest.mark.skipif(not DWI_NRRD.exists(), reason="dwi.nrrd not found")
 def test_nrrd_zarr_nrrd_round_trip(tmp_path):
     """nrrd -> zarr -> nrrd should preserve DWMRI key/value pairs."""
-    from nrrdz.convert import nrrd_to_zarr, zarr_to_nrrd
+    from duckn.convert import nrrd_to_zarr, zarr_to_nrrd
 
     zarr_path = tmp_path / "dwi.zarr"
     out_nrrd = tmp_path / "dwi_out.nrrd"
