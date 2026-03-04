@@ -65,6 +65,8 @@ This convention defines the content of a single JSON object stored under the key
 
 A Zarr reader that does not recognize the `"nrrd"` key simply ignores it. The array remains fully accessible.
 
+> **Note on the attribute key name.** The key `"nrrd"` is retained to credit the NRRD file format whose semantics this convention inherits, and to maintain compatibility with existing stores. If a future Zarr extension registry requires reverse-domain namespacing, the key may migrate to `"org.duckn.nrrd"` in a future major version. Readers should treat both keys as equivalent if encountered.
+
 ---
 
 ## 3. Convention Fields
