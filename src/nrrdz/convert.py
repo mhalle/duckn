@@ -299,7 +299,7 @@ def _header_to_metadata(
         extensions: dict[str, Any] = {}
         seg_ext, remaining = parse_seg_keyvalues(keyvalues)
         if seg_ext is not None:
-            extensions["segmentation"] = seg_ext.model_dump(exclude_none=True)
+            extensions["slicerseg"] = seg_ext.model_dump(exclude_none=True)
 
         dwi_ext, dwi_axis_ext, remaining = parse_dwi_keyvalues(remaining)
         if dwi_ext is not None:
@@ -457,8 +457,8 @@ def _metadata_to_header(
 
     # --- Restore NRRD key/value pairs ---
     if meta.extensions:
-        if "segmentation" in meta.extensions:
-            seg_ext = SegmentationExtension(**meta.extensions["segmentation"])
+        if "slicerseg" in meta.extensions:
+            seg_ext = SegmentationExtension(**meta.extensions["slicerseg"])
             for k, v in serialize_seg_extension(seg_ext).items():
                 header[k] = v
         if "dwmri" in meta.extensions:

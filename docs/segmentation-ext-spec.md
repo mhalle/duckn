@@ -1,6 +1,6 @@
 # Segmentation Extension for duckn
 
-**Extension name:** `segmentation`
+**Extension name:** `slicerseg`
 **Version:** 1.0
 **Status:** Draft
 
@@ -8,7 +8,7 @@
 
 ## 1. Purpose
 
-This document defines the `segmentation` extension for the duckn convention. It replaces the `.seg.nrrd` metadata encoding — where segment properties were flattened into NRRD key/value pairs with `SegmentN_` prefixes and `~^|&`-delimited substructure — with a clean JSON representation.
+This document defines the `slicerseg` extension for the duckn convention. It replaces the `.seg.nrrd` metadata encoding — where segment properties were flattened into NRRD key/value pairs with `SegmentN_` prefixes and `~^|&`-delimited substructure — with a clean JSON representation.
 
 The data model is the same. What changes is the encoding: structured objects replace string packing.
 
@@ -53,7 +53,7 @@ Unlike `.seg.nrrd`, a Zarr store does not require non-empty data. An empty segme
 
 ## 3. Extension Fields
 
-The `segmentation` extension is declared at the top level of the `"nrrd"` object's `"extensions"` and carries the array-wide segmentation metadata. Per-segment metadata lives in a `"segments"` array within this object.
+The `slicerseg` extension is declared at the top level of the `"nrrd"` object's `"extensions"` and carries the array-wide segmentation metadata. Per-segment metadata lives in a `"segments"` array within this object.
 
 ### 3.1 Top-Level Extension Fields
 
@@ -439,7 +439,7 @@ Following the duckn convention's "absent means unknown" principle:
 
 ## 6. Mapping from `.seg.nrrd`
 
-| `.seg.nrrd` field | duckn segmentation extension field |
+| `.seg.nrrd` field | duckn `slicerseg` extension field |
 |---|---|
 | `Segmentation_MasterRepresentation` / `Segmentation_SourceRepresentation` | `source_representation` |
 | `Segmentation_ContainedRepresentationNames` | `contained_representations` (array) |
@@ -520,7 +520,7 @@ A 256×256×128 binary labelmap segmentation with two segments in LPS space. Eac
         }
       ],
       "extensions": {
-        "segmentation": {
+        "slicerseg": {
           "version": "1.0",
           "source_representation": "binary-labelmap",
           "contained_representations": ["binary-labelmap", "closed-surface"],
@@ -709,7 +709,7 @@ A segmentation with two overlapping segments, requiring two layers:
         }
       ],
       "extensions": {
-        "segmentation": {
+        "slicerseg": {
           "version": "1.0",
           "source_representation": "binary-labelmap",
           "segments": [
@@ -798,7 +798,7 @@ The same tumor-liver overlap from §7.2, represented as label unions in a single
         }
       ],
       "extensions": {
-        "segmentation": {
+        "slicerseg": {
           "version": "1.0",
           "source_representation": "binary-labelmap",
           "segments": [
@@ -844,7 +844,7 @@ A segmentation from a research pipeline using only FMA codes, no DICOM classific
 
 ```json
 "extensions": {
-  "segmentation": {
+  "slicerseg": {
     "version": "1.0",
     "source_representation": "binary-labelmap",
     "terminologies": {
@@ -893,7 +893,7 @@ A segmentation with the smallest useful metadata:
 
 ```json
 "extensions": {
-  "segmentation": {
+  "slicerseg": {
     "version": "1.0",
     "segments": [
       { "id": "S1", "label_value": 1, "name": "Liver" },

@@ -167,7 +167,7 @@ When using a custom scheme, the `code` must be meaningful within that system, an
 
 ## 4. The `unit_systems` Registry
 
-When structured unit objects are used, the top-level `"nrrd"` object may include a `unit_systems` field that registers the unit systems referenced in the file. This follows the same pattern as the segmentation extension's `terminologies` registry.
+When structured unit objects are used, the top-level `"nrrd"` object may include a `unit_systems` field that registers the unit systems referenced in the file. This follows the same pattern as the slicerseg extension's `terminologies` registry.
 
 ```json
 "unit_systems": {
@@ -428,6 +428,6 @@ A geospatial temperature field using CF-convention-style units:
 
 **Why bare strings remain first-class.** The vast majority of duckn files will be medical images with millimeter spatial axes. Writing `"unit": "mm"` is clear, concise, and understood by every reader. Requiring `{"symbol": "mm", "scheme": "UCUM", "code": "mm"}` for this case would be a tax on simplicity with no practical benefit. Structured units are for when the extra precision matters — compound units, unusual quantities, cross-domain interoperability, or automated unit validation.
 
-**Relationship to the segmentation extension's `terminologies`.** The `unit_systems` registry follows the same pattern: a top-level object registering the coding systems used elsewhere in the file, with keys that match the `scheme` values in data objects. This is deliberate. The convention already has a precedent for "declare your vocabularies in a registry, reference them by short key." Units follow the same design.
+**Relationship to the slicerseg extension's `terminologies`.** The `unit_systems` registry follows the same pattern: a top-level object registering the coding systems used elsewhere in the file, with keys that match the `scheme` values in data objects. This is deliberate. The convention already has a precedent for "declare your vocabularies in a registry, reference them by short key." Units follow the same design.
 
 **Version compatibility.** This specification is additive — it introduces a new valid form for existing fields and a new optional top-level field. A version 1.0 reader encountering a unit object where it expects a string should either extract the `symbol` field as a fallback or treat the unit as unknown. A version 1.1+ reader handles both forms. This qualifies as a minor version increment.

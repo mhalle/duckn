@@ -51,7 +51,7 @@ These use space coordinates or domain-specific values, not axis indices:
 - **measurement_frame** — matrix in space coordinates
 - **space** name — e.g., `right-anterior-superior`
 - **value_transforms** — slope/intercept
-- **Top-level extensions** — nifti, dicom, segmentation, dwmri, legacy
+- **Top-level extensions** — nifti, dicom, slicerseg, dwmri, legacy
 
 ## Implementation
 

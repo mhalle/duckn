@@ -20,7 +20,7 @@ Detached headers (.nhdr + separate data file).
 ascii, hex, text encodings.
 Big-endian source data (reject with a clear error).
 bzip2 encoding (defer — requires non-standard Zarr codec via numcodecs).
-duckn extensions (DICOM, segmentation, DWMRI, etc.).
+duckn extensions (DICOM, slicerseg, DWMRI, etc.).
 Multi-array Zarr groups / multi-resolution pyramids.
 Writing .duckn from scratch (only conversion from existing .nrrd).
 
