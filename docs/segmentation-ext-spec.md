@@ -907,6 +907,8 @@ A segmentation with the smallest useful metadata:
 
 ## 8. Design Notes
 
+**Why `slicerseg`, not `segmentation`.** This extension's data model — layers, `source_representation`, `contained_representations`, `conversion_parameters`, `reference_extent_offset` — is inherited directly from 3D Slicer's `.seg.nrrd` format. Naming it `slicerseg` makes that lineage explicit and reserves the generic `segmentation` (or `seg`) namespace for a future platform-neutral extension that retains the broadly useful parts (segments, designations, label unions, DICOM classification) without the Slicer-specific fields.
+
 **Why `designations` is an array.** A segment is a real anatomical or pathological entity. Different communities identify that entity using different coding systems. A kidney is SNOMED 64033007, FMA 7203, TA2 5765, and NCIt C12415 — simultaneously. An array of coded entries makes this multiplicity explicit and avoids privileging any single ontology. The first entry is the preferred identification.
 
 **Why `dicom` is separate from `designations`.** The DICOM Segmentation IOD has a specific classification structure (category → type → modifier, plus anatomic region → modifier) that doesn't map cleanly to a flat list of codes. It is a *classification* pattern, not just an *identification* pattern. Mixing the two would either force the DICOM structure onto non-DICOM use cases (as `.seg.nrrd` does) or lose the structure needed for DICOM round-tripping. Keeping them separate means each concern has the right shape.
