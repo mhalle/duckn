@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>duckn reader demo</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; }
+    #container { width: 100vw; height: 100vh; display: flex; flex-direction: column; }
+    #header {
+      padding: 12px 20px; background: #16213e;
+      display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+      border-bottom: 1px solid #0f3460;
+    }
+    #header h1 { font-size: 18px; font-weight: 600; }
+    #header label { font-size: 14px; }
+    #header input[type="text"] { background: #0f3460; border: 1px solid #533483; color: #e0e0e0;
+      padding: 6px 10px; border-radius: 4px; font-size: 14px; width: 400px; }
+    #header button {
+      background: #533483; border: none; color: white; padding: 6px 16px;
+      border-radius: 4px; cursor: pointer; font-size: 14px;
+    }
+    #header button:hover { background: #6a42a0; }
+    #header select { background: #0f3460; border: 1px solid #533483; color: #e0e0e0;
+      padding: 6px 8px; border-radius: 4px; font-size: 14px; }
+    #main { flex: 1; display: flex; overflow: hidden; }
+    #sidebar {
+      width: 380px; min-width: 380px; padding: 16px;
+      background: #16213e; overflow-y: auto; font-size: 13px;
+      font-family: 'SF Mono', 'Fira Code', monospace; line-height: 1.7;
+      border-right: 1px solid #0f3460;
+    }
+    #sidebar h2 { font-size: 14px; margin: 12px 0 6px; color: #a0a0c0; font-weight: 600; }
+    #sidebar h2:first-child { margin-top: 0; }
+    #sidebar .val { color: #7ec8e3; }
+    #sidebar .label { color: #999; }
+    #sidebar .matrix-row { padding-left: 16px; }
+    #viewport { flex: 1; position: relative; }
+    #status {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      font-size: 16px; z-index: 10;
+    }
+    .error { color: #ff6b6b; }
+  </style>
+</head>
+<body>
+<div id="container">
+  <div id="header">
+    <h1>duckn reader</h1>
+    <label for="url-input">Store URL:</label>
+    <input id="url-input" type="text" value="/demo.zarr" />
+    <button id="load-btn">Load</button>
+    <select id="view-mode">
+      <option value="volume">Volume</option>
+      <option value="slice">Slice</option>
+    </select>
+    <span style="color:#555">|</span>
+    <label for="nifti-file">NIfTI:</label>
+    <input id="nifti-file" type="file" accept=".nii,.nii.gz" style="width:200px" />
+    <span style="color:#555">|</span>
+    <label for="colormap">Colormap:</label>
+    <select id="colormap">
+      <option value="grayscale">Grayscale</option>
+      <option value="viridis">Viridis</option>
+      <option value="plasma">Plasma</option>
+      <option value="inferno">Inferno</option>
+      <option value="magma">Magma</option>
+      <option value="coolwarm">Cool-Warm</option>
+      <option value="rainbow">Rainbow</option>
+      <option value="ct-bone">CT Bone</option>
+      <option value="ct-soft">CT Soft Tissue</option>
+    </select>
+  </div>
+  <div id="main">
+    <div id="sidebar"></div>
+    <div id="viewport">
+      <div id="status">Enter a duckn store URL and click Load</div>
+    </div>
+  </div>
+</div>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "duckn-reader-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "python generate.py",
+    "dev": "python generate.py && vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@kitware/vtk.js": "^32.9.0",
+    "@zarrita/storage": "^0.1.4",
+    "nifti-reader-js": "^0.8.0",
+    "zarrita": "^0.6"
+  },
+  "devDependencies": {
+    "vite": "^6"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@duckn/reader",
+  "version": "0.1.0",
+  "description": "vtk.js reader for duckn Zarr V3 stores",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./ducknToImageData": "./src/ducknToImageData.js"
+  },
+  "dependencies": {
+    "zarrita": "^0.6",
+    "@zarrita/storage": "^0.1.4"
+  },
+  "peerDependencies": {
+    "@kitware/vtk.js": ">=30.0.0"
+  },
+  "license": "MIT"
+}

@@ -166,14 +166,49 @@ def nifti_to_zarr(
     ndim = data.ndim
     shape = data.shape
 
-    # --- Affine decomposition ---
-    # Prefer sform; fall back to qform
+    # --- Affine decomposition (ITK strategy) ---
+    # Spacing always comes from pixdim. The affine provides direction
+    # and origin only. When sform column magnitudes disagree with pixdim,
+    # fall back to qform for direction.
     sform_code = int(hdr["sform_code"])
     qform_code = int(hdr["qform_code"])
 
+    pixdims = np.array(hdr.get_zooms()[:min(3, ndim)], dtype=np.float64)
+
     if sform_code > 0:
-        affine = img.get_sform()
-        active_code = sform_code
+        sform = img.get_sform()
+        # Check if sform column magnitudes match pixdim (within 1% tolerance)
+        sform_mags = np.array([np.linalg.norm(sform[:3, i]) for i in range(min(3, ndim))])
+        pixdims_safe = np.where(pixdims > 0, pixdims, 1.0)
+        if np.allclose(sform_mags, pixdims_safe, rtol=0.01):
+            # sform is consistent — use it directly
+            affine = sform
+            active_code = sform_code
+        elif qform_code > 0:
+            # sform spacing disagrees with pixdim — fall back to qform
+            import warnings
+            warnings.warn(
+                f"NIfTI sform column magnitudes {sform_mags.tolist()} disagree with "
+                f"pixdim {pixdims.tolist()}; using qform for orientation",
+                stacklevel=2,
+            )
+            affine = img.get_qform()
+            active_code = qform_code
+        else:
+            # No qform available — use sform but with pixdim spacing
+            import warnings
+            warnings.warn(
+                f"NIfTI sform column magnitudes {sform_mags.tolist()} disagree with "
+                f"pixdim {pixdims.tolist()}; rescaling sform columns to match pixdim",
+                stacklevel=2,
+            )
+            affine = sform.copy()
+            for i in range(min(3, ndim)):
+                col = affine[:3, i]
+                mag = np.linalg.norm(col)
+                if mag > 0:
+                    affine[:3, i] = col / mag * pixdims_safe[i]
+            active_code = sform_code
     elif qform_code > 0:
         affine = img.get_qform()
         active_code = qform_code
@@ -184,10 +219,17 @@ def nifti_to_zarr(
     # space_origin = translation column
     space_origin = affine[:3, 3].tolist()
 
-    # space_directions = rotation-scaling columns
+    # space_directions: direction from affine, magnitude from pixdim
     space_directions: list[list[float]] = []
     for i in range(min(3, ndim)):
-        space_directions.append(affine[:3, i].tolist())
+        col = affine[:3, i]
+        mag = np.linalg.norm(col)
+        if mag > 0:
+            direction = col / mag
+        else:
+            direction = np.zeros(3)
+            direction[i] = 1.0
+        space_directions.append((direction * pixdims[i]).tolist())
 
     # Map code → space name
     space = _SFORM_CODE_TO_SPACE.get(active_code, SpaceName.RIGHT_ANTERIOR_SUPERIOR)
@@ -401,6 +443,7 @@ def zarr_to_nifti(
     input_path: str | Path,
     output_path: str | Path,
     *,
+    restore_transforms: bool = False,
     overwrite: bool = False,
 ) -> None:
     """Convert a duckn Zarr v3 store to a NIfTI file.
@@ -409,6 +452,10 @@ def zarr_to_nifti(
     ----------
     input_path : path to the input Zarr store
     output_path : path for the output .nii or .nii.gz file
+    restore_transforms : if True, restore the original sform/qform from
+        the NIfTI legacy extension (if present) instead of using the
+        corrected affine reconstructed from space_directions.  Use this
+        when you need the original standard-space mapping (e.g. MNI).
     overwrite : if True, overwrite existing file
     """
     _require_nibabel()
@@ -437,6 +484,7 @@ def zarr_to_nifti(
         tags = nifti_ext.tags
 
     # --- Reconstruct affine from convention fields ---
+    # This affine has the corrected spacing (from pixdim on ingest)
     affine = np.eye(4)
     if meta.axes:
         for i, ax in enumerate(meta.axes[:3]):
@@ -445,12 +493,16 @@ def zarr_to_nifti(
     if meta.space_origin:
         affine[:3, 3] = meta.space_origin
 
-    # --- Determine sform_code ---
+    # --- Determine codes ---
     sform_code = 2  # default: aligned_anat
     if tags and tags.sform_code is not None:
         sform_code = tags.sform_code
     elif meta.space:
         sform_code = _SPACE_TO_SFORM_CODE.get(meta.space.value, 2)
+
+    qform_code_out = sform_code
+    if tags and tags.qform_code is not None:
+        qform_code_out = tags.qform_code
 
     # --- Choose NIfTI version ---
     use_nifti2 = False
@@ -464,18 +516,36 @@ def zarr_to_nifti(
     img = ImageClass(data, affine)
     hdr = img.header
 
-    # --- Set sform ---
-    hdr.set_sform(affine, code=sform_code)
+    # --- Set sform and qform ---
+    legacy_tags = (
+        nifti_ext.legacy.tags
+        if nifti_ext and nifti_ext.legacy and nifti_ext.legacy.tags
+        else None
+    )
 
-    # --- Set qform ---
-    # Use legacy qform matrix if available; otherwise reconstruct from convention fields
-    qform_code_out = sform_code
-    if tags and tags.qform_code is not None:
-        qform_code_out = tags.qform_code
-    qform_affine = affine
-    if nifti_ext and nifti_ext.legacy and nifti_ext.legacy.tags and nifti_ext.legacy.tags.qform:
-        qform_affine = np.array(nifti_ext.legacy.tags.qform)
-    hdr.set_qform(qform_affine, code=qform_code_out)
+    if restore_transforms and legacy_tags:
+        # Restore original matrices verbatim from legacy extension.
+        # We must also update pixdim to match the sform, because nibabel's
+        # save() rewrites sform from pixdim + the image affine otherwise.
+        sform_affine = (
+            np.array(legacy_tags.sform) if legacy_tags.sform is not None else affine
+        )
+        qform_affine = (
+            np.array(legacy_tags.qform) if legacy_tags.qform is not None else affine
+        )
+        # Set pixdim from sform column magnitudes so nibabel doesn't clobber it
+        for i in range(min(3, ndim)):
+            hdr["pixdim"][i + 1] = np.linalg.norm(sform_affine[:3, i])
+        # Recreate image with the sform affine so nibabel's internals are consistent
+        img = ImageClass(data, sform_affine)
+        hdr = img.header
+        hdr.set_sform(sform_affine, code=sform_code)
+        hdr.set_qform(qform_affine, code=qform_code_out)
+    else:
+        # Default: both get the reconstructed affine (pixdim-based spacing).
+        # Original transforms are preserved in nifti.legacy.tags for reference.
+        hdr.set_sform(affine, code=sform_code)
+        hdr.set_qform(affine, code=qform_code_out)
 
     # --- Restore value_transforms → scl_slope/scl_inter ---
     if meta.value_transforms:
