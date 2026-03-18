@@ -793,7 +793,7 @@ def _load_multiframe(
         if measures_seq and len(measures_seq) > 0:
             shared_ps = [float(x) for x in measures_seq[0].PixelSpacing]
 
-    # Build per-frame pseudo-datasets for sorting
+    # Build per-frame info
     frame_infos: list[dict[str, Any]] = []
     for i, frame_group in enumerate(per_frame):
         info: dict[str, Any] = {"_frame_index": i}
@@ -824,6 +824,21 @@ def _load_multiframe(
         elif shared_ps is not None:
             info["PixelSpacing"] = shared_ps
 
+        # Temporal position — try multiple sources
+        temporal_pos = None
+        fc_seq = getattr(frame_group, "FrameContentSequence", None)
+        if fc_seq and len(fc_seq) > 0:
+            fc = fc_seq[0]
+            tpi = getattr(fc, "TemporalPositionIndex", None)
+            if tpi is not None:
+                temporal_pos = int(tpi)
+            elif hasattr(fc, "DimensionIndexValues"):
+                # DimensionIndexValues: first index is often temporal
+                div = list(fc.DimensionIndexValues)
+                if len(div) >= 2:
+                    temporal_pos = int(div[0])
+        info["temporal_pos"] = temporal_pos
+
         frame_infos.append(info)
 
     # Validate we have positions
@@ -832,7 +847,7 @@ def _load_multiframe(
     if not any("ImageOrientationPatient" in fi for fi in frame_infos):
         raise ValueError("No ImageOrientationPatient found in frame or shared groups")
 
-    # Sort frames by slice position
+    # Compute slice normal
     iop = frame_infos[0]["ImageOrientationPatient"]
     row_cos = np.array(iop[:3])
     col_cos = np.array(iop[3:])
@@ -841,45 +856,123 @@ def _load_multiframe(
     if nrm > 0:
         slice_normal = slice_normal / nrm
 
-    frame_infos.sort(
-        key=lambda fi: float(np.dot(np.array(fi["ImagePositionPatient"]), slice_normal))
-    )
-    sorted_indices = [fi["_frame_index"] for fi in frame_infos]
-
-    # Build a pseudo-dataset for geometry computation
-    # Use first sorted frame's geometry
-    fi0 = frame_infos[0]
-
-    # Create a lightweight object that _compute_geometry can use
-    class _FrameProxy:
-        pass
-
-    proxies = []
-    pixel_array_full = ds.pixel_array  # shape: (n_frames, Rows, Columns)
-
+    # Project positions onto slice normal
     for fi in frame_infos:
-        proxy = _FrameProxy()
-        proxy.ImageOrientationPatient = fi["ImageOrientationPatient"]  # type: ignore[attr-defined]
-        proxy.PixelSpacing = fi["PixelSpacing"]  # type: ignore[attr-defined]
-        proxy.ImagePositionPatient = fi["ImagePositionPatient"]  # type: ignore[attr-defined]
-        proxy.Rows = ds.Rows  # type: ignore[attr-defined]
-        proxy.Columns = ds.Columns  # type: ignore[attr-defined]
-        proxy.BitsAllocated = ds.BitsAllocated  # type: ignore[attr-defined]
-        proxy.PixelRepresentation = ds.PixelRepresentation  # type: ignore[attr-defined]
-        # Provide a pixel_array property that returns the correct frame
-        idx = fi["_frame_index"]
-        proxy.pixel_array = pixel_array_full[idx]  # type: ignore[attr-defined]
-        if "SliceThickness" in fi:
-            proxy.SliceThickness = fi["SliceThickness"]  # type: ignore[attr-defined]
-        elif hasattr(ds, "SliceThickness"):
-            proxy.SliceThickness = ds.SliceThickness  # type: ignore[attr-defined]
-        for attr in ("RescaleSlope", "RescaleIntercept", "RescaleType"):
-            if hasattr(ds, attr):
-                setattr(proxy, attr, getattr(ds, attr))
-        proxies.append(proxy)
+        fi["z_proj"] = float(np.dot(np.array(fi["ImagePositionPatient"]), slice_normal))
 
-    volume, geometry = _compute_geometry(proxies)
-    return volume, geometry, [ds]
+    # Detect if this is a 4D temporal dataset
+    temporal_values = {fi["temporal_pos"] for fi in frame_infos if fi["temporal_pos"] is not None}
+    is_4d_temporal = len(temporal_values) > 1
+
+    rows, cols = int(ds.Rows), int(ds.Columns)
+    pixel_array_full = ds.pixel_array  # (n_frames, Rows, Columns)
+
+    # Dtype
+    bits = int(ds.BitsAllocated)
+    signed = int(ds.PixelRepresentation)
+    _dtype_map = {
+        (8, 0): np.uint8, (8, 1): np.int8,
+        (16, 0): np.uint16, (16, 1): np.int16,
+        (32, 0): np.uint32, (32, 1): np.int32,
+    }
+    dtype = np.dtype(_dtype_map.get((bits, signed), np.uint16))
+
+    if is_4d_temporal:
+        # --- 4D temporal volume ---
+        z_values = sorted({fi["z_proj"] for fi in frame_infos})
+        t_values = sorted(temporal_values)
+        z_to_idx = {z: i for i, z in enumerate(z_values)}
+        t_to_idx = {t: i for i, t in enumerate(t_values)}
+        n_t = len(t_values)
+        n_z = len(z_values)
+
+        volume = np.zeros((n_t, n_z, rows, cols), dtype=dtype)
+        for fi in frame_infos:
+            t_idx = t_to_idx[fi["temporal_pos"]]
+            z_idx = z_to_idx[fi["z_proj"]]
+            volume[t_idx, z_idx, :, :] = pixel_array_full[fi["_frame_index"]]
+
+        # Spatial geometry from Z positions
+        ps = frame_infos[0].get("PixelSpacing", [1.0, 1.0])
+        row_spacing, col_spacing = ps[0], ps[1]
+
+        if n_z > 1:
+            diffs = np.diff(z_values)
+            slice_spacing = float(np.median(diffs))
+            if slice_spacing <= 0:
+                slice_spacing = float(np.mean(diffs))
+        else:
+            st = frame_infos[0].get("SliceThickness")
+            slice_spacing = float(st) if st else 1.0
+
+        min_z_frame = min(frame_infos, key=lambda fi: fi["z_proj"])
+        space_origin = min_z_frame["ImagePositionPatient"]
+        slice_direction = (slice_normal * slice_spacing).tolist()
+        space_directions = [
+            slice_direction,
+            (col_cos * row_spacing).tolist(),
+            (row_cos * col_spacing).tolist(),
+        ]
+
+        slice_thickness = frame_infos[0].get("SliceThickness")
+
+        # Rescale
+        rescale_slope = None
+        rs = getattr(ds, "RescaleSlope", None)
+        if rs is not None:
+            rescale_slope = float(rs)
+        rescale_intercept = None
+        ri = getattr(ds, "RescaleIntercept", None)
+        if ri is not None:
+            rescale_intercept = float(ri)
+        rescale_type = None
+        rt = getattr(ds, "RescaleType", None)
+        if rt is not None:
+            rescale_type = str(rt)
+
+        geometry = DicomGeometry(
+            shape=volume.shape,
+            dtype=dtype,
+            space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
+            space_origin=space_origin,
+            space_directions=space_directions,
+            slice_thickness=slice_thickness,
+            rescale_slope=rescale_slope,
+            rescale_intercept=rescale_intercept,
+            rescale_type=rescale_type,
+        )
+        return volume, geometry, [ds]
+
+    else:
+        # --- 3D volume (existing path) ---
+        frame_infos.sort(key=lambda fi: fi["z_proj"])
+
+        class _FrameProxy:
+            pass
+
+        proxies = []
+        for fi in frame_infos:
+            proxy = _FrameProxy()
+            proxy.ImageOrientationPatient = fi["ImageOrientationPatient"]  # type: ignore[attr-defined]
+            proxy.PixelSpacing = fi["PixelSpacing"]  # type: ignore[attr-defined]
+            proxy.ImagePositionPatient = fi["ImagePositionPatient"]  # type: ignore[attr-defined]
+            proxy.Rows = ds.Rows  # type: ignore[attr-defined]
+            proxy.Columns = ds.Columns  # type: ignore[attr-defined]
+            proxy.BitsAllocated = ds.BitsAllocated  # type: ignore[attr-defined]
+            proxy.PixelRepresentation = ds.PixelRepresentation  # type: ignore[attr-defined]
+            idx = fi["_frame_index"]
+            proxy.pixel_array = pixel_array_full[idx]  # type: ignore[attr-defined]
+            if "SliceThickness" in fi:
+                proxy.SliceThickness = fi["SliceThickness"]  # type: ignore[attr-defined]
+            elif hasattr(ds, "SliceThickness"):
+                proxy.SliceThickness = ds.SliceThickness  # type: ignore[attr-defined]
+            for attr in ("RescaleSlope", "RescaleIntercept", "RescaleType"):
+                if hasattr(ds, attr):
+                    setattr(proxy, attr, getattr(ds, attr))
+            proxies.append(proxy)
+
+        volume, geometry = _compute_geometry(proxies)
+        return volume, geometry, [ds]
 
 
 # ---------------------------------------------------------------------------
@@ -1047,10 +1140,14 @@ def build_duckn_metadata(
     # Axes in C order
     axes = []
 
-    # For 4D SEG data, prepend a list axis for the segment dimension
+    # For 4D data, prepend the appropriate axis
     is_4d = len(geometry.shape) == 4
     if is_4d:
-        axes.append(AxisMetadata(kind=AxisKind.LIST))
+        ds0 = datasets[0]
+        if _is_dicom_seg(ds0):
+            axes.append(AxisMetadata(kind=AxisKind.LIST))
+        else:
+            axes.append(AxisMetadata(kind=AxisKind.TIME))
 
     # Spatial axes: [slice, row, col]
     for i, direction in enumerate(geometry.space_directions):
@@ -1168,7 +1265,7 @@ def dicom_to_zarr(
 
     if chunks is None:
         if volume.ndim == 4:
-            # 4D SEG: one chunk per segment, full spatial extent
+            # 4D: one chunk per time point or segment, full spatial extent
             chunks = (1, volume.shape[1], volume.shape[2], volume.shape[3])
         else:
             chunks = _auto_chunks(volume.shape, volume.dtype)
@@ -1177,9 +1274,13 @@ def dicom_to_zarr(
 
     attrs = {"duckn": meta.model_dump(exclude_none=True)}
 
-    # Dimension names depend on whether this is a 4D SEG or 3D image
+    # Dimension names
     if volume.ndim == 4:
-        dim_names = ["segment", "k", "j", "i"]
+        ds0 = datasets[0]
+        if _is_dicom_seg(ds0):
+            dim_names = ["segment", "k", "j", "i"]
+        else:
+            dim_names = ["t", "k", "j", "i"]
     else:
         dim_names = ["k", "j", "i"]
 
