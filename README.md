@@ -123,8 +123,8 @@ A duckn store is a standard Zarr V3 array with a `"duckn"` key in its attributes
 | Format | To Zarr | From Zarr | Zero-copy |
 |--------|---------|-----------|-----------|
 | NRRD   | `nrrd_to_zarr()` | `zarr_to_nrrd()` | Both directions |
-| NIfTI  | `nifti_to_zarr()` | `zarr_to_nifti()` | -- |
-| DICOM  | `dicom_to_zarr()` | `zarr_to_dicom()` | -- |
+| NIfTI  | `nifti_to_zarr()` | `zarr_to_nifti()` | Possible |
+| DICOM  | `dicom_to_zarr()` | `zarr_to_dicom()` | Possible |
 
 Zero-copy mode copies compressed data blobs directly without decompression/recompression (raw and gzip encodings).
 
