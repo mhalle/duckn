@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "duckn"
 version = "0.1.0"
 description = "duckn: axis-rich array metadata convention for Zarr V3"
+license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0",

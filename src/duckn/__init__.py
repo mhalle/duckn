@@ -1,4 +1,96 @@
-"""duckn: axis-rich array metadata convention for Zarr V3."""
+"""duckn: a Zarr-based imaging file format with lovely nested semantics.
+
+duckn is a layered metadata convention for Zarr V3 arrays that combines
+three concerns that imaging communities have struggled to unify for
+decades:
+
+- **Array data handling** from Zarr: chunking, compression, typing, and
+  cloud-native storage are handled by the container format itself.
+- **Image-to-world coordinate representation** from NRRD: per-axis
+  semantics, spatial orientation, centering, and measurement frames
+  provide a precise mapping between stored arrays and physical space.
+- **Domain-specific semantics** from standards like DICOM, NIfTI, FITS,
+  and others: provenance, acquisition parameters, and format-specific
+  metadata are captured in typed extensions that preserve enough
+  information to accurately round-trip well-formed files through duckn.
+
+The user chooses what semantic level to use. A bare duckn store is a
+valid Zarr array any reader can open. Adding spatial metadata makes it
+an oriented image. Adding domain extensions makes it a lossless
+representation of the source format's semantics.
+
+duckn is designed to be extensible to accommodate new imaging domains
+and evolutions of existing ones. Extensions live inside the ``"duckn"``
+attribute and depend on convention semantics to be interpretable;
+independent metadata can coexist as sibling Zarr attributes.
+
+Reading and writing
+-------------------
+read_duckn(path)
+    Read a duckn Zarr store, returning ``(data, DucknMetadata)``.
+read_duckn_metadata(path)
+    Read only the metadata (no array data loaded).
+get_zarr_attrs(path)
+    Return the raw Zarr attributes dict.
+open_store(path, mode, overwrite)
+    Context manager yielding a Zarr store (LocalStore or ZipStore).
+
+Converters
+----------
+nrrd_to_zarr(nrrd_path, zarr_path, ...)
+    Convert an NRRD file to a duckn Zarr store.
+zarr_to_nrrd(zarr_path, nrrd_path, ...)
+    Convert a duckn Zarr store back to NRRD.
+nrrd_to_zarr_zerocopy(nrrd_path, zarr_path, ...)
+    Zero-copy NRRD to Zarr (raw/gzip only, no recompression).
+zarr_to_nrrd_zerocopy(zarr_path, nrrd_path, ...)
+    Zero-copy Zarr to NRRD.
+nifti_to_zarr(input_path, output_path, ...)
+    Convert a NIfTI file to a duckn Zarr store. Requires ``duckn[nifti]``.
+zarr_to_nifti(input_path, output_path, ...)
+    Convert a duckn Zarr store to NIfTI. Requires ``duckn[nifti]``.
+dicom_to_zarr(input_path, output_path, ...)
+    Convert DICOM files to a duckn Zarr store. Requires ``duckn[dicom]``.
+
+DICOM helpers
+-------------
+geometry_from_headers(datasets)
+    Compute spatial geometry (origin, directions, spacing) from DICOM headers.
+build_duckn_metadata(geometry, datasets, ...)
+    Build a ``DucknMetadata`` from DICOM geometry and datasets.
+UNCOMPRESSED_TRANSFER_SYNTAXES
+    Set of DICOM transfer syntax UIDs that use uncompressed pixel data.
+
+Core models
+-----------
+DucknMetadata
+    Top-level metadata stored under the ``"duckn"`` Zarr attribute key.
+AxisMetadata
+    Per-axis metadata (kind, centering, space_direction, unit, etc.).
+AxisKind
+    Axis kind enumeration (space, time, list, scalar, vector, ...).
+Centering
+    Axis centering (cell or node).
+SpaceName
+    Named coordinate systems (right-anterior-superior, scanner-xyz, ...).
+ValueTransform
+    Stored-to-physical value mapping (e.g., linear slope/intercept).
+UnitObject
+    Structured unit with formal system binding.
+validate_against_shape(meta, shape)
+    Validate metadata consistency against an array shape.
+
+Extension models
+----------------
+NiftiExtension, NiftiTags, NiftiLegacy
+    NIfTI provenance metadata.
+DicomExtension, DicomClassification
+    DICOM provenance metadata.
+DwmriExtension, DwmriAxisExtension, DwmriAcquisition
+    Diffusion-weighted MRI metadata.
+SegmentationExtension, Segment
+    Segmentation label map metadata.
+"""
 
 from .convert import nrrd_to_zarr, nrrd_to_zarr_zerocopy, zarr_to_nrrd, zarr_to_nrrd_zerocopy
 from .models import (
