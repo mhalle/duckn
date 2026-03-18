@@ -19,6 +19,8 @@ from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
 from duckn.dicom_convert import (
     DicomGeometry,
+    _extract_seg_extension,
+    _is_dicom_seg,
     build_duckn_metadata,
     _compute_geometry,
     _convert_value,
@@ -29,7 +31,7 @@ from duckn.dicom_convert import (
     _sort_datasets,
     dicom_to_zarr,
 )
-from duckn.models import DucknMetadata, SpaceName
+from duckn.models import DucknMetadata, SegmentationExtension, SpaceName
 
 
 # ---------------------------------------------------------------------------
@@ -611,3 +613,131 @@ class TestEndToEnd:
         zarr_path = tmp_path / "output.zarr"
         with pytest.raises(ValueError, match="series"):
             dicom_to_zarr(dcm_dir, zarr_path)
+
+
+# ---------------------------------------------------------------------------
+# DICOM SEG → slicerseg extension
+# ---------------------------------------------------------------------------
+
+
+def _make_seg_dataset() -> Dataset:
+    """Create a minimal DICOM SEG dataset with SegmentSequence."""
+    ds = Dataset()
+    ds.SOPClassUID = "1.2.840.10008.5.1.4.1.1.66.4"
+    ds.SegmentationType = "BINARY"
+    ds.Rows = 4
+    ds.Columns = 4
+    ds.BitsAllocated = 8
+    ds.BitsStored = 8
+    ds.HighBit = 7
+    ds.PixelRepresentation = 0
+    ds.SamplesPerPixel = 1
+    ds.ImagePositionPatient = [0.0, 0.0, 0.0]
+    ds.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
+    ds.PixelSpacing = [1.0, 1.0]
+    ds.Modality = "SEG"
+
+    ds.file_meta = FileMetaDataset()
+    ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    ds.file_meta.MediaStorageSOPClassUID = "1.2.840.10008.5.1.4.1.1.66.4"
+
+    # Build segment 1
+    seg1 = Dataset()
+    seg1.SegmentNumber = 1
+    seg1.SegmentLabel = "Liver"
+    seg1.RecommendedDisplayCIELabValue = [39330, 30580, 41942]
+
+    cat1 = Dataset()
+    cat1.CodingSchemeDesignator = "SCT"
+    cat1.CodeValue = "123037004"
+    cat1.CodeMeaning = "Body structure"
+    seg1.SegmentedPropertyCategoryCodeSequence = DicomSequence([cat1])
+
+    type1 = Dataset()
+    type1.CodingSchemeDesignator = "SCT"
+    type1.CodeValue = "10200004"
+    type1.CodeMeaning = "Liver"
+    seg1.SegmentedPropertyTypeCodeSequence = DicomSequence([type1])
+
+    anat1 = Dataset()
+    anat1.CodingSchemeDesignator = "SCT"
+    anat1.CodeValue = "10200004"
+    anat1.CodeMeaning = "Liver"
+    seg1.AnatomicRegionSequence = DicomSequence([anat1])
+
+    # Build segment 2 (minimal)
+    seg2 = Dataset()
+    seg2.SegmentNumber = 2
+    seg2.SegmentLabel = "Tumor"
+
+    ds.SegmentSequence = DicomSequence([seg1, seg2])
+    return ds
+
+
+class TestDicomSegExtraction:
+    def test_is_dicom_seg_by_sop_class(self):
+        ds = _make_seg_dataset()
+        assert _is_dicom_seg(ds)
+
+    def test_is_dicom_seg_by_segment_sequence(self):
+        ds = Dataset()
+        ds.SegmentSequence = DicomSequence([Dataset()])
+        assert _is_dicom_seg(ds)
+
+    def test_not_dicom_seg(self):
+        ds = Dataset()
+        ds.Modality = "CT"
+        assert not _is_dicom_seg(ds)
+
+    def test_extract_segments(self):
+        ds = _make_seg_dataset()
+        ext = _extract_seg_extension(ds)
+        assert ext is not None
+        assert ext.version == "1.0"
+        assert ext.source_representation == "binary-labelmap"
+        assert len(ext.segments) == 2
+
+        seg1 = ext.segments[0]
+        assert seg1.id == "Liver"
+        assert seg1.name == "Liver"
+        assert seg1.label_value == 1
+        assert seg1.color is not None
+        assert len(seg1.color) == 3
+
+        # DICOM classification
+        assert seg1.dicom is not None
+        assert seg1.dicom.category.scheme == "SCT"
+        assert seg1.dicom.category.code == "123037004"
+        assert seg1.dicom.type.code == "10200004"
+        assert seg1.dicom.anatomic_region.code == "10200004"
+
+        seg2 = ext.segments[1]
+        assert seg2.id == "Tumor"
+        assert seg2.label_value == 2
+        assert seg2.dicom is None  # no coded entries
+
+    def test_fractional_seg(self):
+        ds = _make_seg_dataset()
+        ds.SegmentationType = "FRACTIONAL"
+        ext = _extract_seg_extension(ds)
+        assert ext.source_representation == "fractional-labelmap"
+
+    def test_seg_in_build_duckn_metadata(self):
+        ds = _make_seg_dataset()
+        ds.PixelData = np.zeros((4, 4), dtype=np.uint8).tobytes()
+        geom = DicomGeometry(
+            shape=(1, 4, 4),
+            dtype=np.dtype("uint8"),
+            space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
+            space_origin=[0.0, 0.0, 0.0],
+            space_directions=[[0, 0, 1.0], [0, 1.0, 0], [1.0, 0, 0]],
+            slice_thickness=None,
+            rescale_slope=None,
+            rescale_intercept=None,
+            rescale_type=None,
+        )
+        meta = build_duckn_metadata(geom, [ds], anonymized=None, include_tags=False)
+        assert meta.extensions is not None
+        assert "slicerseg" in meta.extensions
+        seg_ext = SegmentationExtension(**meta.extensions["slicerseg"])
+        assert len(seg_ext.segments) == 2

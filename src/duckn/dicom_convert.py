@@ -22,8 +22,13 @@ from .models import (
     AxisKind,
     AxisMetadata,
     Centering,
+    CodedEntry,
+    DicomClassification,
     DicomExtension,
     DucknMetadata,
+    Segment,
+    SegmentationExtension,
+    SourceRepresentation,
     SpaceName,
     ValueTransform,
 )
@@ -482,6 +487,267 @@ def _load_single_frame_series(
 
 
 # ---------------------------------------------------------------------------
+# DICOM SEG loaders
+# ---------------------------------------------------------------------------
+
+
+def _load_seg_labelmap(
+    ds: Any,
+) -> tuple[np.ndarray, DicomGeometry, list[Any]]:
+    """Load a DICOM LABELMAP Segmentation as a 3D volume.
+
+    Pixel values are segment numbers directly. One frame per slice.
+    """
+    per_frame = getattr(ds, "PerFrameFunctionalGroupsSequence", None)
+    shared = getattr(ds, "SharedFunctionalGroupsSequence", None)
+    if per_frame is None:
+        raise ValueError("DICOM LABELMAP SEG missing PerFrameFunctionalGroupsSequence")
+
+    # Extract shared geometry
+    shared_iop = None
+    shared_ps = None
+    shared_st = None
+    if shared and len(shared) > 0:
+        s0 = shared[0]
+        orient_seq = getattr(s0, "PlaneOrientationSequence", None)
+        if orient_seq and len(orient_seq) > 0:
+            shared_iop = [float(x) for x in orient_seq[0].ImageOrientationPatient]
+        measures_seq = getattr(s0, "PixelMeasuresSequence", None)
+        if measures_seq and len(measures_seq) > 0:
+            shared_ps = [float(x) for x in measures_seq[0].PixelSpacing]
+            st = getattr(measures_seq[0], "SliceThickness", None)
+            if st is not None:
+                shared_st = float(st)
+
+    rows, cols = int(ds.Rows), int(ds.Columns)
+    pixel_array = ds.pixel_array  # (n_frames, rows, cols)
+
+    # Gather frame positions and sort by Z
+    iop = shared_iop
+    for fg in per_frame:
+        orient_seq = getattr(fg, "PlaneOrientationSequence", None)
+        if orient_seq and len(orient_seq) > 0:
+            iop = [float(x) for x in orient_seq[0].ImageOrientationPatient]
+            break
+    if iop is None:
+        raise ValueError("No ImageOrientationPatient found")
+
+    row_cos = np.array(iop[:3])
+    col_cos = np.array(iop[3:])
+    slice_normal = np.cross(row_cos, col_cos)
+    nrm = np.linalg.norm(slice_normal)
+    if nrm > 0:
+        slice_normal = slice_normal / nrm
+
+    frame_infos = []
+    for i, fg in enumerate(per_frame):
+        pos_seq = getattr(fg, "PlanePositionSequence", None)
+        if pos_seq and len(pos_seq) > 0:
+            pos = [float(x) for x in pos_seq[0].ImagePositionPatient]
+        else:
+            pos = [0.0, 0.0, 0.0]
+        z_proj = float(np.dot(np.array(pos), slice_normal))
+        frame_infos.append({"_frame_index": i, "position": pos, "z_proj": z_proj})
+
+    frame_infos.sort(key=lambda fi: fi["z_proj"])
+
+    # Stack sorted frames into 3D volume
+    sorted_indices = [fi["_frame_index"] for fi in frame_infos]
+    volume = np.stack([pixel_array[idx] for idx in sorted_indices], axis=0)
+
+    # Determine dtype
+    bits = int(ds.BitsAllocated)
+    signed = int(ds.PixelRepresentation)
+    _dtype_map = {
+        (8, 0): np.uint8, (8, 1): np.int8,
+        (16, 0): np.uint16, (16, 1): np.int16,
+        (32, 0): np.uint32, (32, 1): np.int32,
+    }
+    dtype = np.dtype(_dtype_map.get((bits, signed), np.uint16))
+    volume = volume.astype(dtype)
+
+    # Compute spatial geometry
+    ps = shared_ps or [1.0, 1.0]
+    row_spacing, col_spacing = ps[0], ps[1]
+    n_z = len(frame_infos)
+
+    if n_z > 1:
+        z_vals = [fi["z_proj"] for fi in frame_infos]
+        diffs = np.diff(z_vals)
+        slice_spacing = float(np.median(diffs))
+        if slice_spacing <= 0:
+            slice_spacing = float(np.mean(diffs))
+    else:
+        slice_spacing = float(shared_st) if shared_st else 1.0
+
+    space_origin = frame_infos[0]["position"]
+    slice_direction = (slice_normal * slice_spacing).tolist()
+    space_directions = [
+        slice_direction,
+        (col_cos * row_spacing).tolist(),
+        (row_cos * col_spacing).tolist(),
+    ]
+
+    geometry = DicomGeometry(
+        shape=volume.shape,
+        dtype=dtype,
+        space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
+        space_origin=space_origin,
+        space_directions=space_directions,
+        slice_thickness=shared_st,
+        rescale_slope=None,
+        rescale_intercept=None,
+        rescale_type=None,
+    )
+
+    return volume, geometry, [ds]
+
+
+def _load_seg(
+    ds: Any,
+) -> tuple[np.ndarray, DicomGeometry, list[Any]]:
+    """Load a DICOM Segmentation object.
+
+    For BINARY segmentations, returns a 4D volume (n_segments, n_z, rows, cols)
+    with one binary channel per segment.
+
+    For LABELMAP segmentations, returns a 3D volume (n_z, rows, cols) where
+    each voxel value is a segment number.
+    """
+    seg_type = str(getattr(ds, "SegmentationType", "BINARY"))
+
+    if seg_type == "LABELMAP":
+        return _load_seg_labelmap(ds)
+
+    per_frame = getattr(ds, "PerFrameFunctionalGroupsSequence", None)
+    shared = getattr(ds, "SharedFunctionalGroupsSequence", None)
+    if per_frame is None:
+        raise ValueError("DICOM SEG missing PerFrameFunctionalGroupsSequence")
+
+    # Extract shared geometry
+    shared_iop = None
+    shared_ps = None
+    shared_st = None
+    if shared and len(shared) > 0:
+        s0 = shared[0]
+        orient_seq = getattr(s0, "PlaneOrientationSequence", None)
+        if orient_seq and len(orient_seq) > 0:
+            shared_iop = [float(x) for x in orient_seq[0].ImageOrientationPatient]
+        measures_seq = getattr(s0, "PixelMeasuresSequence", None)
+        if measures_seq and len(measures_seq) > 0:
+            shared_ps = [float(x) for x in measures_seq[0].PixelSpacing]
+            st = getattr(measures_seq[0], "SliceThickness", None)
+            if st is not None:
+                shared_st = float(st)
+
+    # Collect per-frame info: segment number, Z position, frame index
+    n_segments = len(ds.SegmentSequence)
+    rows, cols = int(ds.Rows), int(ds.Columns)
+    pixel_array = ds.pixel_array  # (n_frames, rows, cols)
+
+    # Gather all unique Z positions and per-frame segment assignments
+    z_positions: set[float] = set()
+    frame_records: list[dict[str, Any]] = []
+
+    for i, fg in enumerate(per_frame):
+        seg_id_seq = getattr(fg, "SegmentIdentificationSequence", None)
+        seg_num = int(seg_id_seq[0].ReferencedSegmentNumber) if seg_id_seq else 1
+
+        pos_seq = getattr(fg, "PlanePositionSequence", None)
+        if pos_seq and len(pos_seq) > 0:
+            pos = [float(x) for x in pos_seq[0].ImagePositionPatient]
+        else:
+            pos = [0.0, 0.0, 0.0]
+
+        iop = None
+        orient_seq = getattr(fg, "PlaneOrientationSequence", None)
+        if orient_seq and len(orient_seq) > 0:
+            iop = [float(x) for x in orient_seq[0].ImageOrientationPatient]
+
+        frame_records.append({
+            "_frame_index": i,
+            "seg_num": seg_num,
+            "position": pos,
+            "iop": iop or shared_iop,
+        })
+
+    # Compute slice normal from orientation
+    iop = frame_records[0]["iop"]
+    if iop is None:
+        raise ValueError("No ImageOrientationPatient found")
+    row_cos = np.array(iop[:3])
+    col_cos = np.array(iop[3:])
+    slice_normal = np.cross(row_cos, col_cos)
+    nrm = np.linalg.norm(slice_normal)
+    if nrm > 0:
+        slice_normal = slice_normal / nrm
+
+    # Project all positions onto slice normal to get Z ordering
+    for fr in frame_records:
+        fr["z_proj"] = float(np.dot(np.array(fr["position"]), slice_normal))
+        z_positions.add(fr["z_proj"])
+
+    z_sorted = sorted(z_positions)
+    z_to_idx = {z: i for i, z in enumerate(z_sorted)}
+    n_z = len(z_sorted)
+
+    # Build 4D volume: (n_segments, n_z, rows, cols)
+    volume = np.zeros((n_segments, n_z, rows, cols), dtype=np.uint8)
+    for fr in frame_records:
+        seg_idx = fr["seg_num"] - 1  # 0-based
+        z_idx = z_to_idx[fr["z_proj"]]
+        volume[seg_idx, z_idx, :, :] = pixel_array[fr["_frame_index"]]
+
+    # Compute spatial geometry from Z positions
+    ps = shared_ps or [1.0, 1.0]
+    row_spacing, col_spacing = ps[0], ps[1]
+
+    if n_z > 1:
+        diffs = np.diff(z_sorted)
+        slice_spacing = float(np.median(diffs))
+        if slice_spacing <= 0:
+            slice_spacing = float(np.mean(diffs))
+        if n_z > 2 and slice_spacing != 0:
+            if np.max(np.abs(diffs - slice_spacing)) > 0.01 * abs(slice_spacing):
+                warnings.warn(
+                    f"Non-uniform slice spacing (range: {float(np.min(diffs)):.4f} "
+                    f"to {float(np.max(diffs)):.4f}, median: {slice_spacing:.4f}). "
+                    f"Using median.",
+                    stacklevel=3,
+                )
+    else:
+        slice_spacing = float(shared_st) if shared_st else 1.0
+
+    # Origin: position of the first (lowest Z) frame
+    min_z_frame = min(frame_records, key=lambda fr: fr["z_proj"])
+    space_origin = min_z_frame["position"]
+
+    # Space directions in C order: [segment(none), slice, row, col]
+    slice_direction = (slice_normal * slice_spacing).tolist()
+    space_directions = [
+        slice_direction,
+        (col_cos * row_spacing).tolist(),
+        (row_cos * col_spacing).tolist(),
+    ]
+
+    slice_thickness = shared_st
+
+    geometry = DicomGeometry(
+        shape=volume.shape,
+        dtype=np.dtype(np.uint8),
+        space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
+        space_origin=space_origin,
+        space_directions=space_directions,
+        slice_thickness=slice_thickness,
+        rescale_slope=None,
+        rescale_intercept=None,
+        rescale_type=None,
+    )
+
+    return volume, geometry, [ds]
+
+
+# ---------------------------------------------------------------------------
 # Enhanced multi-frame loader
 # ---------------------------------------------------------------------------
 
@@ -493,6 +759,10 @@ def _load_multiframe(
     import pydicom
 
     ds = pydicom.dcmread(str(file_path))
+
+    # Route DICOM SEG to dedicated loader
+    if _is_dicom_seg(ds):
+        return _load_seg(ds)
 
     n_frames = int(getattr(ds, "NumberOfFrames", 1))
     if n_frames <= 1 and hasattr(ds, "ImagePositionPatient"):
@@ -592,6 +862,8 @@ def _load_multiframe(
         proxy.ImageOrientationPatient = fi["ImageOrientationPatient"]  # type: ignore[attr-defined]
         proxy.PixelSpacing = fi["PixelSpacing"]  # type: ignore[attr-defined]
         proxy.ImagePositionPatient = fi["ImagePositionPatient"]  # type: ignore[attr-defined]
+        proxy.Rows = ds.Rows  # type: ignore[attr-defined]
+        proxy.Columns = ds.Columns  # type: ignore[attr-defined]
         proxy.BitsAllocated = ds.BitsAllocated  # type: ignore[attr-defined]
         proxy.PixelRepresentation = ds.PixelRepresentation  # type: ignore[attr-defined]
         # Provide a pixel_array property that returns the correct frame
@@ -611,6 +883,155 @@ def _load_multiframe(
 
 
 # ---------------------------------------------------------------------------
+# DICOM SEG → slicerseg extension
+# ---------------------------------------------------------------------------
+
+
+# SOP Class UID for Segmentation Storage
+_SEG_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.66.4"
+
+
+def _coded_entry_from_sequence(seq: Any) -> CodedEntry | None:
+    """Extract a CodedEntry from a DICOM code sequence item."""
+    if seq is None or len(seq) == 0:
+        return None
+    item = seq[0]
+    scheme = str(getattr(item, "CodingSchemeDesignator", ""))
+    code = str(getattr(item, "CodeValue", ""))
+    meaning = str(getattr(item, "CodeMeaning", ""))
+    if not scheme or not code or not meaning:
+        return None
+    return CodedEntry(scheme=scheme, code=code, meaning=meaning)
+
+
+def _is_dicom_seg(ds: Any) -> bool:
+    """Check if a dataset is a DICOM Segmentation object."""
+    sop_class = str(getattr(getattr(ds, "file_meta", None), "MediaStorageSOPClassUID", ""))
+    if sop_class == _SEG_SOP_CLASS_UID:
+        return True
+    sop_class2 = str(getattr(ds, "SOPClassUID", ""))
+    if sop_class2 == _SEG_SOP_CLASS_UID:
+        return True
+    return hasattr(ds, "SegmentSequence")
+
+
+def _cielab_to_rgb(L: float, a: float, b: float) -> list[float]:
+    """Convert CIELab (as stored in DICOM, scaled 0-65535) to RGB [0-1]."""
+    import math
+
+    # DICOM stores CIELab with L in [0, 65535] mapping to [0, 100],
+    # a and b in [0, 65535] mapping to [-128, 127]
+    L_norm = L * 100.0 / 65535.0
+    a_norm = a * 255.0 / 65535.0 - 128.0
+    b_norm = b * 255.0 / 65535.0 - 128.0
+
+    # CIELab → XYZ (D65 illuminant)
+    fy = (L_norm + 16.0) / 116.0
+    fx = a_norm / 500.0 + fy
+    fz = fy - b_norm / 200.0
+
+    delta = 6.0 / 29.0
+    delta3 = delta ** 3
+
+    x = 0.9505 * (fx ** 3 if fx > delta else (fx - 16.0 / 116.0) * 3 * delta ** 2)
+    y = 1.0000 * (fy ** 3 if fy > delta else (fy - 16.0 / 116.0) * 3 * delta ** 2)
+    z = 1.0890 * (fz ** 3 if fz > delta else (fz - 16.0 / 116.0) * 3 * delta ** 2)
+
+    # XYZ → linear sRGB
+    r_lin = 3.2406 * x - 1.5372 * y - 0.4986 * z
+    g_lin = -0.9689 * x + 1.8758 * y + 0.0415 * z
+    b_lin = 0.0557 * x - 0.2040 * y + 1.0570 * z
+
+    # Linear → sRGB gamma
+    def gamma(c: float) -> float:
+        c = max(0.0, min(1.0, c))
+        return 12.92 * c if c <= 0.0031308 else 1.055 * math.pow(c, 1.0 / 2.4) - 0.055
+
+    return [round(gamma(r_lin), 4), round(gamma(g_lin), 4), round(gamma(b_lin), 4)]
+
+
+def _extract_seg_extension(ds: Any) -> SegmentationExtension | None:
+    """Extract a slicerseg extension from a DICOM SEG dataset."""
+    seg_seq = getattr(ds, "SegmentSequence", None)
+    if seg_seq is None or len(seg_seq) == 0:
+        return None
+
+    # Determine source representation
+    seg_type = str(getattr(ds, "SegmentationType", "BINARY"))
+    if seg_type == "FRACTIONAL":
+        source_rep = SourceRepresentation.FRACTIONAL_LABELMAP
+    else:
+        source_rep = SourceRepresentation.BINARY_LABELMAP
+
+    segments: list[Segment] = []
+    for seg_item in seg_seq:
+        seg_number = int(getattr(seg_item, "SegmentNumber", 0))
+        seg_label = str(getattr(seg_item, "SegmentLabel", ""))
+        seg_id = seg_label or f"Segment_{seg_number}"
+
+        # Color from RecommendedDisplayCIELabValue
+        color = None
+        cielab = getattr(seg_item, "RecommendedDisplayCIELabValue", None)
+        if cielab is not None and len(cielab) == 3:
+            color = _cielab_to_rgb(float(cielab[0]), float(cielab[1]), float(cielab[2]))
+
+        # DICOM classification
+        category = _coded_entry_from_sequence(
+            getattr(seg_item, "SegmentedPropertyCategoryCodeSequence", None)
+        )
+        seg_type_entry = _coded_entry_from_sequence(
+            getattr(seg_item, "SegmentedPropertyTypeCodeSequence", None)
+        )
+        # Type modifier from within the type sequence
+        type_modifier = None
+        type_seq = getattr(seg_item, "SegmentedPropertyTypeCodeSequence", None)
+        if type_seq and len(type_seq) > 0:
+            mod_seq = getattr(type_seq[0], "SegmentedPropertyTypeModifierCodeSequence", None)
+            type_modifier = _coded_entry_from_sequence(mod_seq)
+
+        anatomic_region = _coded_entry_from_sequence(
+            getattr(seg_item, "AnatomicRegionSequence", None)
+        )
+        anatomic_region_modifier = None
+        anat_seq = getattr(seg_item, "AnatomicRegionSequence", None)
+        if anat_seq and len(anat_seq) > 0:
+            mod_seq = getattr(anat_seq[0], "AnatomicRegionModifierSequence", None)
+            anatomic_region_modifier = _coded_entry_from_sequence(mod_seq)
+
+        dicom_class = None
+        if any(x is not None for x in (category, seg_type_entry, type_modifier,
+                                        anatomic_region, anatomic_region_modifier)):
+            dicom_class = DicomClassification(
+                category=category,
+                type=seg_type_entry,
+                type_modifier=type_modifier,
+                anatomic_region=anatomic_region,
+                anatomic_region_modifier=anatomic_region_modifier,
+            )
+
+        seg_kwargs: dict[str, Any] = {"id": seg_id}
+        if seg_type == "LABELMAP":
+            seg_kwargs["label_value"] = seg_number
+        else:
+            seg_kwargs["label_value"] = 1
+            seg_kwargs["layer"] = seg_number - 1  # 0-based layer index
+        if seg_label:
+            seg_kwargs["name"] = seg_label
+        if color is not None:
+            seg_kwargs["color"] = color
+        if dicom_class is not None:
+            seg_kwargs["dicom"] = dicom_class
+
+        segments.append(Segment(**seg_kwargs))
+
+    return SegmentationExtension(
+        version="1.0",
+        source_representation=source_rep,
+        segments=segments,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Metadata building
 # ---------------------------------------------------------------------------
 
@@ -623,8 +1044,15 @@ def build_duckn_metadata(
     include_binary: bool = False,
 ) -> DucknMetadata:
     """Build duckn metadata from geometry and DICOM datasets."""
-    # Axes in C order: [slice, row, col]
+    # Axes in C order
     axes = []
+
+    # For 4D SEG data, prepend a list axis for the segment dimension
+    is_4d = len(geometry.shape) == 4
+    if is_4d:
+        axes.append(AxisMetadata(kind=AxisKind.LIST))
+
+    # Spatial axes: [slice, row, col]
     for i, direction in enumerate(geometry.space_directions):
         ax_kwargs: dict[str, Any] = {
             "kind": AxisKind.SPACE,
@@ -671,6 +1099,15 @@ def build_duckn_metadata(
             tags=dicom_tags if dicom_tags else None,
         )
         extensions = {"dicom": dicom_ext.model_dump(exclude_none=True, by_alias=True)}
+
+    # Segmentation extension from DICOM SEG
+    ds0 = datasets[0]
+    if _is_dicom_seg(ds0):
+        seg_ext = _extract_seg_extension(ds0)
+        if seg_ext is not None:
+            if extensions is None:
+                extensions = {}
+            extensions["slicerseg"] = seg_ext.model_dump(exclude_none=True)
 
     return DucknMetadata(
         version="1.0",
@@ -730,11 +1167,21 @@ def dicom_to_zarr(
     meta = build_duckn_metadata(geometry, datasets, anonymized, tags, binary_tags)
 
     if chunks is None:
-        chunks = _auto_chunks(volume.shape, volume.dtype)
+        if volume.ndim == 4:
+            # 4D SEG: one chunk per segment, full spatial extent
+            chunks = (1, volume.shape[1], volume.shape[2], volume.shape[3])
+        else:
+            chunks = _auto_chunks(volume.shape, volume.dtype)
 
     compressors_list = _build_compressors(compressor, level)
 
     attrs = {"duckn": meta.model_dump(exclude_none=True)}
+
+    # Dimension names depend on whether this is a 4D SEG or 3D image
+    if volume.ndim == 4:
+        dim_names = ["segment", "k", "j", "i"]
+    else:
+        dim_names = ["k", "j", "i"]
 
     is_zip = _is_zip_path(output_path)
     with open_store(output_path, mode="w", overwrite=overwrite) as store:
@@ -743,7 +1190,7 @@ def dicom_to_zarr(
             data=volume,
             chunks=chunks,
             compressors=compressors_list,
-            dimension_names=["k", "j", "i"],
+            dimension_names=dim_names,
             attributes=attrs,
             overwrite=False if is_zip else overwrite,
             fill_value=0,
