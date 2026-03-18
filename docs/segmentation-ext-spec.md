@@ -53,7 +53,7 @@ Unlike `.seg.nrrd`, a Zarr store does not require non-empty data. An empty segme
 
 ## 3. Extension Fields
 
-The `slicerseg` extension is declared at the top level of the `"nrrd"` object's `"extensions"` and carries the array-wide segmentation metadata. Per-segment metadata lives in a `"segments"` array within this object.
+The `slicerseg` extension is declared at the top level of the `"duckn"` object's `"extensions"` and carries the array-wide segmentation metadata. Per-segment metadata lives in a `"segments"` array within this object.
 
 ### 3.1 Top-Level Extension Fields
 
@@ -494,7 +494,7 @@ A 256×256×128 binary labelmap segmentation with two segments in LPS space. Eac
   ],
   "fill_value": 0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space": "left-posterior-superior",
       "space_origin": [-127.5, -127.5, 0.0],
@@ -682,7 +682,7 @@ A segmentation with two overlapping segments, requiring two layers:
   ],
   "fill_value": 0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space": "left-posterior-superior",
       "space_origin": [-127.5, -127.5, 0.0],
@@ -772,7 +772,7 @@ The same tumor-liver overlap from §7.2, represented as label unions in a single
   ],
   "fill_value": 0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space": "left-posterior-superior",
       "space_origin": [-127.5, -127.5, 0.0],

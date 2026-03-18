@@ -81,11 +81,11 @@ Only little-endian data is supported. If the NRRD header specifies endian: big, 
 4. Metadata Mapping
 4.1 Zarr-level fields (derived from NRRD header)
 Zarr V3 fieldSourceshapeheader['sizes'] — see §4.5 for axis orderingdata_typeMapped from header['type'] via NRRD-to-Zarr type tabledimension_namesheader['labels'] if present, else nullfill_value0 (or type-appropriate default)chunk_gridSingle chunk, chunk_shape = shapecodecsDerived from header['encoding'] per §3
-4.2 duckn convention fields (attributes.nrrd)
+4.2 duckn convention fields (attributes.duckn)
 Mapped from the pynrrd header dict into the structured convention format.
 Convention fieldSource in pynrrd headerversionAlways "1.0"spaceheader['space']space_originheader['space origin'] as JSON array of numbersmeasurement_frameheader['measurement frame'] as nested JSON arrayssample_unitsheader['sample units']axes[i].kindheader['kinds'][i]axes[i].centeringheader['centerings'][i]axes[i].space_directionRow i of header['space directions'], omitted if NaN rowaxes[i].unitheader['units'][i] if presentaxes[i].thicknessheader['thicknesses'][i] if present and not NaN
 Spacings: The spacings field in NRRD is redundant when space directions is present (spacing = magnitude of the direction vector). It is not stored separately in the convention. When space directions is absent but spacings is present, the converter constructs axis-aligned direction vectors from the spacings.
-4.3 The legacy object (attributes.nrrd.legacy)
+4.3 The legacy object (attributes.duckn.legacy)
 Stores fields needed for lossless round-trip back to .nrrd that have no semantic home in the convention.
 json"legacy": {
   "nrrd_type": "short",
@@ -175,7 +175,7 @@ Output: path/to/file.nrrd
 Steps:
 
 Read zarr.json from the store root.
-Extract convention attributes from attributes.nrrd.
+Extract convention attributes from attributes.duckn.
 Reconstruct NRRD header from convention fields + legacy stash.
 Write NRRD header to output file — magic line NRRD0005, standard fields, key/value pairs from legacy.keyvalues, blank line separator.
 Append data blob — read the single chunk file, append directly after the header. No decompression or recompression.
@@ -196,7 +196,7 @@ def read_header(zarr_path: str) -> OrderedDict:
     """Read header from a .duckn store without loading data."""
 6.2 Header reconstruction
 The pynrrd-compatible header dict is reconstructed from zarr.json:
-pynrrd header keySource'type'legacy.nrrd_type, or reverse-mapped from Zarr data_type'dimension'len(shape)'sizes'np.array(shape)'encoding'legacy.encoding, or inferred from codec pipeline'endian''little' (always)'space'nrrd.space'space origin'np.array(nrrd.space_origin)'space directions'Matrix from axes[i].space_direction; NaN rows for non-spatial axes'kinds'[axes[i].kind for ...]'centerings'[axes[i].centering for ...]'units'[axes[i].unit for ...] if any present'thicknesses'[axes[i].thickness for ...] if any present'measurement frame'np.array(nrrd.measurement_frame)'sample units'nrrd.sample_units'space units'legacy.space_units'labels'dimension_names from Zarr metadata'content'legacy.content'old min'legacy.old_min'old max'legacy.old_max
+pynrrd header keySource'type'legacy.nrrd_type, or reverse-mapped from Zarr data_type'dimension'len(shape)'sizes'np.array(shape)'encoding'legacy.encoding, or inferred from codec pipeline'endian''little' (always)'space'duckn.space'space origin'np.array(duckn.space_origin)'space directions'Matrix from axes[i].space_direction; NaN rows for non-spatial axes'kinds'[axes[i].kind for ...]'centerings'[axes[i].centering for ...]'units'[axes[i].unit for ...] if any present'thicknesses'[axes[i].thickness for ...] if any present'measurement frame'np.array(duckn.measurement_frame)'sample units'duckn.sample_units'space units'legacy.space_units'labels'dimension_names from Zarr metadata'content'legacy.content'old min'legacy.old_min'old max'legacy.old_max
 Keys are omitted from the dict if the source field is absent.
 
 7. Example zarr.json
@@ -231,7 +231,7 @@ json{
     }
   ],
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space": "left-posterior-superior",
       "space_origin": [-119.53125, -159.609375, -71.7],

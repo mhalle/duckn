@@ -15,7 +15,7 @@ nibabel = pytest.importorskip("nibabel")
 
 import nibabel as nib
 
-from duckn.models import NiftiExtension, NrrdMetadata
+from duckn.models import NiftiExtension, DucknMetadata
 from duckn.nifti_convert import nifti_to_zarr, zarr_to_nifti
 
 
@@ -99,7 +99,7 @@ class TestSformDecomposition:
 
         store = zarr.storage.LocalStore(str(zarr_path))
         arr = zarr.open_array(store, mode="r")
-        meta = NrrdMetadata(**arr.attrs["nrrd"])
+        meta = DucknMetadata(**arr.attrs["duckn"])
 
         assert meta.space == "scanner-xyz"
         np.testing.assert_allclose(meta.space_origin, [0, 0, 0])
@@ -126,7 +126,7 @@ class TestSformDecomposition:
 
         store = zarr.storage.LocalStore(str(zarr_path))
         arr = zarr.open_array(store, mode="r")
-        meta = NrrdMetadata(**arr.attrs["nrrd"])
+        meta = DucknMetadata(**arr.attrs["duckn"])
 
         assert meta.space == "right-anterior-superior"
         np.testing.assert_allclose(meta.space_origin, [-10, -20, -30])
@@ -147,7 +147,7 @@ class TestSformDecomposition:
 
         store = zarr.storage.LocalStore(str(zarr_path))
         arr = zarr.open_array(store, mode="r")
-        meta = NrrdMetadata(**arr.attrs["nrrd"])
+        meta = DucknMetadata(**arr.attrs["duckn"])
         assert meta.space == "scanner-xyz"
 
         # code 4 → RAS + sform_code tag
@@ -159,7 +159,7 @@ class TestSformDecomposition:
 
         store2 = zarr.storage.LocalStore(str(zarr_path2))
         arr2 = zarr.open_array(store2, mode="r")
-        meta2 = NrrdMetadata(**arr2.attrs["nrrd"])
+        meta2 = DucknMetadata(**arr2.attrs["duckn"])
         assert meta2.space == "right-anterior-superior"
         nifti_ext = NiftiExtension(**meta2.extensions["nifti"])
         assert nifti_ext.tags.sform_code == 4
@@ -186,7 +186,7 @@ class TestValueTransforms:
 
         store = zarr.storage.LocalStore(str(zarr_path))
         arr = zarr.open_array(store, mode="r")
-        meta = NrrdMetadata(**arr.attrs["nrrd"])
+        meta = DucknMetadata(**arr.attrs["duckn"])
 
         assert meta.value_transforms is not None
         assert len(meta.value_transforms) == 1
@@ -207,7 +207,7 @@ class TestValueTransforms:
 
         store = zarr.storage.LocalStore(str(zarr_path))
         arr = zarr.open_array(store, mode="r")
-        meta = NrrdMetadata(**arr.attrs["nrrd"])
+        meta = DucknMetadata(**arr.attrs["duckn"])
         assert meta.value_transforms is None
 
 
@@ -233,7 +233,7 @@ class TestNiftiTags:
 
         store = zarr.storage.LocalStore(str(zarr_path))
         arr = zarr.open_array(store, mode="r")
-        meta = NrrdMetadata(**arr.attrs["nrrd"])
+        meta = DucknMetadata(**arr.attrs["duckn"])
 
         assert meta.intent == "statistical-map"
         nifti_ext = NiftiExtension(**meta.extensions["nifti"])
@@ -256,7 +256,7 @@ class TestNiftiTags:
 
         store = zarr.storage.LocalStore(str(zarr_path))
         arr = zarr.open_array(store, mode="r")
-        meta = NrrdMetadata(**arr.attrs["nrrd"])
+        meta = DucknMetadata(**arr.attrs["duckn"])
         nifti_ext = NiftiExtension(**meta.extensions["nifti"])
 
         assert nifti_ext.tags.dim_info.freq_dim == 1
@@ -280,7 +280,7 @@ class TestNiftiTags:
 
         store = zarr.storage.LocalStore(str(zarr_path))
         arr = zarr.open_array(store, mode="r")
-        meta = NrrdMetadata(**arr.attrs["nrrd"])
+        meta = DucknMetadata(**arr.attrs["duckn"])
         nifti_ext = NiftiExtension(**meta.extensions["nifti"])
 
         assert nifti_ext.tags.slice_timing.code == "alternating-increasing"
@@ -301,7 +301,7 @@ class TestNiftiTags:
 
         store = zarr.storage.LocalStore(str(zarr_path))
         arr = zarr.open_array(store, mode="r")
-        meta = NrrdMetadata(**arr.attrs["nrrd"])
+        meta = DucknMetadata(**arr.attrs["duckn"])
         nifti_ext = NiftiExtension(**meta.extensions["nifti"])
         assert nifti_ext.tags.descrip == "FSL5.0"
 
@@ -320,7 +320,7 @@ class TestNiftiTags:
 
         store = zarr.storage.LocalStore(str(zarr_path))
         arr = zarr.open_array(store, mode="r")
-        meta = NrrdMetadata(**arr.attrs["nrrd"])
+        meta = DucknMetadata(**arr.attrs["duckn"])
         nifti_ext = NiftiExtension(**meta.extensions["nifti"])
         assert nifti_ext.tags.cal.min == -8.0
         assert nifti_ext.tags.cal.max == 8.0
@@ -338,7 +338,7 @@ class TestNiftiTags:
 
         store = zarr.storage.LocalStore(str(zarr_path))
         arr = zarr.open_array(store, mode="r")
-        meta = NrrdMetadata(**arr.attrs["nrrd"])
+        meta = DucknMetadata(**arr.attrs["duckn"])
         nifti_ext = NiftiExtension(**meta.extensions["nifti"])
 
         assert nifti_ext.tags.qform_code == 1
@@ -411,7 +411,7 @@ class TestNiftiTags:
 
         store = zarr.storage.LocalStore(str(zarr_path))
         arr = zarr.open_array(store, mode="r")
-        meta = NrrdMetadata(**arr.attrs["nrrd"])
+        meta = DucknMetadata(**arr.attrs["duckn"])
         nifti_ext = NiftiExtension(**meta.extensions["nifti"])
 
         # legacy.tags.sform is the original 4x4
@@ -436,7 +436,7 @@ class TestNiftiTags:
 
         store = zarr.storage.LocalStore(str(zarr_path))
         arr = zarr.open_array(store, mode="r")
-        meta = NrrdMetadata(**arr.attrs["nrrd"])
+        meta = DucknMetadata(**arr.attrs["duckn"])
         nifti_ext = NiftiExtension(**meta.extensions["nifti"])
 
         # sform present (code=1), qform absent (code=0)
@@ -471,7 +471,7 @@ class TestFourD:
 
         store = zarr.storage.LocalStore(str(zarr_path))
         arr = zarr.open_array(store, mode="r")
-        meta = NrrdMetadata(**arr.attrs["nrrd"])
+        meta = DucknMetadata(**arr.attrs["duckn"])
 
         assert arr.shape == (8, 8, 4, 10)
         assert len(meta.axes) == 4
@@ -590,7 +590,7 @@ class TestNifti2:
 
         store = zarr.storage.LocalStore(str(zarr_path))
         arr = zarr.open_array(store, mode="r")
-        meta = NrrdMetadata(**arr.attrs["nrrd"])
+        meta = DucknMetadata(**arr.attrs["duckn"])
         nifti_ext = NiftiExtension(**meta.extensions["nifti"])
         assert nifti_ext.nifti_version == 2
 
@@ -611,13 +611,13 @@ class TestFreshExport:
     def test_no_nifti_extension(self, tmp_path):
         """Zarr with no NIfTI extension → valid NIfTI from convention fields."""
         import zarr
-        from duckn.models import AxisKind, AxisMetadata, Centering, NrrdMetadata, SpaceName
+        from duckn.models import AxisKind, AxisMetadata, Centering, DucknMetadata, SpaceName
 
         data = np.arange(8 * 8 * 4, dtype=np.int16).reshape(8, 8, 4)
         affine = np.diag([2.0, 2.0, 3.0, 1.0])
         affine[:3, 3] = [-100, -120, -60]
 
-        meta = NrrdMetadata(
+        meta = DucknMetadata(
             version="1.0",
             space=SpaceName.RIGHT_ANTERIOR_SUPERIOR,
             space_origin=[-100.0, -120.0, -60.0],
@@ -638,7 +638,7 @@ class TestFreshExport:
             data=data,
             chunks=(8, 8, 4),
             dimension_names=["i", "j", "k"],
-            attributes={"nrrd": meta.model_dump(exclude_none=True)},
+            attributes={"duckn": meta.model_dump(exclude_none=True)},
             fill_value=0,
         )
 
@@ -659,10 +659,10 @@ class TestFreshExport:
     def test_scanner_xyz_maps_to_code_1(self, tmp_path):
         """scanner-xyz space → sform_code=1."""
         import zarr
-        from duckn.models import AxisKind, AxisMetadata, Centering, NrrdMetadata, SpaceName
+        from duckn.models import AxisKind, AxisMetadata, Centering, DucknMetadata, SpaceName
 
         data = np.zeros((4, 4, 4), dtype=np.float32)
-        meta = NrrdMetadata(
+        meta = DucknMetadata(
             version="1.0",
             space=SpaceName.SCANNER_XYZ,
             space_origin=[0.0, 0.0, 0.0],
@@ -683,7 +683,7 @@ class TestFreshExport:
             data=data,
             chunks=(4, 4, 4),
             dimension_names=["i", "j", "k"],
-            attributes={"nrrd": meta.model_dump(exclude_none=True)},
+            attributes={"duckn": meta.model_dump(exclude_none=True)},
             fill_value=0,
         )
 
@@ -698,10 +698,10 @@ class TestFreshExport:
     def test_oblique_affine_from_convention(self, tmp_path):
         """Oblique space_directions → correct oblique sform."""
         import zarr
-        from duckn.models import AxisKind, AxisMetadata, Centering, NrrdMetadata, SpaceName
+        from duckn.models import AxisKind, AxisMetadata, Centering, DucknMetadata, SpaceName
 
         data = np.zeros((4, 4, 4), dtype=np.float32)
-        meta = NrrdMetadata(
+        meta = DucknMetadata(
             version="1.0",
             space=SpaceName.RIGHT_ANTERIOR_SUPERIOR,
             space_origin=[-50.0, -60.0, -30.0],
@@ -722,7 +722,7 @@ class TestFreshExport:
             data=data,
             chunks=(4, 4, 4),
             dimension_names=["i", "j", "k"],
-            attributes={"nrrd": meta.model_dump(exclude_none=True)},
+            attributes={"duckn": meta.model_dump(exclude_none=True)},
             fill_value=0,
         )
 
@@ -741,11 +741,11 @@ class TestFreshExport:
         """value_transforms without NIfTI extension → scl_slope/scl_inter."""
         import zarr
         from duckn.models import (
-            AxisKind, AxisMetadata, Centering, NrrdMetadata, SpaceName, ValueTransform,
+            AxisKind, AxisMetadata, Centering, DucknMetadata, SpaceName, ValueTransform,
         )
 
         data = np.arange(64, dtype=np.int16).reshape(4, 4, 4)
-        meta = NrrdMetadata(
+        meta = DucknMetadata(
             version="1.0",
             space=SpaceName.SCANNER_XYZ,
             space_origin=[0.0, 0.0, 0.0],
@@ -769,7 +769,7 @@ class TestFreshExport:
             data=data,
             chunks=(4, 4, 4),
             dimension_names=["i", "j", "k"],
-            attributes={"nrrd": meta.model_dump(exclude_none=True)},
+            attributes={"duckn": meta.model_dump(exclude_none=True)},
             fill_value=0,
         )
 
@@ -787,10 +787,10 @@ class TestFreshExport:
     def test_dicom_sourced_zarr_to_nifti(self, tmp_path):
         """Zarr from DICOM conversion (LPS, no NIfTI extension) → NIfTI."""
         import zarr
-        from duckn.models import AxisKind, AxisMetadata, Centering, NrrdMetadata, SpaceName
+        from duckn.models import AxisKind, AxisMetadata, Centering, DucknMetadata, SpaceName
 
         data = np.zeros((30, 512, 512), dtype=np.int16)
-        meta = NrrdMetadata(
+        meta = DucknMetadata(
             version="1.0",
             space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
             space_origin=[0.0, 0.0, 0.0],
@@ -811,7 +811,7 @@ class TestFreshExport:
             data=data,
             chunks=(30, 64, 64),
             dimension_names=["k", "j", "i"],
-            attributes={"nrrd": meta.model_dump(exclude_none=True)},
+            attributes={"duckn": meta.model_dump(exclude_none=True)},
             fill_value=0,
         )
 

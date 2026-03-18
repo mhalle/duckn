@@ -28,7 +28,7 @@ from .models import (
     NiftiLegacyTags,
     NiftiSliceTiming,
     NiftiTags,
-    NrrdMetadata,
+    DucknMetadata,
     SpaceName,
     ValueTransform,
 )
@@ -395,8 +395,8 @@ def nifti_to_zarr(
     nifti_ext = NiftiExtension(**nifti_ext_kwargs)
     extensions = {"nifti": nifti_ext.model_dump(exclude_none=True)}
 
-    # --- Build NrrdMetadata ---
-    meta = NrrdMetadata(
+    # --- Build DucknMetadata ---
+    meta = DucknMetadata(
         version="1.0",
         space=space,
         space_origin=space_origin,
@@ -418,7 +418,7 @@ def nifti_to_zarr(
     for i in range(4, ndim):
         dim_names.append(f"d{i}")
 
-    attrs = {"nrrd": meta.model_dump(exclude_none=True)}
+    attrs = {"duckn": meta.model_dump(exclude_none=True)}
 
     is_zip = _is_zip_path(output_path)
     with open_store(output_path, mode="w", overwrite=overwrite) as store:
@@ -471,8 +471,8 @@ def zarr_to_nifti(
     with open_store(input_path, mode="r") as store:
         arr = zarr.open_array(store, mode="r")
         data = arr[:]
-        nrrd_attrs = arr.attrs.get("nrrd", {})
-        meta = NrrdMetadata(**nrrd_attrs)
+        duckn_attrs = arr.attrs.get("duckn", {})
+        meta = DucknMetadata(**duckn_attrs)
 
     ndim = data.ndim
 

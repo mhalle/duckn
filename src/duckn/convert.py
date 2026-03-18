@@ -14,7 +14,7 @@ import zarr
 
 from .models import (
     AxisKind, AxisMetadata, Centering, DwmriAxisExtension, DwmriExtension,
-    NrrdMetadata, SegmentationExtension, SpaceName, _SPACE_ABBREVS,
+    DucknMetadata, SegmentationExtension, SpaceName, _SPACE_ABBREVS,
 )
 from .dwi_nrrd import parse_dwi_keyvalues, serialize_dwi_extension
 from .seg_nrrd import parse_seg_keyvalues, serialize_seg_extension
@@ -157,8 +157,8 @@ def _header_to_metadata(
     ndim: int,
     *,
     axis_order: str = "slowest_first",
-) -> tuple[NrrdMetadata, list[str] | None, dict[str, Any]]:
-    """Build NrrdMetadata from a pynrrd header dict.
+) -> tuple[DucknMetadata, list[str] | None]:
+    """Build DucknMetadata from a pynrrd header dict.
 
     Parameters
     ----------
@@ -170,9 +170,8 @@ def _header_to_metadata(
 
     Returns
     -------
-    meta : NrrdMetadata
+    meta : DucknMetadata
     dimension_names : list of strings or None
-    extra_attrs : dict of extra attributes (e.g., content)
     """
     reverse = axis_order == "slowest_first"
 
@@ -272,7 +271,7 @@ def _header_to_metadata(
 
         axes.append(AxisMetadata(**ax_kwargs))
 
-    # --- Build NrrdMetadata ---
+    # --- Build DucknMetadata ---
     meta_kwargs: dict[str, Any] = {"version": "1.0", "axes": axes}
     if space_name:
         meta_kwargs["space"] = space_name
@@ -318,7 +317,7 @@ def _header_to_metadata(
         if extensions:
             meta_kwargs["extensions"] = extensions
 
-    meta = NrrdMetadata(**meta_kwargs)
+    meta = DucknMetadata(**meta_kwargs)
 
     # --- dimension_names from labels ---
     dimension_names: list[str] | None = None
@@ -327,32 +326,24 @@ def _header_to_metadata(
         if any(clean_labels):
             dimension_names = clean_labels
 
-    # --- content as top-level attribute (outside nrrd key) ---
-    extra_attrs: dict[str, Any] = {}
-    content_raw = header.get("content")
-    if content_raw:
-        extra_attrs["content"] = content_raw
-
-    return meta, dimension_names, extra_attrs
+    return meta, dimension_names
 
 
 def _metadata_to_header(
-    meta: NrrdMetadata,
+    meta: DucknMetadata,
     *,
     axis_order: str = "slowest_first",
     dim_names: tuple[str, ...] | list[str] | None = None,
-    content: str | None = None,
 ) -> dict[str, Any]:
-    """Reconstruct NRRD header dict from NrrdMetadata.
+    """Reconstruct NRRD header dict from DucknMetadata.
 
     Parameters
     ----------
-    meta : NrrdMetadata from zarr attributes
+    meta : DucknMetadata from zarr attributes
     axis_order : "slowest_first" reverses axes from array (slowest-first)
         order back to NRRD (fastest-first) order for writing.
         "fastest_first" keeps axes as-is (already in NRRD order).
     dim_names : dimension names from zarr metadata
-    content : content string from zarr attributes
 
     Returns
     -------
@@ -444,10 +435,6 @@ def _metadata_to_header(
         if any(nrrd_labels):
             header["labels"] = nrrd_labels
 
-    # --- content ---
-    if content:
-        header["content"] = content
-
     # --- sample units ---
     if meta.sample_units is not None:
         if isinstance(meta.sample_units, str):
@@ -525,7 +512,7 @@ def _format_nrrd_field(key: str, value: Any) -> str:
 _NRRD_FIELD_ORDER: list[str] = [
     "space", "space dimension", "space origin", "space directions",
     "kinds", "centerings", "space units", "labels",
-    "thicknesses", "measurement frame", "content", "sample units",
+    "thicknesses", "measurement frame", "sample units",
 ]
 
 
@@ -598,13 +585,12 @@ def nrrd_to_zarr(
 
     compressors_list = _build_compressors(compressor, level)
 
-    meta, dimension_names, extra_attrs = _header_to_metadata(header, ndim)
+    meta, dimension_names = _header_to_metadata(header, ndim)
 
     if chunks is None:
         chunks = _auto_chunks(shape, data.dtype)
 
-    attrs = {"nrrd": meta.model_dump(exclude_none=True)}
-    attrs.update(extra_attrs)
+    attrs = {"duckn": meta.model_dump(exclude_none=True)}
 
     is_zip = _is_zip_path(zarr_path)
     with open_store(zarr_path, mode="w", overwrite=overwrite) as store:
@@ -651,18 +637,13 @@ def zarr_to_nrrd(
     with open_store(zarr_path, mode="r") as store:
         arr = zarr.open_array(store, mode="r")
         data = arr[:]
-        nrrd_attrs = arr.attrs.get("nrrd", {})
+        duckn_attrs = arr.attrs.get("duckn", {})
 
-        meta = NrrdMetadata(**nrrd_attrs)
+        meta = DucknMetadata(**duckn_attrs)
 
         dim_names = arr.metadata.dimension_names
-        content = arr.attrs.get("content")
 
-    header = _metadata_to_header(
-        meta,
-        dim_names=dim_names,
-        content=content,
-    )
+    header = _metadata_to_header(meta, dim_names=dim_names)
     header["encoding"] = encoding
 
     nrrd.write(str(nrrd_path), data, header, index_order="C")
@@ -750,19 +731,18 @@ def nrrd_to_zarr_zerocopy(
     serializer, compressors = _codecs_for_encoding(encoding)
 
     # Build metadata in slowest-first order (same as normal path)
-    meta, dimension_names, extra_attrs = _header_to_metadata(header, ndim)
+    meta, dimension_names = _header_to_metadata(header, ndim)
 
     # Serialize metadata and add legacy info for round-trip
-    nrrd_dict = meta.model_dump(exclude_none=True)
-    if "extensions" not in nrrd_dict:
-        nrrd_dict["extensions"] = {}
-    nrrd_dict["extensions"]["legacy"] = {
+    duckn_dict = meta.model_dump(exclude_none=True)
+    if "extensions" not in duckn_dict:
+        duckn_dict["extensions"] = {}
+    duckn_dict["extensions"]["legacy"] = {
         "nrrd_type": header["type"],
         "encoding": encoding,
     }
 
-    attrs: dict[str, Any] = {"nrrd": nrrd_dict}
-    attrs.update(extra_attrs)
+    attrs: dict[str, Any] = {"duckn": duckn_dict}
 
     # Remove existing store if overwriting
     is_zip = _is_zip_path(zarr_path)
@@ -829,8 +809,8 @@ def zarr_to_nrrd_zerocopy(
 
     with open_store(zarr_path, mode="r") as store:
         arr = zarr.open_array(store, mode="r")
-        nrrd_attrs = arr.attrs.get("nrrd", {})
-        meta = NrrdMetadata(**nrrd_attrs)
+        duckn_attrs = arr.attrs.get("duckn", {})
+        meta = DucknMetadata(**duckn_attrs)
 
         # Get legacy info
         legacy: dict[str, Any] = {}
@@ -871,13 +851,8 @@ def zarr_to_nrrd_zerocopy(
 
         # Build NRRD header (reverse from slowest-first back to NRRD order)
         dim_names = arr.metadata.dimension_names
-        content = arr.attrs.get("content")
 
-    header = _metadata_to_header(
-        meta,
-        dim_names=dim_names,
-        content=content,
-    )
+    header = _metadata_to_header(meta, dim_names=dim_names)
 
     # Write NRRD file: header + raw data blob
     with open(nrrd_path, "wb") as fh:

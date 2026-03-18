@@ -19,7 +19,7 @@ const SPACE_SIGN_FLIPS = {
  *
  * @param {TypedArray} data - Flat typed array of voxel values (C-order from Zarr)
  * @param {number[]} shape - Array shape in C-order (slowest-first)
- * @param {object} attrs - Zarr array attributes (must contain `nrrd` key)
+ * @param {object} attrs - Zarr array attributes (must contain `duckn` key)
  * @param {object} [options]
  * @param {string} [options.scalarArrayName='DucknScalars'] - Name for the scalar data array
  * @returns {vtkImageData}
@@ -27,12 +27,12 @@ const SPACE_SIGN_FLIPS = {
 export function ducknToImageData(data, shape, attrs, options = {}) {
   const { scalarArrayName = 'DucknScalars' } = options;
 
-  const nrrd = attrs.nrrd;
-  if (!nrrd) {
-    throw new Error('duckn metadata not found: attrs.nrrd is missing');
+  const duckn = attrs.duckn;
+  if (!duckn) {
+    throw new Error('duckn metadata not found: attrs.duckn is missing');
   }
 
-  const axes = nrrd.axes;
+  const axes = duckn.axes;
   if (!axes) {
     throw new Error('duckn metadata missing axes');
   }
@@ -51,13 +51,13 @@ export function ducknToImageData(data, shape, attrs, options = {}) {
   }
 
   // Determine sign-flip for LPS conversion
-  const spaceName = nrrd.space;
+  const spaceName = duckn.space;
   const flip = spaceName && SPACE_SIGN_FLIPS[spaceName]
     ? SPACE_SIGN_FLIPS[spaceName]
     : [1, 1, 1];
 
   // Apply sign flip to space_origin
-  const rawOrigin = nrrd.space_origin || [0, 0, 0];
+  const rawOrigin = duckn.space_origin || [0, 0, 0];
   const origin = rawOrigin.map((v, i) => v * flip[i]);
 
   // Apply sign flip to space_directions, then reverse for C-order → VTK order

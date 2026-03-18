@@ -75,7 +75,7 @@ Baseline (non-diffusion-weighted, b=0) volumes are identified by a zero-vector g
 
 ## 4. Extension Fields
 
-The `dwmri` extension has both top-level fields (declared in the `"nrrd"` object's `"extensions"`) and per-axis fields (on the `"list"` axis).
+The `dwmri` extension has both top-level fields (declared in the `"duckn"` object's `"extensions"`) and per-axis fields (on the `"list"` axis).
 
 ### 4.1 Top-Level Extension Fields
 
@@ -499,7 +499,7 @@ A 128×128×60 volume with 13 DWI acquisitions (1 baseline + 12 gradient directi
   ],
   "fill_value": 0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space": "left-posterior-superior",
       "space_origin": [-128.0, -142.2, 99.7],
@@ -582,7 +582,7 @@ The same dataset as §9.1, but using explicit per-volume b-values for clarity:
   ],
   "fill_value": 0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space": "left-posterior-superior",
       "space_origin": [-128.0, -142.2, 99.7],
@@ -666,7 +666,7 @@ A 256×256×36 volume with 14 acquisitions (2 baselines via NEX + 12 gradient di
   ],
   "fill_value": 0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space": "right-anterior-superior",
       "space_origin": [125.0, 124.1, 79.3],

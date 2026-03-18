@@ -203,12 +203,12 @@ class AxisMetadata(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Top-level nrrd metadata object
+# Top-level duckn metadata object
 # ---------------------------------------------------------------------------
 
 
-class NrrdMetadata(BaseModel):
-    """The `nrrd` attributes object stored in a Zarr v3 array."""
+class DucknMetadata(BaseModel):
+    """The `duckn` attributes object stored in a Zarr v3 array."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -225,7 +225,7 @@ class NrrdMetadata(BaseModel):
     unit_systems: dict[str, UnitSystemEntry] | None = None
 
     @model_validator(mode="after")
-    def _check_consistency(self) -> NrrdMetadata:
+    def _check_consistency(self) -> DucknMetadata:
         # space and space_dimension mutually exclusive
         if self.space is not None and self.space_dimension is not None:
             raise ValueError("space and space_dimension are mutually exclusive")
@@ -520,7 +520,7 @@ class NiftiExtension(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def validate_against_shape(meta: NrrdMetadata, shape: tuple[int, ...]) -> None:
+def validate_against_shape(meta: DucknMetadata, shape: tuple[int, ...]) -> None:
     """Validate that metadata is consistent with the given array shape.
 
     Raises ValueError on any inconsistency.

@@ -9,7 +9,7 @@ import pytest
 import zarr
 
 from duckn.convert import nrrd_to_zarr, nrrd_to_zarr_zerocopy, zarr_to_nrrd, zarr_to_nrrd_zerocopy
-from duckn.models import NrrdMetadata
+from duckn.models import DucknMetadata
 from duckn.zarr_io import get_zarr_attrs, open_store, read_duckn, read_duckn_metadata
 
 
@@ -78,7 +78,7 @@ class TestNrrdZipRoundTrip:
         nrrd_to_zarr(nrrd_path, zip_path)
 
         attrs = get_zarr_attrs(zip_path)
-        assert "nrrd" in attrs
+        assert "duckn" in attrs
 
     def test_zip_to_nrrd_round_trip(self, tmp_path):
         """NRRD -> .zarr.zip -> NRRD round-trip preserves data."""
@@ -289,4 +289,4 @@ class TestInfoOnZip:
         runner = CliRunner()
         result = runner.invoke(cli, ["info", str(zip_path)])
         assert result.exit_code == 0
-        assert '"nrrd"' in result.output
+        assert '"duckn"' in result.output

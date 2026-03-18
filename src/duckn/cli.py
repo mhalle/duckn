@@ -11,7 +11,7 @@ from pathlib import Path
 import click
 
 from .convert import nrrd_to_zarr, nrrd_to_zarr_zerocopy, zarr_to_nrrd, zarr_to_nrrd_zerocopy
-from .models import NrrdMetadata
+from .models import DucknMetadata
 
 
 @click.group()
@@ -190,7 +190,7 @@ def roundtrip(
         fields: list[str] = [
             "space", "space dimension", "space origin", "space directions",
             "kinds", "centerings", "space units", "labels",
-            "measurement frame", "thicknesses", "content", "sample units",
+            "measurement frame", "thicknesses", "sample units",
         ]
         for k in header_orig:
             if k not in _NRRD_SPEC_FIELDS and k not in fields:

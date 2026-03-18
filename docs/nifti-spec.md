@@ -65,7 +65,7 @@ This decomposition is exact. No information is lost, and the sform can be recons
 
 ## 4. Extension Fields
 
-The `nifti` extension is declared at the top level of the `"nrrd"` object's `"extensions"`.
+The `nifti` extension is declared at the top level of the `"duckn"` object's `"extensions"`.
 
 ```json
 "extensions": {
@@ -384,7 +384,7 @@ A T1-weighted volume converted from NIfTI. The sform is the only affine, and the
   ],
   "fill_value": 0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space": "right-anterior-superior",
       "space_origin": [-127.5, -127.5, -87.5],
@@ -445,7 +445,7 @@ An fMRI t-statistic map with degrees of freedom:
   ],
   "fill_value": 0.0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space": "right-anterior-superior",
       "space_origin": [-94.5, -130.5, -72.0],
@@ -517,7 +517,7 @@ A 4D fMRI dataset with slice timing information and dual affines:
   ],
   "fill_value": 0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space": "scanner-xyz",
       "space_origin": [-94.5, -130.5, -72.0],
@@ -619,7 +619,7 @@ A symmetric tensor volume with NIfTI intent code 1005:
   ],
   "fill_value": 0.0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space": "right-anterior-superior",
       "space_origin": [-127.0, -127.0, 0.0],

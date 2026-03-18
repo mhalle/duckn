@@ -45,7 +45,7 @@ Other extensions interact with this one as follows:
 
 ## 3. Extension Structure
 
-The `provenance` extension is declared at the top level of the `"nrrd"` object's `"extensions"`.
+The `provenance` extension is declared at the top level of the `"duckn"` object's `"extensions"`.
 
 ```json
 "extensions": {
@@ -532,7 +532,7 @@ A CT scan converted from DICOM, carrying both the `dicom` extension (for header 
   ],
   "fill_value": 0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space": "left-posterior-superior",
       "space_origin": [-249.5, -249.5, -150.0],
@@ -991,7 +991,7 @@ These flat keys are convenience aliases. When both forms are present, the JSON b
 
 ## 10. Design Notes
 
-**Why a separate extension rather than inline fields.** Provenance metadata is verbose, variable, and orthogonal to what the array *is*. Putting processing history and attribution into the top-level `"nrrd"` object would clutter the spatial-semantic core with pipeline details that most readers don't need. An extension keeps it opt-in: readers that don't understand `provenance` ignore it; the array remains fully usable.
+**Why a separate extension rather than inline fields.** Provenance metadata is verbose, variable, and orthogonal to what the array *is*. Putting processing history and attribution into the top-level `"duckn"` object would clutter the spatial-semantic core with pipeline details that most readers don't need. An extension keeps it opt-in: readers that don't understand `provenance` ignore it; the array remains fully usable.
 
 **Why `sources` is separate from `processing`.** Sources describe *what went in*; processing describes *what happened*. These are different questions with different structures. A source might have a DOI and a format; a processing step might have parameters and an environment. Merging them into a single "history" list would force a polymorphic schema that is harder to validate and query.
 

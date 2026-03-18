@@ -23,7 +23,7 @@ from .models import (
     AxisMetadata,
     Centering,
     DicomExtension,
-    NrrdMetadata,
+    DucknMetadata,
     SpaceName,
     ValueTransform,
 )
@@ -615,14 +615,14 @@ def _load_multiframe(
 # ---------------------------------------------------------------------------
 
 
-def _build_nrrd_metadata(
+def build_duckn_metadata(
     geometry: DicomGeometry,
     datasets: list[Any],
     anonymized: bool | None,
     include_tags: bool,
     include_binary: bool = False,
-) -> NrrdMetadata:
-    """Build NrrdMetadata from geometry and DICOM datasets."""
+) -> DucknMetadata:
+    """Build duckn metadata from geometry and DICOM datasets."""
     # Axes in C order: [slice, row, col]
     axes = []
     for i, direction in enumerate(geometry.space_directions):
@@ -672,7 +672,7 @@ def _build_nrrd_metadata(
         )
         extensions = {"dicom": dicom_ext.model_dump(exclude_none=True, by_alias=True)}
 
-    return NrrdMetadata(
+    return DucknMetadata(
         version="1.0",
         space=geometry.space,
         space_origin=geometry.space_origin,
@@ -727,14 +727,14 @@ def dicom_to_zarr(
     else:
         raise FileNotFoundError(f"Input path does not exist: {input_p}")
 
-    meta = _build_nrrd_metadata(geometry, datasets, anonymized, tags, binary_tags)
+    meta = build_duckn_metadata(geometry, datasets, anonymized, tags, binary_tags)
 
     if chunks is None:
         chunks = _auto_chunks(volume.shape, volume.dtype)
 
     compressors_list = _build_compressors(compressor, level)
 
-    attrs = {"nrrd": meta.model_dump(exclude_none=True)}
+    attrs = {"duckn": meta.model_dump(exclude_none=True)}
 
     is_zip = _is_zip_path(output_path)
     with open_store(output_path, mode="w", overwrite=overwrite) as store:
@@ -755,7 +755,7 @@ def dicom_to_zarr(
 # ---------------------------------------------------------------------------
 
 # Uncompressed transfer syntaxes (raw pixel bytes in file)
-_UNCOMPRESSED_TRANSFER_SYNTAXES = frozenset({
+UNCOMPRESSED_TRANSFER_SYNTAXES = frozenset({
     "1.2.840.10008.1.2",        # Implicit VR Little Endian
     "1.2.840.10008.1.2.1",      # Explicit VR Little Endian
     "1.2.840.10008.1.2.1.99",   # Deflated Explicit VR Little Endian
@@ -816,7 +816,7 @@ def get_pixel_data_range(
             pixel_length = int.from_bytes(length_bytes, "little")
             pixel_offset = tag_offset + 12
 
-    if tsuid not in _UNCOMPRESSED_TRANSFER_SYNTAXES:
+    if tsuid not in UNCOMPRESSED_TRANSFER_SYNTAXES:
         raise ValueError(
             f"Transfer syntax {tsuid} is compressed. "
             f"get_pixel_data_range() only supports uncompressed DICOM."
@@ -907,7 +907,7 @@ def _scan_headers(
     return entries
 
 
-def _geometry_from_headers(
+def geometry_from_headers(
     datasets: list[Any],
 ) -> DicomGeometry:
     """Compute geometry from sorted header-only datasets (no pixel data)."""
@@ -1043,19 +1043,19 @@ def dicom_to_zarr_streaming(
     entries = _scan_headers(input_p)
     paths = [e[0] for e in entries]
     headers = [e[1] for e in entries]
-    geometry = _geometry_from_headers(headers)
+    geometry = geometry_from_headers(headers)
 
     n_slices, rows, cols = geometry.shape
     chunk_shape = (1, rows, cols)
 
     # Build metadata
-    meta = _build_nrrd_metadata(geometry, headers, anonymized, tags, binary_tags)
+    meta = build_duckn_metadata(geometry, headers, anonymized, tags, binary_tags)
     compressors_list = _build_compressors(compressor, level)
-    attrs = {"nrrd": meta.model_dump(exclude_none=True)}
+    attrs = {"duckn": meta.model_dump(exclude_none=True)}
 
     # Determine if we can do raw byte copy
     tsuid = str(getattr(headers[0].file_meta, "TransferSyntaxUID", ""))
-    is_uncompressed = tsuid in _UNCOMPRESSED_TRANSFER_SYNTAXES
+    is_uncompressed = tsuid in UNCOMPRESSED_TRANSFER_SYNTAXES
     is_big_endian = tsuid == "1.2.840.10008.1.2.2"
 
     if is_big_endian and geometry.dtype.itemsize > 1:
@@ -1240,8 +1240,8 @@ def zarr_to_dicom(
     with open_store(input_path, mode="r") as store:
         arr = zarr.open_array(store, mode="r")
         data = arr[:]
-        nrrd_attrs = arr.attrs.get("nrrd", {})
-        meta = NrrdMetadata(**nrrd_attrs)
+        duckn_attrs = arr.attrs.get("duckn", {})
+        meta = DucknMetadata(**duckn_attrs)
 
     if data.ndim != 3:
         raise ValueError(f"Expected 3D data, got {data.ndim}D")

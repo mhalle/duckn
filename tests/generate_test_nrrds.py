@@ -377,7 +377,7 @@ def round_trip_headers(orig_path: Path, tmp: Path) -> dict[str, Any]:
         _is_nan_vector,
         _transpose_matrix,
     )
-    from duckn.models import NrrdMetadata, SpaceName, _SPACE_ABBREVS, _SPACE_DIMENSIONS
+    from duckn.models import DucknMetadata, SpaceName, _SPACE_ABBREVS, _SPACE_DIMENSIONS
 
     header = nrrd.read_header(str(orig_path))
     ndim = header["dimension"]
@@ -468,7 +468,7 @@ def round_trip_headers(orig_path: Path, tmp: Path) -> dict[str, Any]:
     if keyvalues:
         meta_kwargs["extensions"] = {"keyvalues": keyvalues}
 
-    meta = NrrdMetadata(**meta_kwargs)
+    meta = DucknMetadata(**meta_kwargs)
 
     # ---- replicate zarr_to_nrrd header reconstruction ----
     out: dict[str, Any] = {}

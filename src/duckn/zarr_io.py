@@ -1,4 +1,4 @@
-"""Thin wrappers for reading/writing Zarr v3 arrays with nrrd attributes."""
+"""Thin wrappers for reading/writing Zarr v3 arrays with duckn attributes."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from zipfile import ZIP_STORED
 import numpy as np
 import zarr
 
-from .models import NrrdMetadata
+from .models import DucknMetadata
 
 
 def _is_zip_path(path: str | Path) -> bool:
@@ -52,28 +52,28 @@ def open_store(path: str | Path, *, mode: str = "r", overwrite: bool = False):
         yield zarr.storage.LocalStore(str(path))
 
 
-def read_duckn(path: str | Path) -> tuple[np.ndarray, NrrdMetadata]:
+def read_duckn(path: str | Path) -> tuple[np.ndarray, DucknMetadata]:
     """Read a duckn Zarr v3 array and return (data, metadata).
 
     Returns
     -------
     data : numpy array
-    meta : parsed NrrdMetadata from the "nrrd" attribute
+    meta : parsed DucknMetadata from the "duckn" attribute
     """
     with open_store(path, mode="r") as store:
         arr = zarr.open_array(store, mode="r")
         data = arr[:]
-        nrrd_attrs = arr.attrs.get("nrrd", {})
-        meta = NrrdMetadata(**nrrd_attrs)
+        duckn_attrs = arr.attrs.get("duckn", {})
+        meta = DucknMetadata(**duckn_attrs)
     return data, meta
 
 
-def read_duckn_metadata(path: str | Path) -> NrrdMetadata:
-    """Read only the nrrd metadata from a Zarr store (no data loaded)."""
+def read_duckn_metadata(path: str | Path) -> DucknMetadata:
+    """Read only the duckn metadata from a Zarr store (no data loaded)."""
     with open_store(path, mode="r") as store:
         arr = zarr.open_array(store, mode="r")
-        nrrd_attrs = arr.attrs.get("nrrd", {})
-        meta = NrrdMetadata(**nrrd_attrs)
+        duckn_attrs = arr.attrs.get("duckn", {})
+        meta = DucknMetadata(**duckn_attrs)
     return meta
 
 

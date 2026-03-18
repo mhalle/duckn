@@ -167,7 +167,7 @@ When using a custom scheme, the `code` must be meaningful within that system, an
 
 ## 4. The `unit_systems` Registry
 
-When structured unit objects are used, the top-level `"nrrd"` object may include a `unit_systems` field that registers the unit systems referenced in the file. This follows the same pattern as the slicerseg extension's `terminologies` registry.
+When structured unit objects are used, the top-level `"duckn"` object may include a `unit_systems` field that registers the unit systems referenced in the file. This follows the same pattern as the slicerseg extension's `terminologies` registry.
 
 ```json
 "unit_systems": {

@@ -7,7 +7,7 @@
 
 ## 1. Purpose
 
-duckn builds on the semantic richness of the NRRD file format — a nested convention layered inside Zarr V3, hence the name (short for "turducken"). The convention uses the `"nrrd"` attribute key to credit these NRRD semantics and preserve compatibility with earlier drafts.
+duckn builds on the semantic richness of the NRRD file format — a nested convention layered inside Zarr V3, hence the name (short for "turducken").
 
 This document defines a metadata convention for Zarr V3 arrays that encodes the semantic richness of the NRRD file format — structured axis metadata, spatial orientation, measurement frames — within Zarr's standard `attributes` mechanism.
 
@@ -43,7 +43,7 @@ The following array-level concerns are handled entirely by Zarr and are **not** 
 | Dimension names | `dimension_names` |
 | Chunk key layout | `chunk_key_encoding` |
 
-This convention defines the content of a single JSON object stored under the key `"nrrd"` within the Zarr array's `attributes`:
+This convention defines the content of a single JSON object stored under the key `"duckn"` within the Zarr array's `attributes`:
 
 ```json
 {
@@ -56,22 +56,20 @@ This convention defines the content of a single JSON object stored under the key
   "codecs": [ ... ],
   "fill_value": 0.0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       ...
     }
   }
 }
 ```
 
-A Zarr reader that does not recognize the `"nrrd"` key simply ignores it. The array remains fully accessible.
-
-> **Note on the attribute key name.** The key `"nrrd"` is retained to credit the NRRD file format whose semantics this convention inherits, and to maintain compatibility with existing stores. If a future Zarr extension registry requires reverse-domain namespacing, the key may migrate to `"org.duckn.nrrd"` in a future major version. Readers should treat both keys as equivalent if encountered.
+A Zarr reader that does not recognize the `"duckn"` key simply ignores it. The array remains fully accessible.
 
 ---
 
 ## 3. Convention Fields
 
-All fields within the `"nrrd"` object are optional. Their presence or absence carries meaning: a missing field means the information is unknown or inapplicable. Fields must not be included with null or sentinel values to represent "don't know" — omit them instead.
+All fields within the `"duckn"` object are optional. Their presence or absence carries meaning: a missing field means the information is unknown or inapplicable. Fields must not be included with null or sentinel values to represent "don't know" — omit them instead.
 
 ### 3.1 Top-Level Fields
 
@@ -206,10 +204,10 @@ An object containing domain-specific metadata that depends on NRRD convention se
 Rules:
 
 - Each extension object must contain a `"version"` field (format `"major.minor"`), following the same compatibility rules as the convention version. Version semantics (major = breaking, minor = additive) are defined by each extension's specification.
-- If an extension is used anywhere in the `"nrrd"` object — including only on per-axis `extensions` — it must have an entry in the top-level `extensions` with at least a `"version"`. The top-level entry is the declaration; per-axis entries are the data.
+- If an extension is used anywhere in the `"duckn"` object — including only on per-axis `extensions` — it must have an entry in the top-level `extensions` with at least a `"version"`. The top-level entry is the declaration; per-axis entries are the data.
 - Each extension object may contain an optional `"schema"` field: a URL pointing to a schema or specification document for the extension. What the URL resolves to is up to the extension author — a JSON Schema for machine validation, a human-readable specification, or both. Readers may use this for validation or surface it to users as documentation. If absent, the reader has only the extension name and version to work with.
 - Extension names must be unique. A registry of well-known extension names may be established separately.
-- Keys at the top level of the `"nrrd"` object (outside `"extensions"`) are reserved for this convention. Domain-specific metadata must not be added there.
+- Keys at the top level of the `"duckn"` object (outside `"extensions"`) are reserved for this convention. Domain-specific metadata must not be added there.
 - A reader that encounters an unknown extension name must ignore it.
 - Extensions may depend on NRRD convention fields such as `measurement_frame` or `space`. These dependencies should be documented in the extension's specification.
 
@@ -403,7 +401,7 @@ A 256×256×128 16-bit MRI volume in RAS space, 1mm × 1mm × 2mm voxels:
   ],
   "fill_value": 0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space": "right-anterior-superior",
       "space_origin": [-127.5, -127.5, 0.0],
@@ -453,7 +451,7 @@ A CT volume stored as unsigned 16-bit integers, with Hounsfield unit rescaling:
   ],
   "fill_value": 0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space": "left-posterior-superior",
       "space_origin": [-249.5, -249.5, -150.0],
@@ -508,7 +506,7 @@ A 128×128×60 volume of 3D symmetric diffusion tensors:
   ],
   "fill_value": 0.0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space": "right-anterior-superior",
       "space_origin": [-127.0, -127.0, 0.0],
@@ -565,7 +563,7 @@ A 128×128×60 DWI volume with 13 gradient directions, demonstrating per-axis an
   ],
   "fill_value": 0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space": "left-posterior-superior",
       "space_origin": [-128.0, -142.2, 99.7],
@@ -646,7 +644,7 @@ A 640×480 RGBA image with color components contiguous in memory (C order, last 
   ],
   "fill_value": 0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "axes": [
         { "kind": "space", "centering": "node" },
@@ -678,7 +676,7 @@ An anonymized CT scan that preserves acquisition metadata via a `dicom` extensio
   ],
   "fill_value": 0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space": "left-posterior-superior",
       "space_origin": [-249.5, -249.5, -150.0],
@@ -735,7 +733,7 @@ An anonymized CT scan that preserves acquisition metadata via a `dicom` extensio
 }
 ```
 
-The `dicom` extension separates its own metadata (`version`, `schema`, `anonymized`) from DICOM's vocabulary (everything inside `tags`). DICOM keywords use PascalCase as defined in PS3.6. Numeric values are stored as JSON numbers rather than DICOM's string encoding — the goal is usability, not round-trip VR fidelity. Spatial fields like `SliceThickness` and `PixelSpacing` overlap with the `nrrd` axes; the extension carries the DICOM-native values for provenance, while the axes are authoritative for processing.
+The `dicom` extension separates its own metadata (`version`, `schema`, `anonymized`) from DICOM's vocabulary (everything inside `tags`). DICOM keywords use PascalCase as defined in PS3.6. Numeric values are stored as JSON numbers rather than DICOM's string encoding — the goal is usability, not round-trip VR fidelity. Spatial fields like `SliceThickness` and `PixelSpacing` overlap with the `duckn` axes; the extension carries the DICOM-native values for provenance, while the axes are authoritative for processing.
 
 ### 6.7 Minimal
 
@@ -743,7 +741,7 @@ A Zarr array with only a kind annotation and nothing else:
 
 ```json
 "attributes": {
-  "nrrd": {
+  "duckn": {
     "version": "1.0",
     "axes": [
       { "kind": "space" }

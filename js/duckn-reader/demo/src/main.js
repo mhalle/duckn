@@ -27,19 +27,19 @@ const SPACE_SIGN_FLIPS = {
 };
 
 function ducknToImageData(data, shape, attrs) {
-  const nrrd = attrs.nrrd;
-  if (!nrrd) throw new Error('attrs.nrrd is missing');
-  const axes = nrrd.axes;
+  const duckn = attrs.duckn;
+  if (!duckn) throw new Error('attrs.duckn is missing');
+  const axes = duckn.axes;
   if (!axes) throw new Error('duckn metadata missing axes');
 
   const spatialAxes = axes.filter((a) => a.space_direction != null);
   if (spatialAxes.length !== 3) throw new Error(`Expected 3 spatial axes, got ${spatialAxes.length}`);
   if (shape.length !== 3) throw new Error(`Expected 3D shape, got ${shape.length}D`);
 
-  const flip = nrrd.space && SPACE_SIGN_FLIPS[nrrd.space]
-    ? SPACE_SIGN_FLIPS[nrrd.space] : [1, 1, 1];
+  const flip = duckn.space && SPACE_SIGN_FLIPS[duckn.space]
+    ? SPACE_SIGN_FLIPS[duckn.space] : [1, 1, 1];
 
-  const rawOrigin = nrrd.space_origin || [0, 0, 0];
+  const rawOrigin = duckn.space_origin || [0, 0, 0];
   const origin = rawOrigin.map((v, i) => v * flip[i]);
 
   const flippedDirs = spatialAxes.map((ax) =>
@@ -203,8 +203,8 @@ function updateSidebarVtk(imageData, source) {
 function updateSidebarDuckn(nrrd, shape, imageData) {
   sidebar.innerHTML = `
     <h2>duckn metadata</h2>
-    <span class="label">space:</span> <span class="val">${nrrd.space || 'not specified'}</span><br>
-    <span class="label">space_origin:</span> <span class="val">${fmt(nrrd.space_origin || [])}</span><br>
+    <span class="label">space:</span> <span class="val">${duckn.space || 'not specified'}</span><br>
+    <span class="label">space_origin:</span> <span class="val">${fmt(duckn.space_origin || [])}</span><br>
     <span class="label">axes:</span><br>
     ${nrrd.axes.map((a, i) =>
       `&nbsp;&nbsp;[${i}] <span class="val">${fmt(a.space_direction)}</span>` +
@@ -218,7 +218,7 @@ function updateSidebarDuckn(nrrd, shape, imageData) {
     ${updateSidebarVtk(imageData, 'duckn')}
 
     <h2>coordinate conversion</h2>
-    <span class="label">from:</span> <span class="val">${nrrd.space || 'unknown'}</span><br>
+    <span class="label">from:</span> <span class="val">${duckn.space || 'unknown'}</span><br>
     <span class="label">to:</span> <span class="val">LPS (VTK convention)</span>
   `;
 }
@@ -324,7 +324,7 @@ async function loadStore(url) {
     statusEl.textContent = 'Converting...';
     const imageData = ducknToImageData(result.data, result.shape, arr.attrs);
 
-    updateSidebarDuckn(arr.attrs.nrrd, result.shape, imageData);
+    updateSidebarDuckn(arr.attrs.duckn, result.shape, imageData);
     render(imageData);
     statusEl.textContent = '';
   } catch (err) {

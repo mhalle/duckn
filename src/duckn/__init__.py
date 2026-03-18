@@ -21,7 +21,7 @@ from .models import (
     NiftiLegacyTags,
     NiftiSliceTiming,
     NiftiTags,
-    NrrdMetadata,
+    DucknMetadata,
     Segment,
     SegmentationExtension,
     SourceRepresentation,
@@ -54,7 +54,7 @@ __all__ = [  # noqa: RUF022
     "NiftiLegacyTags",
     "NiftiSliceTiming",
     "NiftiTags",
-    "NrrdMetadata",
+    "DucknMetadata",
     "Segment",
     "SegmentationExtension",
     "SourceRepresentation",
@@ -63,7 +63,9 @@ __all__ = [  # noqa: RUF022
     "UnitObject",
     "UnitSystemEntry",
     "ValueTransform",
+    "build_duckn_metadata",
     "dicom_to_zarr",
+    "geometry_from_headers",
     "get_zarr_attrs",
     "nifti_to_zarr",
     "nrrd_to_zarr",
@@ -71,6 +73,7 @@ __all__ = [  # noqa: RUF022
     "open_store",
     "read_duckn",
     "read_duckn_metadata",
+    "UNCOMPRESSED_TRANSFER_SYNTAXES",
     "validate_against_shape",
     "zarr_to_nifti",
     "zarr_to_nrrd",
@@ -79,6 +82,18 @@ __all__ = [  # noqa: RUF022
 
 
 def __getattr__(name: str) -> object:
+    if name == "build_duckn_metadata":
+        from .dicom_convert import build_duckn_metadata
+
+        return build_duckn_metadata
+    if name == "geometry_from_headers":
+        from .dicom_convert import geometry_from_headers
+
+        return geometry_from_headers
+    if name == "UNCOMPRESSED_TRANSFER_SYNTAXES":
+        from .dicom_convert import UNCOMPRESSED_TRANSFER_SYNTAXES
+
+        return UNCOMPRESSED_TRANSFER_SYNTAXES
     if name == "dicom_to_zarr":
         from .dicom_convert import dicom_to_zarr
 

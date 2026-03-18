@@ -22,7 +22,7 @@ This is not a microscopy file format. It does not attempt to represent vendor-sp
 
 ### Relationship to OME-NGFF
 
-The OME-NGFF (OME-Zarr) specification defines its own multiscale metadata and channel rendering hints for bioimaging. The two specifications address different concerns and can coexist in the same Zarr store without conflict, as they use different top-level attribute keys (`"nrrd"` vs `"ome"`).
+The OME-NGFF (OME-Zarr) specification defines its own multiscale metadata and channel rendering hints for bioimaging. The two specifications address different concerns and can coexist in the same Zarr store without conflict, as they use different top-level attribute keys (`"duckn"` vs `"ome"`).
 
 To understand when one or both might be useful, it helps to compare what each carries:
 
@@ -53,7 +53,7 @@ The practical consequence is:
 
 - **This extension alone** (without OME-NGFF) is sufficient when the goal is to describe a single-resolution array with full acquisition context: what modality was used, what each channel physically represents, what objective and detector settings were applied, and how the spatial embedding works (including centering, oblique orientations, and measurement frames). This is the metadata an analysis pipeline, deconvolution algorithm, or methods section needs.
 
-- **Both together** makes sense when the same Zarr store must serve both visualization tools (which read `ome.multiscales` and `ome.omero`) and analysis tools (which read `nrrd` convention fields and this extension). The two metadata blocks occupy non-overlapping attribute keys and can be maintained independently.
+- **Both together** makes sense when the same Zarr store must serve both visualization tools (which read `ome.multiscales` and `ome.omero`) and analysis tools (which read `duckn` convention fields and this extension). The two metadata blocks occupy non-overlapping attribute keys and can be maintained independently.
 
 A few specific advantages of the duckn approach for microscopy analysis:
 
@@ -92,7 +92,7 @@ These fields *may* be mentioned in a `source_metadata` object (§5) for provenan
 
 ## 3. Extension Structure
 
-The `microscopy` extension is declared at the top level of the `"nrrd"` object's `"extensions"`.
+The `microscopy` extension is declared at the top level of the `"duckn"` object's `"extensions"`.
 
 ```json
 "extensions": {
@@ -681,7 +681,7 @@ The `tile` object is optional. Omit entirely for non-tiled acquisitions. When pr
 - `emission_range_nm` must be `[low, high]` where `low < high`.
 - Spatial calibration is carried by the convention's `axes[i].space_direction` — not by the extension. `source_metadata` pixel sizes are provenance only.
 - The convention's `space_origin` is authoritative for tile position, not `tile.grid_position`.
-- If the extension is used anywhere in the `"nrrd"` object — including only on per-axis `extensions` — it must have an entry in the top-level `extensions` with at least a `"version"`, per the convention's extension rules.
+- If the extension is used anywhere in the `"duckn"` object — including only on per-axis `extensions` — it must have an entry in the top-level `extensions` with at least a `"version"`, per the convention's extension rules.
 
 ---
 
@@ -708,7 +708,7 @@ A live-cell confocal Z-stack time series with DAPI and mCherry:
   ],
   "fill_value": 0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space": "3D-right-handed",
       "space_origin": [1200.0, 3400.0, 0.0],
@@ -850,7 +850,7 @@ A brightfield histology image from a whole-slide scanner, stored as RGB:
   ],
   "fill_value": 255,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space_dimension": 2,
       "space_origin": [0.0, 0.0],
@@ -921,7 +921,7 @@ A cleared-tissue light-sheet volume:
   ],
   "fill_value": 0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space": "3D-right-handed",
       "space_origin": [0.0, 0.0, 0.0],
@@ -1017,7 +1017,7 @@ A cleared-tissue light-sheet volume:
 
 ### 9.4 Multiplexed Tissue Imaging (CyCIF)
 
-A subset of channels from a 30-channel CyCIF (cyclic immunofluorescence) dataset on FFPE tissue. This example shows the top-level extension and the per-axis channel metadata separately for readability. In a real array, both appear in the same `"nrrd"` object.
+A subset of channels from a 30-channel CyCIF (cyclic immunofluorescence) dataset on FFPE tissue. This example shows the top-level extension and the per-axis channel metadata separately for readability. In a real array, both appear in the same `"duckn"` object.
 
 Top-level extension:
 

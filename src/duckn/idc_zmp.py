@@ -24,9 +24,9 @@ from xml.etree import ElementTree
 import numpy as np
 
 from .dicom_convert import (
-    _UNCOMPRESSED_TRANSFER_SYNTAXES,
-    _build_nrrd_metadata,
-    _geometry_from_headers,
+    UNCOMPRESSED_TRANSFER_SYNTAXES,
+    build_duckn_metadata,
+    geometry_from_headers,
     DicomGeometry,
 )
 
@@ -223,6 +223,8 @@ def build_idc_zmp(
     binary_tags: bool = False,
     content_hash: bool = False,
     inline_data: bool = False,
+    data_compression: str = "none",
+    data_compression_level: int | None = None,
     overwrite: bool = False,
 ) -> Path:
     """Build a ZMP manifest for an IDC DICOM series.
@@ -244,6 +246,10 @@ def build_idc_zmp(
     inline_data : if True, fetch pixel data and store it inline in the
         ZMP file's ``data`` column. Creates a self-contained archive.
         Implies content_hash=True.
+    data_compression : parquet compression for the data column.
+        "none" (default), "zstd", "snappy", "gzip", "lz4", "brotli".
+    data_compression_level : compression level (codec-dependent). None
+        uses the codec's default.
     overwrite : if True, overwrite existing file
 
     Returns
@@ -292,7 +298,7 @@ def build_idc_zmp(
         tsuid = str(
             getattr(slices[0].dataset.file_meta, "TransferSyntaxUID", "")
         )
-        if tsuid not in _UNCOMPRESSED_TRANSFER_SYNTAXES:
+        if tsuid not in UNCOMPRESSED_TRANSFER_SYNTAXES:
             raise ValueError(
                 f"Series uses compressed transfer syntax {tsuid}. "
                 f"ZMP virtual references require uncompressed DICOM."
@@ -323,8 +329,8 @@ def build_idc_zmp(
 
         # Phase 3: compute geometry and metadata
         headers = [s.dataset for s in slices]
-        geometry = _geometry_from_headers(headers)
-        meta = _build_nrrd_metadata(geometry, headers, None, tags, binary_tags)
+        geometry = geometry_from_headers(headers)
+        meta = build_duckn_metadata(geometry, headers, None, tags, binary_tags)
         n_slices, rows, cols = geometry.shape
 
         # Phase 4: build zarr.json
@@ -358,7 +364,7 @@ def build_idc_zmp(
                     "configuration": {"endian": "little"},
                 }
             ],
-            "attributes": {"nrrd": meta.model_dump(exclude_none=True)},
+            "attributes": {"duckn": meta.model_dump(exclude_none=True)},
             "dimension_names": ["k", "j", "i"],
         }
 
@@ -368,8 +374,10 @@ def build_idc_zmp(
         # Phase 5: build ZMP via ZMPBuilder
         builder = ZMPBuilder(
             metadata={"idc_series_uuid": series_uuid},
+            data_compression=data_compression,
+            data_compression_level=data_compression_level,
         )
-        builder.add_metadata("zarr.json", zarr_json_text)
+        builder.add("zarr.json", text=zarr_json_text)
 
         for k, s in enumerate(slices):
             chunk_path = f"c/{k}/0/0"
@@ -386,25 +394,29 @@ def build_idc_zmp(
                 pixel_data = resp.content
 
             if inline_data:
-                builder.add_chunk(chunk_path, data=pixel_data, source=s.url)
+                builder.add(
+                    chunk_path,
+                    data=pixel_data,
+                    source=s.url,
+                )
             elif content_hash:
                 from zarr_zmp.builder import _git_blob_hash
 
-                builder.add_virtual(
+                builder.add(
                     chunk_path,
                     uri=s.url,
                     offset=s.pixel_offset,
                     length=pixel_bytes_per_slice,
-                    source_size=s.file_size,
+                    size=s.file_size,
                     retrieval_key=_git_blob_hash(pixel_data),
                 )
             else:
-                builder.add_virtual(
+                builder.add(
                     chunk_path,
                     uri=s.url,
                     offset=s.pixel_offset,
                     length=pixel_bytes_per_slice,
-                    source_size=s.file_size,
+                    size=s.file_size,
                 )
 
         if output_path.exists() and overwrite:

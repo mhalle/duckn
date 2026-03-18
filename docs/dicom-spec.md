@@ -46,7 +46,7 @@ These fields *may* appear in `tags` to record the DICOM-native values for proven
 
 ## 3. Extension Structure
 
-The `dicom` extension is declared at the top level of the `"nrrd"` object's `"extensions"`.
+The `dicom` extension is declared at the top level of the `"duckn"` object's `"extensions"`.
 
 ```json
 "extensions": {
@@ -405,7 +405,7 @@ An anonymized chest CT with full acquisition metadata:
   ],
   "fill_value": 0,
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space": "left-posterior-superior",
       "space_origin": [-249.5, -249.5, -150.0],

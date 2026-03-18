@@ -354,22 +354,22 @@ def test_nrrd_to_zarr_dwi_metadata(tmp_path):
 
     store = zarr.storage.LocalStore(str(zarr_path))
     arr = zarr.open_array(store, mode="r")
-    nrrd_attrs = arr.attrs["nrrd"]
+    duckn_attrs = arr.attrs["duckn"]
 
     # Top-level extension must exist
-    assert "dwmri" in nrrd_attrs["extensions"]
-    dwmri_top = nrrd_attrs["extensions"]["dwmri"]
+    assert "dwmri" in duckn_attrs["extensions"]
+    dwmri_top = duckn_attrs["extensions"]["dwmri"]
     assert dwmri_top["b_value"] == 1000.0
     assert dwmri_top["version"] == "1.0"
 
     # No DWMRI keys in keyvalues
-    kv = nrrd_attrs["extensions"].get("keyvalues", {})
+    kv = duckn_attrs["extensions"].get("keyvalues", {})
     for k in kv:
         assert not k.startswith("DWMRI_"), f"DWMRI key leaked to keyvalues: {k}"
         assert k != "modality", "modality key leaked to keyvalues"
 
     # Per-axis extension must be on the list axis
-    axes = nrrd_attrs["axes"]
+    axes = duckn_attrs["axes"]
     list_axes = [a for a in axes if a.get("kind") == "list"]
     assert len(list_axes) == 1, f"Expected 1 list axis, got {len(list_axes)}"
     ax_dwmri = list_axes[0]["extensions"]["dwmri"]

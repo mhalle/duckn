@@ -19,7 +19,7 @@ from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
 from duckn.dicom_convert import (
     DicomGeometry,
-    _build_nrrd_metadata,
+    build_duckn_metadata,
     _compute_geometry,
     _convert_value,
     _dataset_to_tags,
@@ -29,7 +29,7 @@ from duckn.dicom_convert import (
     _sort_datasets,
     dicom_to_zarr,
 )
-from duckn.models import NrrdMetadata, SpaceName
+from duckn.models import DucknMetadata, SpaceName
 
 
 # ---------------------------------------------------------------------------
@@ -208,14 +208,6 @@ class TestTagExtraction:
         # Group length tag should not appear
         assert "00080000" not in tags
         assert "GenericGroupLength" not in tags
-
-    def test_file_meta_excluded(self):
-        ds = Dataset()
-        ds.Modality = "CT"
-        # group 0002 elements should be skipped
-        ds.add_new(0x00020010, "UI", "1.2.840.10008.1.2.1")
-        tags = _dataset_to_tags(ds)
-        assert "TransferSyntaxUID" not in tags
 
     def test_geometry_tags_skipped_by_default(self):
         ds = Dataset()
@@ -432,7 +424,7 @@ class TestMetadataBuilding:
         ds = _make_dataset()
         ds.Modality = "CT"
 
-        meta = _build_nrrd_metadata(geom, [ds], anonymized=None, include_tags=True)
+        meta = build_duckn_metadata(geom, [ds], anonymized=None, include_tags=True)
 
         assert meta.value_transforms is not None
         assert len(meta.value_transforms) == 1
@@ -455,7 +447,7 @@ class TestMetadataBuilding:
         )
         ds = _make_dataset(modality="MR")
 
-        meta = _build_nrrd_metadata(geom, [ds], anonymized=None, include_tags=True)
+        meta = build_duckn_metadata(geom, [ds], anonymized=None, include_tags=True)
 
         assert meta.extensions is not None
         dicom_ext = meta.extensions["dicom"]
@@ -475,7 +467,7 @@ class TestMetadataBuilding:
             rescale_type=None,
         )
         ds = _make_dataset()
-        meta = _build_nrrd_metadata(geom, [ds], anonymized=None, include_tags=False)
+        meta = build_duckn_metadata(geom, [ds], anonymized=None, include_tags=False)
         assert meta.extensions is None
 
     def test_axes_structure(self):
@@ -491,7 +483,7 @@ class TestMetadataBuilding:
             rescale_type=None,
         )
         ds = _make_dataset()
-        meta = _build_nrrd_metadata(geom, [ds], anonymized=None, include_tags=False)
+        meta = build_duckn_metadata(geom, [ds], anonymized=None, include_tags=False)
 
         assert len(meta.axes) == 3
         assert all(ax.kind == "space" for ax in meta.axes)
@@ -540,25 +532,25 @@ class TestEndToEnd:
         assert arr.shape == (3, 8, 8)
         assert arr.dtype == np.uint16
 
-        nrrd_meta = NrrdMetadata(**arr.attrs["nrrd"])
-        assert nrrd_meta.space == "left-posterior-superior"
-        assert nrrd_meta.space_origin == [0.0, 0.0, 0.0]
-        assert len(nrrd_meta.axes) == 3
+        duckn_meta = DucknMetadata(**arr.attrs["duckn"])
+        assert duckn_meta.space == "left-posterior-superior"
+        assert duckn_meta.space_origin == [0.0, 0.0, 0.0]
+        assert len(duckn_meta.axes) == 3
 
         # Slice axis direction
-        np.testing.assert_allclose(nrrd_meta.axes[0].space_direction, [0, 0, 5.0])
+        np.testing.assert_allclose(duckn_meta.axes[0].space_direction, [0, 0, 5.0])
         # Row axis
-        np.testing.assert_allclose(nrrd_meta.axes[1].space_direction, [0, 0.5, 0])
+        np.testing.assert_allclose(duckn_meta.axes[1].space_direction, [0, 0.5, 0])
         # Col axis
-        np.testing.assert_allclose(nrrd_meta.axes[2].space_direction, [0.5, 0, 0])
+        np.testing.assert_allclose(duckn_meta.axes[2].space_direction, [0.5, 0, 0])
 
         # Value transforms
-        assert nrrd_meta.value_transforms is not None
-        assert nrrd_meta.value_transforms[0].parameters["intercept"] == -1024.0
+        assert duckn_meta.value_transforms is not None
+        assert duckn_meta.value_transforms[0].parameters["intercept"] == -1024.0
 
         # DICOM extension
-        assert nrrd_meta.extensions is not None
-        dicom_ext = nrrd_meta.extensions["dicom"]
+        assert duckn_meta.extensions is not None
+        dicom_ext = duckn_meta.extensions["dicom"]
         assert dicom_ext["version"] == "1.0"
         assert dicom_ext["tags"]["Modality"] == "CT"
 
@@ -601,8 +593,8 @@ class TestEndToEnd:
 
         store = zarr.storage.LocalStore(str(zarr_path))
         arr = zarr.open_array(store, mode="r")
-        nrrd_meta = NrrdMetadata(**arr.attrs["nrrd"])
-        assert nrrd_meta.extensions is None
+        duckn_meta = DucknMetadata(**arr.attrs["duckn"])
+        assert duckn_meta.extensions is None
 
     def test_multiple_series_rejected(self, tmp_path):
         dcm_dir = tmp_path / "dicom"

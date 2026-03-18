@@ -80,7 +80,7 @@ For **spectral axes** (FITS `CTYPEi` encodes a spectral algorithm, e.g., `FREQ`,
 
 ## 4. Extension Structure
 
-The `fits` extension is declared at the top level of the `"nrrd"` object's `"extensions"`.
+The `fits` extension is declared at the top level of the `"duckn"` object's `"extensions"`.
 
 ```json
 "extensions": {
@@ -469,7 +469,7 @@ A VLA continuum image with a tangent-plane projection in ICRS coordinates:
   ],
   "fill_value": "NaN",
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space_dimension": 2,
       "space_origin": [185.0698, -6.3012],
@@ -547,7 +547,7 @@ A 3D radio data cube with two celestial axes and a frequency axis:
   ],
   "fill_value": "NaN",
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space_dimension": 3,
       "space_origin": [1.41940575e9, -6.3012, 185.0698],
@@ -638,7 +638,7 @@ A 2D all-sky survey in galactic coordinates using an Aitoff projection:
   ],
   "fill_value": "NaN",
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space_dimension": 2,
       "space_origin": [90.0, -180.0],
@@ -709,7 +709,7 @@ A polarization data cube with Stokes parameters:
   ],
   "fill_value": "NaN",
   "attributes": {
-    "nrrd": {
+    "duckn": {
       "version": "1.0",
       "space_dimension": 2,
       "space_origin": [-6.3012, 185.0698],
