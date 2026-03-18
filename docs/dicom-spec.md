@@ -158,7 +158,7 @@ DICOM values are encoded using JSON-native types. The mapping from DICOM Value R
 | PN (Person Name) | string or null | `"Doe^John"` or `null` if redacted |
 | AT (Attribute Tag) | string | `"00081030"` (uppercase hex) |
 | SQ (Sequence) | array of objects | See §4.4 |
-| OB, OW, OF, OD, OL, OV (binary) | excluded | See §4.5 |
+| OB, OW, OF, OD, OL, OV (binary) | string (base64) | See §4.5 |
 
 **Key differences from PS3.18 Annex F (DICOM JSON Model):**
 
@@ -201,15 +201,13 @@ Sequences may be nested (a sequence item may contain another sequence attribute)
 
 ### 4.5 Binary Data
 
-Binary DICOM attributes (VRs: OB, OW, OF, OD, OL, OV) should generally be excluded from `tags`. Pixel data, overlay data, and similar bulk binary content belongs in the Zarr array itself or in separate Zarr arrays, not in JSON metadata.
-
-If a small binary attribute must be preserved (e.g., an ICC profile or a lookup table), it may be included as a base64-encoded string with a `_base64` suffix on the key:
+Binary DICOM attributes (VRs: OB, OW, OF, OD, OL, OV) are stored as base64-encoded strings. Bulk binary data that is represented by the Zarr array itself (pixel data, overlay data) should be excluded from `tags`, but other binary attributes (lookup tables, ICC profiles) should be preserved:
 
 ```json
-"ICCProfile_base64": "AAAAAA..."
+"ICCProfile": "AAAAAA..."
 ```
 
-This is the escape hatch, not the normal case.
+The VR determines that the value is binary; consumers can look up the VR from the keyword via PS3.6. No special suffix or annotation is needed.
 
 ### 4.6 Multi-Valued Attributes
 
@@ -638,7 +636,6 @@ A CT volume that includes coded anatomy using DICOM's standard sequence pattern:
 | Waveform Data | Out of scope (not imaging) |
 | Private tags (by default) | Include only if specifically needed, using hex keys |
 | Group Length tags | Encoding artifact, per PS3.18 |
-| File Meta Information (0002,xxxx) | File format metadata, not data semantics |
 
 ---
 

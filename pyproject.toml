@@ -24,3 +24,10 @@ duckn = "duckn.cli:cli"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/duckn"]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "idc-index>=0.11.11",
+    "pyarrow>=23.0.1",
+]
