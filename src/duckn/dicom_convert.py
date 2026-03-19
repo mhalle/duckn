@@ -8,6 +8,7 @@ Requires pydicom: install with ``pip install duckn[dicom]``.
 
 from __future__ import annotations
 
+import json
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -444,10 +445,109 @@ def _sort_datasets(datasets: list[Any]) -> list[Any]:
 # ---------------------------------------------------------------------------
 
 
+def _get_temporal_key(ds: Any) -> float:
+    """Extract a temporal sort key from a dataset.
+
+    Tries TriggerTime, TemporalPositionIdentifier, then InstanceNumber.
+    """
+    tt = getattr(ds, "TriggerTime", None)
+    if tt is not None:
+        return float(tt)
+    tpi = getattr(ds, "TemporalPositionIdentifier", None)
+    if tpi is not None:
+        return float(tpi)
+    return float(getattr(ds, "InstanceNumber", 0))
+
+
+def _load_2d_series(
+    datasets: list[Any],
+) -> tuple[np.ndarray, DicomGeometry, list[Any]]:
+    """Load 2D projection images (CR, DX) without world-space positioning.
+
+    Synthesizes a 2D spatial embedding from PixelSpacing or
+    ImagerPixelSpacing with origin at [0, 0].
+    """
+    ds0 = datasets[0]
+    rows = int(ds0.Rows)
+    cols = int(ds0.Columns)
+
+    # Get pixel spacing: prefer PixelSpacing, fall back to ImagerPixelSpacing
+    ps = getattr(ds0, "PixelSpacing", None)
+    if ps is None:
+        ps = getattr(ds0, "ImagerPixelSpacing", None)
+    if ps is not None:
+        row_spacing = float(ps[0])
+        col_spacing = float(ps[1])
+    else:
+        row_spacing = 1.0
+        col_spacing = 1.0
+
+    # Dtype
+    bits = int(ds0.BitsAllocated)
+    signed = int(ds0.PixelRepresentation) if hasattr(ds0, "PixelRepresentation") else 0
+    _dtype_map = {
+        (8, 0): np.uint8, (8, 1): np.int8,
+        (16, 0): np.uint16, (16, 1): np.int16,
+        (32, 0): np.uint32, (32, 1): np.int32,
+    }
+    dtype = np.dtype(_dtype_map.get((bits, signed), np.uint16))
+
+    # Rescale
+    rescale_slope = None
+    rs = getattr(ds0, "RescaleSlope", None)
+    if rs is not None:
+        rescale_slope = float(rs)
+    rescale_intercept = None
+    ri = getattr(ds0, "RescaleIntercept", None)
+    if ri is not None:
+        rescale_intercept = float(ri)
+    rescale_type = None
+    rt = getattr(ds0, "RescaleType", None)
+    if rt is not None:
+        rescale_type = str(rt)
+
+    # Stack pixel data — always pad to 3D (1, rows, cols)
+    if len(datasets) == 1:
+        volume = ds0.pixel_array.astype(dtype)
+        if volume.ndim == 2:
+            volume = volume[np.newaxis, ...]
+    else:
+        slices = [ds.pixel_array.astype(dtype) for ds in datasets]
+        volume = np.stack(slices, axis=0)
+
+    # 3D geometry with zero-length slice direction
+    space_directions = [
+        [0.0, 0.0, 0.0],
+        [0.0, row_spacing, 0.0],
+        [col_spacing, 0.0, 0.0],
+    ]
+    space_origin = [0.0, 0.0, 0.0]
+
+    geometry = DicomGeometry(
+        shape=volume.shape,
+        dtype=dtype,
+        space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
+        space_origin=space_origin,
+        space_directions=space_directions,
+        slice_thickness=None,
+        rescale_slope=rescale_slope,
+        rescale_intercept=rescale_intercept,
+        rescale_type=rescale_type,
+    )
+
+    return volume, geometry, datasets
+
+
 def _load_single_frame_series(
     dir_path: Path,
 ) -> tuple[np.ndarray, DicomGeometry, list[Any]]:
-    """Load a directory of single-frame DICOM files as one volume."""
+    """Load a directory of single-frame DICOM files as one volume.
+
+    Automatically detects 4D temporal data (e.g., cardiac cine) when
+    multiple datasets share the same slice position. The temporal
+    dimension is sorted by TriggerTime, TemporalPositionIdentifier,
+    or InstanceNumber.
+    """
     import pydicom
 
     # Scan for .dcm files (also try files without extension)
@@ -461,14 +561,22 @@ def _load_single_frame_series(
         raise FileNotFoundError(f"No DICOM files found in {dir_path}")
 
     datasets = []
+    datasets_2d = []  # files without spatial position (2D projections)
     for f in dcm_files:
         try:
             ds = pydicom.dcmread(str(f))
-            # Only include files that have pixel data and position
-            if hasattr(ds, "PixelData") and hasattr(ds, "ImagePositionPatient"):
+            if not hasattr(ds, "PixelData"):
+                continue
+            if hasattr(ds, "ImagePositionPatient"):
                 datasets.append(ds)
+            elif hasattr(ds, "Rows"):
+                datasets_2d.append(ds)
         except Exception:
             continue
+
+    # If no 3D datasets but we have 2D, use those
+    if not datasets and datasets_2d:
+        return _load_2d_series(datasets_2d)
 
     if not datasets:
         raise ValueError(f"No valid DICOM image files found in {dir_path}")
@@ -482,11 +590,107 @@ def _load_single_frame_series(
             f"Series UIDs: {series_uids}"
         )
 
-    # Sort by position
-    datasets = _sort_datasets(datasets)
+    # Compute slice normal for grouping
+    ds0 = datasets[0]
+    iop = [float(x) for x in ds0.ImageOrientationPatient]
+    row_cos = np.array(iop[:3])
+    col_cos = np.array(iop[3:])
+    slice_normal = np.cross(row_cos, col_cos)
+    nrm = np.linalg.norm(slice_normal)
+    if nrm > 0:
+        slice_normal = slice_normal / nrm
 
-    volume, geometry = _compute_geometry(datasets)
-    return volume, geometry, datasets
+    # Project all positions and round to detect repeated Z values
+    def _z_key(ds: Any) -> float:
+        pos = np.array([float(x) for x in ds.ImagePositionPatient])
+        return round(float(np.dot(pos, slice_normal)), 3)
+
+    z_counts: dict[float, int] = {}
+    for ds in datasets:
+        z = _z_key(ds)
+        z_counts[z] = z_counts.get(z, 0) + 1
+
+    # Detect 4D: if most Z positions repeat the same number of times
+    count_values = list(z_counts.values())
+    is_4d = len(z_counts) > 1 and min(count_values) > 1
+
+    if not is_4d:
+        # Standard 3D volume
+        datasets = _sort_datasets(datasets)
+        volume, geometry = _compute_geometry(datasets)
+        return volume, geometry, datasets
+
+    # --- 4D temporal volume ---
+    # Group by Z position, sort each group temporally
+    from collections import defaultdict
+    z_groups: dict[float, list[Any]] = defaultdict(list)
+    for ds in datasets:
+        z_groups[_z_key(ds)].append(ds)
+
+    z_sorted = sorted(z_groups.keys())
+    n_z = len(z_sorted)
+
+    # Sort each Z group by temporal key
+    for z in z_sorted:
+        z_groups[z].sort(key=_get_temporal_key)
+
+    # Validate uniform time points per slice
+    n_t = len(z_groups[z_sorted[0]])
+    for z in z_sorted:
+        if len(z_groups[z]) != n_t:
+            warnings.warn(
+                f"Non-uniform time points per slice: Z={z} has "
+                f"{len(z_groups[z])}, expected {n_t}. Truncating.",
+                stacklevel=3,
+            )
+    n_t = min(len(z_groups[z]) for z in z_sorted)
+
+    # Build dataset grid: [t][z] → dataset
+    # Use the first Z group's datasets as representative for metadata
+    representative_datasets = z_groups[z_sorted[0]][:n_t]
+
+    # Stack into 4D volume
+    rows = int(ds0.Rows)
+    cols = int(ds0.Columns)
+    bits = int(ds0.BitsAllocated)
+    signed = int(ds0.PixelRepresentation)
+    _dtype_map = {
+        (8, 0): np.uint8, (8, 1): np.int8,
+        (16, 0): np.uint16, (16, 1): np.int16,
+        (32, 0): np.uint32, (32, 1): np.int32,
+    }
+    dtype = np.dtype(_dtype_map.get((bits, signed), np.uint16))
+
+    volume = np.zeros((n_t, n_z, rows, cols), dtype=dtype)
+    for z_idx, z in enumerate(z_sorted):
+        for t_idx in range(n_t):
+            volume[t_idx, z_idx, :, :] = z_groups[z][t_idx].pixel_array
+
+    # Compute spatial geometry from the first time point's slices
+    first_t_datasets = [z_groups[z][0] for z in z_sorted]
+    first_t_datasets = _sort_datasets(first_t_datasets)
+    _, geom_3d = _compute_geometry(first_t_datasets)
+
+    # Extend geometry to 4D
+    geometry = DicomGeometry(
+        shape=volume.shape,
+        dtype=dtype,
+        space=geom_3d.space,
+        space_origin=geom_3d.space_origin,
+        space_directions=geom_3d.space_directions,
+        slice_thickness=geom_3d.slice_thickness,
+        rescale_slope=geom_3d.rescale_slope,
+        rescale_intercept=geom_3d.rescale_intercept,
+        rescale_type=geom_3d.rescale_type,
+    )
+
+    # Return all datasets (flattened, time-major order) for tag extraction
+    all_datasets = []
+    for t_idx in range(n_t):
+        for z in z_sorted:
+            all_datasets.append(z_groups[z][t_idx])
+
+    return volume, geometry, all_datasets
 
 
 # ---------------------------------------------------------------------------
@@ -1292,7 +1496,37 @@ def build_duckn_metadata(
         if _is_dicom_seg(ds0):
             axes.append(AxisMetadata(kind=AxisKind.LIST))
         else:
-            axes.append(AxisMetadata(kind=AxisKind.TIME))
+            # Time axis — build samples with TriggerTime as position
+            n_t = geometry.shape[0]
+            n_z = geometry.shape[1]
+            time_samples = None
+
+            # Extract temporal positions from first slice of each time point
+            # datasets are ordered [t0_z0, t0_z1, ..., t1_z0, t1_z1, ...]
+            if len(datasets) >= n_t * n_z:
+                trigger_times = []
+                for t_idx in range(n_t):
+                    ds_t = datasets[t_idx * n_z]
+                    trigger_times.append(_get_temporal_key(ds_t))
+
+                # Check if times are non-uniform
+                if len(trigger_times) > 1:
+                    diffs = np.diff(trigger_times)
+                    is_uniform_time = len(diffs) > 0 and np.allclose(
+                        diffs, diffs[0], rtol=0.01
+                    )
+                else:
+                    is_uniform_time = True
+
+                time_samples = [
+                    SampleMetadata(position=t) for t in trigger_times
+                ]
+
+            # Determine time unit from TriggerTime (always ms in DICOM)
+            time_kwargs: dict[str, Any] = {"kind": AxisKind.TIME, "unit": "ms"}
+            if time_samples:
+                time_kwargs["samples"] = time_samples
+            axes.append(AxisMetadata(**time_kwargs))
 
     # Compute slice normal for per-sample geometry
     slice_dir = geometry.space_directions[0] if geometry.space_directions else [0, 0, 1]
@@ -1301,14 +1535,21 @@ def build_duckn_metadata(
     if nrm > 0:
         slice_normal = slice_normal / nrm
 
+    # For 4D, use only the first time point's datasets for slice geometry
+    if is_4d and not _is_dicom_seg(datasets[0]):
+        n_z = geometry.shape[1]
+        slice_datasets = datasets[:n_z]
+    else:
+        slice_datasets = datasets
+
     # Build per-sample metadata for the slice axis
     samples = _build_samples(
-        datasets, slice_normal, geometry.space_origin,
+        slice_datasets, slice_normal, geometry.space_origin,
         slice_dir, include_tags, include_binary,
     )
 
     # Determine which tag keys vary (to exclude from series-level tags)
-    varying_keys = _get_varying_tag_keys(datasets, include_binary) if include_tags else set()
+    varying_keys = _get_varying_tag_keys(slice_datasets, include_binary) if include_tags else set()
 
     # Spatial axes: [slice, row, col]
     for i, direction in enumerate(geometry.space_directions):
@@ -1957,10 +2198,19 @@ def zarr_to_dicom(
         duckn_attrs = arr.attrs.get("duckn", {})
         meta = DucknMetadata(**duckn_attrs)
 
-    if data.ndim != 3:
-        raise ValueError(f"Expected 3D data, got {data.ndim}D")
-
-    n_slices, rows, cols = data.shape
+    if data.ndim == 4:
+        is_4d = True
+        n_t, n_slices, rows, cols = data.shape
+        # Flatten to (n_t * n_slices, rows, cols) for DICOM frames
+        data = data.reshape(-1, rows, cols)
+        total_frames = n_t * n_slices
+    elif data.ndim == 3:
+        is_4d = False
+        n_t = 1
+        n_slices, rows, cols = data.shape
+        total_frames = n_slices
+    else:
+        raise ValueError(f"Expected 3D or 4D data, got {data.ndim}D")
 
     # Parse DICOM extension if present
     stored_tags: dict[str, Any] = {}
@@ -1972,13 +2222,22 @@ def zarr_to_dicom(
     modality = stored_tags.get("Modality", "OT")
 
     # Decompose geometry from duckn metadata
-    # space_directions are in C order: [slice, row, col]
-    if meta.axes and len(meta.axes) >= 3:
-        slice_dir = np.array(meta.axes[0].space_direction)
-        row_dir = np.array(meta.axes[1].space_direction)
-        col_dir = np.array(meta.axes[2].space_direction)
-    else:
-        raise ValueError("Missing spatial axis metadata")
+    # Find spatial axes (skip time/list axes for 4D)
+    spatial_axes = [ax for ax in meta.axes if ax.space_direction is not None]
+    if len(spatial_axes) < 3:
+        raise ValueError("Need at least 3 spatial axes with space_direction")
+    slice_axis = spatial_axes[0]
+    slice_dir = np.array(slice_axis.space_direction)
+    row_dir = np.array(spatial_axes[1].space_direction)
+    col_dir = np.array(spatial_axes[2].space_direction)
+
+    # Time axis for 4D
+    time_axis = None
+    if is_4d:
+        for ax in meta.axes:
+            if ax.kind in (AxisKind.TIME, "time"):
+                time_axis = ax
+                break
 
     # duckn convention: space_direction includes spacing
     # DICOM needs: PixelSpacing (row, col magnitudes),
@@ -2005,10 +2264,20 @@ def zarr_to_dicom(
     # --- Build the Enhanced Multi-frame DICOM ---
     ds = Dataset()
 
-    # Restore stored tags (skip geometry/pixel tags we set ourselves)
+    # Restore stored tags (skip geometry/pixel tags we set ourselves,
+    # and any group 0002 file meta tags that leaked into series tags)
     for keyword, value in stored_tags.items():
         if keyword in _ZARR_TO_DICOM_SKIP:
             continue
+        # Skip file meta information group tags (group 0002)
+        try:
+            import pydicom.datadict as dd
+            from pydicom.tag import Tag
+            tag_int = dd.tag_for_keyword(keyword)
+            if tag_int is not None and Tag(tag_int).group == 0x0002:
+                continue
+        except Exception:
+            pass
         try:
             _restore_tag(ds, keyword, value)
         except Exception:
@@ -2025,7 +2294,7 @@ def zarr_to_dicom(
     # Image dimensions
     ds.Rows = rows
     ds.Columns = cols
-    ds.NumberOfFrames = n_slices
+    ds.NumberOfFrames = total_frames
     ds.BitsAllocated = bits_alloc
     ds.BitsStored = bits_stored
     ds.HighBit = high_bit
@@ -2047,8 +2316,8 @@ def zarr_to_dicom(
     # Pixel Measures
     measures_item = Dataset()
     measures_item.PixelSpacing = [row_spacing, col_spacing]
-    if meta.axes[0].thickness is not None:
-        measures_item.SliceThickness = meta.axes[0].thickness
+    if slice_axis.thickness is not None:
+        measures_item.SliceThickness = slice_axis.thickness
     else:
         measures_item.SliceThickness = slice_spacing
     measures_item.SpacingBetweenSlices = slice_spacing
@@ -2057,15 +2326,63 @@ def zarr_to_dicom(
     ds.SharedFunctionalGroupsSequence = Sequence([shared_fg])
 
     # Per-Frame Functional Groups
+    # For 4D: frames ordered as [t0_z0, t0_z1, ..., t1_z0, t1_z1, ...]
     per_frame = []
-    for k in range(n_slices):
+
+    def _make_slice_position(k: int) -> list[float]:
+        """Compute ImagePositionPatient for slice index k."""
+        if slice_axis.samples and k < len(slice_axis.samples):
+            sample = slice_axis.samples[k]
+            if sample.origin is not None:
+                return list(sample.origin)
+            elif sample.position is not None:
+                return (origin + sample.position * slice_normal).tolist()
+        return (origin + k * slice_dir).tolist()
+
+    for frame_idx in range(total_frames):
         frame_fg = Dataset()
+
+        if is_4d:
+            t_idx = frame_idx // n_slices
+            z_idx = frame_idx % n_slices
+        else:
+            t_idx = 0
+            z_idx = frame_idx
 
         # Plane Position
         pos_item = Dataset()
-        frame_pos = origin + k * slice_dir
-        pos_item.ImagePositionPatient = frame_pos.tolist()
+        pos_item.ImagePositionPatient = _make_slice_position(z_idx)
         frame_fg.PlanePositionSequence = Sequence([pos_item])
+
+        # Per-slice DICOM tags from samples
+        if slice_axis.samples and z_idx < len(slice_axis.samples):
+            sample = slice_axis.samples[z_idx]
+            if sample.extensions and "dicom" in sample.extensions:
+                for keyword, value in sample.extensions["dicom"].items():
+                    try:
+                        _restore_tag(frame_fg, keyword, value)
+                    except Exception:
+                        continue
+
+        # Temporal position for 4D
+        if is_4d and time_axis:
+            fc_item = Dataset()
+            fc_item.TemporalPositionIndex = t_idx + 1
+
+            if time_axis.samples and t_idx < len(time_axis.samples):
+                t_sample = time_axis.samples[t_idx]
+                if t_sample.position is not None:
+                    # TriggerTime from time axis position
+                    try:
+                        _restore_tag(frame_fg, "TriggerTime", t_sample.position)
+                    except Exception:
+                        pass
+
+            # Segment Identification for frame ordering
+            seg_id_item = Dataset()
+            seg_id_item.ReferencedSegmentNumber = z_idx + 1
+            seg_id_item.DimensionIndexValues = [t_idx + 1, z_idx + 1]
+            frame_fg.FrameContentSequence = Sequence([fc_item])
 
         per_frame.append(frame_fg)
 
@@ -2086,3 +2403,149 @@ def zarr_to_dicom(
     ds.is_implicit_VR = False
 
     pydicom.dcmwrite(str(output_path), ds, write_like_original=False)
+
+
+# ---------------------------------------------------------------------------
+# Local ZMP builder
+# ---------------------------------------------------------------------------
+
+
+def build_local_zmp(
+    input_path: str | Path,
+    output_path: str | Path,
+    *,
+    tags: bool = True,
+    binary_tags: bool = False,
+    content_hash: bool = False,
+    inline_data: bool = False,
+    data_compression: str = "none",
+    data_compression_level: int | None = None,
+    overwrite: bool = False,
+) -> Path:
+    """Build a ZMP manifest for a local DICOM series.
+
+    Creates a lightweight Parquet file that maps Zarr chunk paths to byte
+    ranges within the local DICOM files. The resulting ZMP can be opened
+    as a Zarr store where each chunk is read from the original DICOM file
+    via file:// URIs.
+
+    Parameters
+    ----------
+    input_path : directory of single-frame .dcm files (one series)
+    output_path : path for the output .zmp file
+    tags : if True, include DICOM tags in metadata
+    binary_tags : if True, include binary VR tags as base64
+    content_hash : if True, compute git-sha1 retrieval keys for chunks
+    inline_data : if True, read pixel data and store inline in the ZMP.
+        Creates a self-contained archive. Implies content_hash=True.
+    data_compression : parquet compression for the data column
+    data_compression_level : compression level (codec-dependent)
+    overwrite : if True, overwrite existing file
+
+    Returns
+    -------
+    Path to the created .zmp file
+    """
+    from zarr_zmp import Builder as ZMPBuilder
+
+    if inline_data:
+        content_hash = True
+
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(f"{output_path} already exists")
+
+    # Phase 1: scan headers and sort
+    entries = _scan_headers(input_path)
+    paths = [e[0] for e in entries]
+    headers = [e[1] for e in entries]
+    geometry = geometry_from_headers(headers)
+
+    n_slices, rows, cols = geometry.shape
+
+    # Phase 2: build metadata
+    meta = build_duckn_metadata(geometry, headers, None, tags, binary_tags)
+
+    # Phase 3: get pixel data byte ranges
+    ds0 = headers[0]
+    bits = int(ds0.BitsAllocated)
+    signed = int(ds0.PixelRepresentation)
+    _dtype_map = {
+        (8, 0): "uint8", (8, 1): "int8",
+        (16, 0): "uint16", (16, 1): "int16",
+        (32, 0): "uint32", (32, 1): "int32",
+    }
+    dtype_str = _dtype_map.get((bits, signed), "uint16")
+    pixel_bytes_per_slice = rows * cols * (bits // 8)
+
+    # Phase 4: build zarr.json
+    zarr_meta = {
+        "zarr_format": 3,
+        "node_type": "array",
+        "shape": [n_slices, rows, cols],
+        "data_type": dtype_str,
+        "chunk_grid": {
+            "name": "regular",
+            "configuration": {"chunk_shape": [1, rows, cols]},
+        },
+        "chunk_key_encoding": {
+            "name": "default",
+            "configuration": {"separator": "/"},
+        },
+        "fill_value": 0,
+        "codecs": [
+            {
+                "name": "bytes",
+                "configuration": {"endian": "little"},
+            }
+        ],
+        "attributes": {"duckn": meta.model_dump(exclude_none=True)},
+        "dimension_names": ["k", "j", "i"],
+    }
+
+    zarr_json_text = json.dumps(zarr_meta)
+
+    # Phase 5: build ZMP
+    builder = ZMPBuilder(
+        data_compression=data_compression,
+        data_compression_level=data_compression_level,
+    )
+    builder.add("zarr.json", text=zarr_json_text)
+
+    for k, (dcm_path, ds) in enumerate(entries):
+        chunk_path = f"c/{k}/0/0"
+        uri = dcm_path.resolve().as_uri()
+        file_size = dcm_path.stat().st_size
+
+        # Get pixel data offset
+        offset, length, _ = get_pixel_data_range(dcm_path)
+
+        if inline_data:
+            pixel_data = dcm_path.read_bytes()[offset:offset + pixel_bytes_per_slice]
+            builder.add(chunk_path, data=pixel_data, source=uri)
+        elif content_hash:
+            pixel_data = dcm_path.read_bytes()[offset:offset + pixel_bytes_per_slice]
+            from zarr_zmp.builder import _git_blob_hash
+            builder.add(
+                chunk_path,
+                uri=uri,
+                offset=offset,
+                length=pixel_bytes_per_slice,
+                size=file_size,
+                retrieval_key=_git_blob_hash(pixel_data),
+            )
+        else:
+            builder.add(
+                chunk_path,
+                uri=uri,
+                offset=offset,
+                length=pixel_bytes_per_slice,
+                size=file_size,
+            )
+
+    if output_path.exists() and overwrite:
+        output_path.unlink()
+
+    builder.write(output_path)
+    return output_path
