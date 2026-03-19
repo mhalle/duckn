@@ -444,3 +444,48 @@ def header(input_path: str) -> None:
         meta = read_duckn_metadata(input_path)
 
     click.echo(json.dumps(meta.model_dump(exclude_none=True), indent=2))
+
+
+@cli.command("to-bids")
+@click.argument("input_path", type=click.Path(exists=True))
+@click.argument("output_path", type=click.Path(), required=False)
+def to_bids(input_path: str, output_path: str | None) -> None:
+    """Generate a BIDS JSON sidecar from a duckn store or DICOM series.
+
+    If OUTPUT_PATH is omitted, prints to stdout.
+    """
+    path = Path(input_path)
+
+    is_zarr = (
+        path.suffix in (".zarr", ".zip")
+        or (path.is_dir() and (path / "zarr.json").exists())
+    )
+
+    if is_zarr:
+        from .zarr_io import read_duckn_metadata
+
+        meta = read_duckn_metadata(input_path)
+    elif path.is_dir() or path.suffix == ".dcm":
+        # DICOM input — convert to duckn first (in memory)
+        from .dicom_convert import dicom_to_zarr
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_zarr = Path(tmp) / "tmp.zarr"
+            dicom_to_zarr(input_path, str(tmp_zarr))
+            from .zarr_io import read_duckn_metadata
+
+            meta = read_duckn_metadata(str(tmp_zarr))
+    else:
+        from .zarr_io import read_duckn_metadata
+
+        meta = read_duckn_metadata(input_path)
+
+    from .bids import duckn_to_bids_sidecar
+
+    sidecar = duckn_to_bids_sidecar(meta)
+
+    if output_path:
+        Path(output_path).write_text(json.dumps(sidecar, indent=2))
+        click.echo(f"Wrote {output_path}")
+    else:
+        click.echo(json.dumps(sidecar, indent=2))
