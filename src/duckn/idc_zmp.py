@@ -411,7 +411,7 @@ def build_idc_zmp(
     Path to the created .zmp file
     """
     import httpx
-    from zarr_zmp import ZMPBuilder
+    from zarr_zmp import Builder as ZMPBuilder
 
     if inline_data:
         content_hash = True  # free when we already have the bytes

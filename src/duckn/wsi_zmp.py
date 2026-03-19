@@ -188,7 +188,7 @@ def build_wsi_zmp(
         If None, local file paths are used.
     overwrite : if True, overwrite existing file
     """
-    from zarr_zmp import ZMPBuilder
+    from zarr_zmp import Builder as ZMPBuilder
 
     output_path = Path(output_path)
     if output_path.exists() and not overwrite:
