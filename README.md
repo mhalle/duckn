@@ -137,6 +137,19 @@ Domain-specific metadata lives inside `duckn.extensions`. Extensions depend on d
 - **nifti** — NIfTI provenance (sform/qform codes, intent, legacy affines)
 - **dicom** — DICOM provenance (tags, transfer syntax, anonymization status)
 
+## ZMP: Virtual Access to DICOM at Rest
+
+duckn stores can be represented as [ZMP](https://github.com/mhalle/zarr-zmp)
+manifests — lightweight Parquet files that map Zarr chunk paths to byte
+ranges within existing DICOM files on S3 or GCS. No data is copied or
+converted; compressed DICOM frames (JPEG, JPEG 2000) are decoded on
+demand using matching Zarr codecs.
+
+A 59 KB ZMP manifest gives random-access to any slice of a 147-slice
+CT scan stored as DICOM on S3, readable through the standard Zarr API.
+
+See [performance benchmarks](docs/performance.md) for read speeds.
+
 ## Specifications
 
 - [duckn convention](docs/duckn-spec.md) — core metadata convention
