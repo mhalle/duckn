@@ -24,23 +24,23 @@ This is a provenance and metadata carrier, not a DICOM encoding. It does not att
 
 ## 2. Relationship to duckn Convention Fields
 
-The following DICOM attributes are already captured by Zarr or the duckn convention and should generally not be duplicated in `tags`. When present in `tags`, the extension values are provenance (the DICOM-native values from the source); the convention fields are authoritative for processing.
+The following DICOM attributes are already captured by Zarr or the duckn convention and are excluded from `tags`. Attributes that can be losslessly reconstructed from convention fields (such as `ImagePositionPatient` from `space_origin` and per-sample `position`/`origin`) are not stored as tags at all — they would be redundant.
 
 | DICOM attribute | Keyword | Captured by |
 |---|---|---|
 | Rows, Columns | `Rows`, `Columns` | Zarr `shape` |
 | Bits Allocated, Bits Stored, High Bit, Pixel Representation | various | Zarr `data_type` |
 | Number of Frames | `NumberOfFrames` | Zarr `shape` |
-| Image Position (Patient) | `ImagePositionPatient` | `space_origin` |
+| Image Position (Patient) | `ImagePositionPatient` | `space_origin` + `axes[i].samples[j].position` or `.origin` |
 | Image Orientation (Patient) | `ImageOrientationPatient` | `axes[i].space_direction` |
 | Pixel Spacing | `PixelSpacing` | `axes[i].space_direction` magnitude |
 | Spacing Between Slices | `SpacingBetweenSlices` | `axes[i].space_direction` magnitude |
-| Slice Thickness | `SliceThickness` | `axes[i].thickness` |
+| Slice Thickness | `SliceThickness` | `axes[i].thickness` or `axes[i].samples[j].thickness` |
 | Rescale Slope, Rescale Intercept | `RescaleSlope`, `RescaleIntercept` | `value_transforms` `linear` |
 | Rescale Type | `RescaleType` | `sample_units` |
 | Pixel Data | `PixelData` | Zarr array data |
 
-These fields *may* appear in `tags` to record the DICOM-native values for provenance (e.g., the exact `PixelSpacing` string as DICOM encoded it, or `SliceThickness` before any reconstruction), but the convention fields take precedence for computation.
+See §9 for the full list of excluded fields.
 
 ---
 
@@ -359,14 +359,74 @@ These are the most commonly anonymized fields. When anonymized, include them wit
 
 DICOM metadata exists at multiple levels of the information model hierarchy (patient → study → series → instance). When converting a DICOM series to a single Zarr array, most of the metadata in `tags` will be series-level — values shared across all instances in the series.
 
-Instance-level metadata that varies across slices (e.g., per-slice `ImagePositionPatient`, per-slice `InstanceNumber`) is generally not stored in `tags`. The spatial embedding that varies per instance is captured by the convention's `space_origin` and `space_direction` fields, which represent the reconstructed 3D geometry.
+### 6.1 Tag Splitting
 
-If per-instance metadata must be preserved (e.g., per-frame acquisition times in a dynamic series), it can be stored as:
+Tags that are identical across all instances in the series belong in the top-level `dicom.tags`. Tags that vary per instance belong in per-sample extensions on the slice axis.
 
-- A separate Zarr array in the same group (e.g., `acquisition_times` with one value per frame)
-- An array-valued tag in `tags` where the array length matches the relevant axis size
+The converter compares each tag across all source datasets. If a tag has the same value in every instance, it goes in the series-level `tags`. If it differs, it goes in `samples[i].extensions.dicom` on the slice axis.
 
-The right approach depends on the use case. This extension does not mandate a specific mechanism for per-instance metadata.
+Tags that are losslessly captured by convention fields are excluded entirely (see §2 and §9). For example, `ImagePositionPatient` is not stored in `tags` or per-sample extensions because the per-slice spatial position is fully captured by the `samples` array's `position` or `origin` fields on the slice axis.
+
+### 6.2 Per-Sample Geometry
+
+The duckn convention's `samples` field on each axis captures per-sample spatial variation:
+
+- **`position`** — a scalar giving this sample's coordinate along the slice axis. Used when only the slice spacing is non-uniform (the common case). Its presence signals non-uniform spacing to readers.
+- **`origin`** — a full multi-dimensional vector (same length as `space_origin`) giving the complete origin of this sample. Used when the in-plane origin also shifts per slice (e.g., gantry tilt).
+
+The converter chooses between them automatically:
+
+1. Collect `ImagePositionPatient` from all source instances.
+2. Project each position onto the slice normal and check if the residual perpendicular to the normal is constant across slices.
+3. If yes → use `position` (scalar projection onto slice normal).
+4. If no → use `origin` (full 3D position vector).
+
+If all samples are uniformly spaced (positions match the `space_direction` model within tolerance), `samples` is omitted entirely.
+
+### 6.3 Per-Sample Extensions
+
+Per-instance DICOM tags that vary across slices are stored in `samples[i].extensions.dicom` on the slice axis:
+
+```json
+{
+  "kind": "space",
+  "centering": "cell",
+  "space_direction": [0, 0, 2.5],
+  "thickness": 2.5,
+  "unit": "mm",
+  "samples": [
+    {
+      "position": 0.0,
+      "extensions": {
+        "dicom": {
+          "InstanceNumber": 1,
+          "AcquisitionTime": "143025.000"
+        }
+      }
+    },
+    {
+      "position": 2.5,
+      "extensions": {
+        "dicom": {
+          "InstanceNumber": 2,
+          "AcquisitionTime": "143025.250"
+        }
+      }
+    },
+    {
+      "position": 5.5,
+      "extensions": {
+        "dicom": {
+          "InstanceNumber": 3,
+          "AcquisitionTime": "143025.500"
+        }
+      }
+    }
+  ]
+}
+```
+
+Common per-instance tags include `InstanceNumber`, `SOPInstanceUID`, `AcquisitionTime`, `ContentTime`, `SliceLocation`, and per-slice `WindowCenter`/`WindowWidth` when they vary.
 
 ---
 
@@ -632,6 +692,10 @@ A CT volume that includes coded anatomy using DICOM's standard sequence pattern:
 | DICOM attribute | Reason |
 |---|---|
 | Pixel Data (7FE0,0010) | Zarr array data |
+| Image Position (Patient) | Losslessly captured by `space_origin` and per-sample `position`/`origin` |
+| Image Orientation (Patient) | Losslessly captured by `axes[i].space_direction` |
+| Rows, Columns, Number of Frames | Losslessly captured by Zarr `shape` |
+| Bits Allocated, Bits Stored, High Bit, Pixel Representation | Losslessly captured by Zarr `data_type` |
 | Overlay Data | Separate array if needed |
 | Waveform Data | Out of scope (not imaging) |
 | Private tags (by default) | Include only if specifically needed, using hex keys |

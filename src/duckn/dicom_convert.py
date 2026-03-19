@@ -26,6 +26,7 @@ from .models import (
     DicomClassification,
     DicomExtension,
     DucknMetadata,
+    SampleMetadata,
     Segment,
     SegmentationExtension,
     SourceRepresentation,
@@ -92,6 +93,8 @@ _SKIP_KEYWORDS = frozenset({
     "SamplesPerPixel",
     "PhotometricInterpretation",
     "PlanarConfiguration",
+    "ImagePositionPatient",
+    "ImageOrientationPatient",
 })
 
 
@@ -1129,6 +1132,148 @@ def _extract_seg_extension(ds: Any) -> SegmentationExtension | None:
 # ---------------------------------------------------------------------------
 
 
+def _build_samples(
+    datasets: list[Any],
+    slice_normal: np.ndarray,
+    space_origin: list[float],
+    space_direction: list[float],
+    include_tags: bool,
+    include_binary: bool,
+) -> list[SampleMetadata] | None:
+    """Build per-sample metadata for the slice axis.
+
+    Returns None if all slices are uniformly spaced with no per-instance
+    tag variation (samples would add no information).
+    """
+    n_slices = len(datasets)
+    if n_slices <= 1:
+        return None
+
+    # Collect per-slice positions
+    positions_3d: list[list[float]] = []
+    for ds in datasets:
+        if hasattr(ds, "ImagePositionPatient"):
+            positions_3d.append([float(x) for x in ds.ImagePositionPatient])
+        else:
+            return None  # can't build samples without positions
+
+    origin_arr = np.array(space_origin)
+    dir_arr = np.array(space_direction)
+    dir_mag = np.linalg.norm(dir_arr)
+
+    # Project positions onto slice normal to get scalar positions
+    projections = [float(np.dot(np.array(p), slice_normal)) for p in positions_3d]
+
+    # Check if positions differ only along the slice normal (position vs origin)
+    # Residual = position minus the component along slice normal
+    residuals = []
+    for p in positions_3d:
+        p_arr = np.array(p)
+        along = float(np.dot(p_arr, slice_normal)) * slice_normal
+        residuals.append(p_arr - along)
+
+    # If all residuals are the same (within tolerance), use position (scalar)
+    use_position = True
+    ref_residual = residuals[0]
+    for r in residuals[1:]:
+        if not np.allclose(r, ref_residual, atol=1e-4):
+            use_position = False
+            break
+
+    # Check if spacing is uniform (matches space_direction model)
+    # Non-uniform if: along-normal spacing varies OR in-plane origin shifts
+    is_uniform = use_position  # in-plane variation → not uniform
+    if is_uniform and dir_mag > 0:
+        expected_positions = [
+            projections[0] + i * dir_mag for i in range(n_slices)
+        ]
+        for actual, expected in zip(projections, expected_positions):
+            if abs(actual - expected) > 1e-4 * dir_mag:
+                is_uniform = False
+                break
+
+    # Split tags: find tags that vary across slices
+    per_slice_tags: list[dict[str, Any] | None] = [None] * n_slices
+    has_varying_tags = False
+
+    if include_tags and n_slices > 1:
+        # Extract tags from all datasets
+        all_tags = [
+            _dataset_to_tags(ds, _include_binary=include_binary)
+            for ds in datasets
+        ]
+
+        # Find keys that vary
+        all_keys = set()
+        for t in all_tags:
+            all_keys.update(t.keys())
+
+        varying_keys: set[str] = set()
+        for key in all_keys:
+            values = [t.get(key) for t in all_tags]
+            ref = values[0]
+            for v in values[1:]:
+                if v != ref:
+                    varying_keys.add(key)
+                    break
+
+        if varying_keys:
+            has_varying_tags = True
+            # Remove varying keys from the first dataset's tags
+            # (caller uses datasets[0] for series-level tags)
+            for key in varying_keys:
+                for t in all_tags:
+                    pass  # don't mutate here; we'll handle in the caller
+
+            per_slice_tags = [
+                {k: t[k] for k in varying_keys if k in t}
+                for t in all_tags
+            ]
+
+    # If everything is uniform and no per-slice tags, skip samples
+    if is_uniform and not has_varying_tags:
+        return None
+
+    # Build samples
+    samples: list[SampleMetadata] = []
+    for i in range(n_slices):
+        kwargs: dict[str, Any] = {}
+
+        if not is_uniform:
+            if use_position:
+                kwargs["position"] = projections[i]
+            else:
+                kwargs["origin"] = positions_3d[i]
+
+        if has_varying_tags and per_slice_tags[i]:
+            kwargs["extensions"] = {"dicom": per_slice_tags[i]}
+
+        samples.append(SampleMetadata(**kwargs))
+
+    return samples
+
+
+def _get_varying_tag_keys(datasets: list[Any], include_binary: bool) -> set[str]:
+    """Return tag keys whose values differ across datasets."""
+    if len(datasets) <= 1:
+        return set()
+
+    all_tags = [_dataset_to_tags(ds, _include_binary=include_binary) for ds in datasets]
+    all_keys: set[str] = set()
+    for t in all_tags:
+        all_keys.update(t.keys())
+
+    varying: set[str] = set()
+    for key in all_keys:
+        values = [t.get(key) for t in all_tags]
+        ref = values[0]
+        for v in values[1:]:
+            if v != ref:
+                varying.add(key)
+                break
+    return varying
+
+
 def build_duckn_metadata(
     geometry: DicomGeometry,
     datasets: list[Any],
@@ -1149,6 +1294,22 @@ def build_duckn_metadata(
         else:
             axes.append(AxisMetadata(kind=AxisKind.TIME))
 
+    # Compute slice normal for per-sample geometry
+    slice_dir = geometry.space_directions[0] if geometry.space_directions else [0, 0, 1]
+    slice_normal = np.array(slice_dir)
+    nrm = np.linalg.norm(slice_normal)
+    if nrm > 0:
+        slice_normal = slice_normal / nrm
+
+    # Build per-sample metadata for the slice axis
+    samples = _build_samples(
+        datasets, slice_normal, geometry.space_origin,
+        slice_dir, include_tags, include_binary,
+    )
+
+    # Determine which tag keys vary (to exclude from series-level tags)
+    varying_keys = _get_varying_tag_keys(datasets, include_binary) if include_tags else set()
+
     # Spatial axes: [slice, row, col]
     for i, direction in enumerate(geometry.space_directions):
         ax_kwargs: dict[str, Any] = {
@@ -1159,6 +1320,8 @@ def build_duckn_metadata(
         }
         if i == 0 and geometry.slice_thickness is not None:
             ax_kwargs["thickness"] = geometry.slice_thickness
+        if i == 0 and samples is not None:
+            ax_kwargs["samples"] = samples
         axes.append(AxisMetadata(**ax_kwargs))
 
     # Value transforms from RescaleSlope/Intercept
@@ -1179,11 +1342,14 @@ def build_duckn_metadata(
     if geometry.rescale_type:
         sample_units = geometry.rescale_type
 
-    # DICOM extension
+    # DICOM extension (series-level tags only)
     extensions = None
     if include_tags:
         ds0 = datasets[0]
-        dicom_tags = _dataset_to_tags(ds0, _include_binary=include_binary)
+        series_tags = _dataset_to_tags(ds0, _include_binary=include_binary)
+        # Remove varying keys — they're in per-sample extensions
+        for key in varying_keys:
+            series_tags.pop(key, None)
 
         anon = anonymized
         if anon is None:
@@ -1193,7 +1359,7 @@ def build_duckn_metadata(
             version="1.0",
             anonymized=anon if anon else None,
             source_transfer_syntax=_get_transfer_syntax(ds0),
-            tags=dicom_tags if dicom_tags else None,
+            tags=series_tags if series_tags else None,
         )
         extensions = {"dicom": dicom_ext.model_dump(exclude_none=True, by_alias=True)}
 

@@ -189,6 +189,33 @@ class ValueTransform(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class SampleMetadata(BaseModel):
+    """Per-sample metadata for a single position along an axis.
+
+    Used to describe non-uniform spacing, gantry tilt, or per-sample
+    domain metadata. When ``samples`` is present on an axis, there must
+    be exactly one entry per sample along that axis.
+
+    ``position`` and ``origin`` are mutually exclusive: ``position`` is
+    a scalar shortcut for axes where only one spatial coordinate varies,
+    while ``origin`` provides the full multi-dimensional sample origin
+    (same length as the top-level ``space_origin``).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    thickness: float | None = None
+    position: float | None = None
+    origin: list[float] | None = None
+    extensions: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _position_origin_exclusive(self) -> SampleMetadata:
+        if self.position is not None and self.origin is not None:
+            raise ValueError("position and origin are mutually exclusive")
+        return self
+
+
 class AxisMetadata(BaseModel):
     """Metadata for a single array axis."""
 
@@ -199,6 +226,7 @@ class AxisMetadata(BaseModel):
     space_direction: list[float] | None = None
     thickness: float | None = None
     unit: UnitValue | None = None
+    samples: list[SampleMetadata] | None = None
     extensions: dict[str, Any] | None = None
 
 
@@ -538,3 +566,7 @@ def validate_against_shape(meta: DucknMetadata, shape: tuple[int, ...]) -> None:
                         f"axes[{i}] kind {ax.kind.value!r} requires size {required}, "
                         f"but shape[{i}] is {shape[i]}"
                     )
+            if ax.samples is not None and len(ax.samples) != shape[i]:
+                raise ValueError(
+                    f"axes[{i}] has {len(ax.samples)} samples but shape[{i}] is {shape[i]}"
+                )

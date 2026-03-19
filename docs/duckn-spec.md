@@ -323,6 +323,55 @@ A string giving the units of the coordinate along this axis. For spatial axes wi
 
 Omit for axes where units are meaningless (e.g., color component axes).
 
+#### `samples`
+
+An array with one entry per sample along this axis, describing per-sample variation that the uniform model (single `space_direction`, single `thickness`) cannot represent. If present, its length must equal the axis size in `shape`.
+
+Each entry is an object with the following optional fields:
+
+- **`thickness`** — per-sample thickness. If omitted, the sample inherits the axis-level `thickness`.
+- **`position`** — a scalar giving this sample's coordinate value along this axis. Replaces only this axis's contribution to the spatial position; other axes use their standard computed values. Useful for non-uniform spacing (e.g., variable slice spacing in CT).
+- **`origin`** — a vector with the same number of components as `space_origin`, giving the complete spatial origin of this sample. Useful when the origin shifts in multiple spatial dimensions per sample (e.g., gantry tilt in CT, where each slice has a different in-plane offset).
+- **`extensions`** — per-sample extension metadata, same structure as the axis-level `extensions`. For example, a DICOM extension could store per-slice acquisition parameters.
+
+`position` and `origin` are mutually exclusive. `position` is a shortcut for the common case where only one spatial coordinate varies per sample.
+
+If all entries in `position` (or `origin`) are provided, they override the uniform spacing model for this axis entirely. If `position` or `origin` is absent from all entries, spacing is uniform and computed from `space_direction` as usual.
+
+Example: a CT scan with 3 slices at non-uniform Z positions:
+
+```json
+{
+  "kind": "space",
+  "centering": "cell",
+  "space_direction": [0, 0, 2.5],
+  "unit": "mm",
+  "samples": [
+    { "position": 0.0 },
+    { "position": 2.5 },
+    { "position": 5.5 }
+  ]
+}
+```
+
+Example: per-slice gantry tilt with shifted origins:
+
+```json
+{
+  "kind": "space",
+  "centering": "cell",
+  "space_direction": [0, 0, 2.5],
+  "unit": "mm",
+  "samples": [
+    { "origin": [0.0, 0.0, 0.0] },
+    { "origin": [0.3, 0.0, 2.5] },
+    { "origin": [0.6, 0.0, 5.0] }
+  ]
+}
+```
+
+`samples` is allowed on any axis — spatial, temporal, or otherwise. A time axis with irregular temporal sampling can use `position` to specify per-frame timestamps.
+
 #### `extensions`
 
 An object containing domain-specific metadata for this axis that depends on NRRD convention semantics. Same structure and rules as the top-level `extensions` (§3.1).
@@ -350,6 +399,7 @@ A reader that does not understand the `"dwmri"` extension still knows the axis i
 - If `space` is present, it implies a space dimension. All `space_direction` vectors, the `space_origin` vector, `measurement_frame` column vectors, and any `space_dimension` (if present instead of `space`) must have this number of components.
 - The length of `axes` must equal the number of dimensions (`len(shape)`).
 - Where a `kind` specifies a required axis size, the corresponding element of `shape` must match.
+- If an axis has `samples`, its length must equal the corresponding element of `shape`.
 - `space` and `space_dimension` are mutually exclusive. Use at most one.
 - For a complete spatial embedding, at least one axis should have a `space_direction`, and `space_origin` should be present. Partial orientation (e.g., directions without an origin) is permitted but limits what downstream processing can do.
 

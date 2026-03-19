@@ -700,7 +700,8 @@ class TestDicomSegExtraction:
         seg1 = ext.segments[0]
         assert seg1.id == "Liver"
         assert seg1.name == "Liver"
-        assert seg1.label_value == 1
+        assert seg1.label_value == 1  # BINARY: all segments have label_value=1
+        assert seg1.layer == 0  # 0-based layer index
         assert seg1.color is not None
         assert len(seg1.color) == 3
 
@@ -713,7 +714,8 @@ class TestDicomSegExtraction:
 
         seg2 = ext.segments[1]
         assert seg2.id == "Tumor"
-        assert seg2.label_value == 2
+        assert seg2.label_value == 1  # BINARY: all segments have label_value=1
+        assert seg2.layer == 1  # 0-based layer index
         assert seg2.dicom is None  # no coded entries
 
     def test_fractional_seg(self):
@@ -721,6 +723,13 @@ class TestDicomSegExtraction:
         ds.SegmentationType = "FRACTIONAL"
         ext = _extract_seg_extension(ds)
         assert ext.source_representation == "fractional-labelmap"
+
+    def test_labelmap_seg_label_values(self):
+        ds = _make_seg_dataset()
+        ds.SegmentationType = "LABELMAP"
+        ext = _extract_seg_extension(ds)
+        assert ext.segments[0].label_value == 1
+        assert ext.segments[1].label_value == 2
 
     def test_seg_in_build_duckn_metadata(self):
         ds = _make_seg_dataset()
@@ -741,3 +750,159 @@ class TestDicomSegExtraction:
         assert "slicerseg" in meta.extensions
         seg_ext = SegmentationExtension(**meta.extensions["slicerseg"])
         assert len(seg_ext.segments) == 2
+
+
+# ---------------------------------------------------------------------------
+# Per-sample metadata (non-uniform spacing, per-instance tags)
+# ---------------------------------------------------------------------------
+
+
+class TestPerSampleMetadata:
+    def test_uniform_spacing_no_samples(self):
+        """Uniformly spaced slices with no tag variation → no samples."""
+        datasets = [
+            _make_dataset(position=(0, 0, float(i * 2)), modality="CT")
+            for i in range(3)
+        ]
+        geom = DicomGeometry(
+            shape=(3, 4, 4),
+            dtype=np.dtype("uint16"),
+            space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
+            space_origin=[0.0, 0.0, 0.0],
+            space_directions=[[0, 0, 2.0], [0, 1.0, 0], [1.0, 0, 0]],
+            slice_thickness=2.0,
+            rescale_slope=None,
+            rescale_intercept=None,
+            rescale_type=None,
+        )
+        meta = build_duckn_metadata(geom, datasets, anonymized=None, include_tags=False)
+        # Uniform spacing, no tags → no samples
+        slice_axis = meta.axes[0]
+        assert slice_axis.samples is None
+
+    def test_nonuniform_spacing_uses_position(self):
+        """Non-uniform Z spacing with no in-plane shift → position (scalar)."""
+        datasets = [
+            _make_dataset(position=(0, 0, 0.0), modality="CT"),
+            _make_dataset(position=(0, 0, 2.0), modality="CT"),
+            _make_dataset(position=(0, 0, 5.0), modality="CT"),  # gap
+        ]
+        geom = DicomGeometry(
+            shape=(3, 4, 4),
+            dtype=np.dtype("uint16"),
+            space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
+            space_origin=[0.0, 0.0, 0.0],
+            space_directions=[[0, 0, 2.0], [0, 1.0, 0], [1.0, 0, 0]],
+            slice_thickness=2.0,
+            rescale_slope=None,
+            rescale_intercept=None,
+            rescale_type=None,
+        )
+        meta = build_duckn_metadata(geom, datasets, anonymized=None, include_tags=False)
+        slice_axis = meta.axes[0]
+        assert slice_axis.samples is not None
+        assert len(slice_axis.samples) == 3
+        # Should use position (scalar), not origin (vector)
+        assert slice_axis.samples[0].position is not None
+        assert slice_axis.samples[0].origin is None
+        assert slice_axis.samples[2].position == pytest.approx(5.0)
+
+    def test_gantry_tilt_uses_origin(self):
+        """In-plane origin shift per slice → origin (vector)."""
+        datasets = [
+            _make_dataset(position=(0.0, 0.0, 0.0), modality="CT"),
+            _make_dataset(position=(0.3, 0.0, 2.0), modality="CT"),
+            _make_dataset(position=(0.6, 0.0, 4.0), modality="CT"),
+        ]
+        geom = DicomGeometry(
+            shape=(3, 4, 4),
+            dtype=np.dtype("uint16"),
+            space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
+            space_origin=[0.0, 0.0, 0.0],
+            space_directions=[[0, 0, 2.0], [0, 1.0, 0], [1.0, 0, 0]],
+            slice_thickness=2.0,
+            rescale_slope=None,
+            rescale_intercept=None,
+            rescale_type=None,
+        )
+        meta = build_duckn_metadata(geom, datasets, anonymized=None, include_tags=False)
+        slice_axis = meta.axes[0]
+        assert slice_axis.samples is not None
+        # Should use origin (vector), not position (scalar)
+        assert slice_axis.samples[0].origin is not None
+        assert slice_axis.samples[0].position is None
+        assert slice_axis.samples[1].origin == pytest.approx([0.3, 0.0, 2.0])
+
+    def test_varying_tags_split_to_samples(self):
+        """Tags that vary per-slice go into samples, constant tags stay series-level."""
+        ds0 = _make_dataset(position=(0, 0, 0.0), modality="CT")
+        ds0.InstanceNumber = 1
+        ds0.AcquisitionTime = "143025.000"
+
+        ds1 = _make_dataset(position=(0, 0, 2.0), modality="CT")
+        ds1.InstanceNumber = 2
+        ds1.AcquisitionTime = "143025.250"
+
+        ds2 = _make_dataset(position=(0, 0, 4.0), modality="CT")
+        ds2.InstanceNumber = 3
+        ds2.AcquisitionTime = "143025.500"
+
+        datasets = [ds0, ds1, ds2]
+        geom = DicomGeometry(
+            shape=(3, 4, 4),
+            dtype=np.dtype("uint16"),
+            space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
+            space_origin=[0.0, 0.0, 0.0],
+            space_directions=[[0, 0, 2.0], [0, 1.0, 0], [1.0, 0, 0]],
+            slice_thickness=2.0,
+            rescale_slope=None,
+            rescale_intercept=None,
+            rescale_type=None,
+        )
+        meta = build_duckn_metadata(geom, datasets, anonymized=None, include_tags=True)
+
+        # Varying tags should be in per-sample extensions
+        slice_axis = meta.axes[0]
+        assert slice_axis.samples is not None
+        s0_ext = slice_axis.samples[0].extensions
+        assert s0_ext is not None
+        assert "dicom" in s0_ext
+        assert s0_ext["dicom"]["InstanceNumber"] == 1
+
+        s2_ext = slice_axis.samples[2].extensions
+        assert s2_ext["dicom"]["InstanceNumber"] == 3
+        assert s2_ext["dicom"]["AcquisitionTime"] == "143025.500"
+
+        # Constant tags (Modality) should be in series-level dicom extension
+        dicom_ext = meta.extensions["dicom"]
+        assert dicom_ext["tags"]["Modality"] == "CT"
+        # Varying tags should NOT be in series-level tags
+        assert "InstanceNumber" not in dicom_ext["tags"]
+        assert "AcquisitionTime" not in dicom_ext["tags"]
+
+    def test_image_position_excluded_from_tags(self):
+        """ImagePositionPatient should not appear in tags (captured by samples)."""
+        datasets = [
+            _make_dataset(position=(0, 0, 0.0), modality="CT"),
+            _make_dataset(position=(0, 0, 2.0), modality="CT"),
+        ]
+        geom = DicomGeometry(
+            shape=(2, 4, 4),
+            dtype=np.dtype("uint16"),
+            space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
+            space_origin=[0.0, 0.0, 0.0],
+            space_directions=[[0, 0, 2.0], [0, 1.0, 0], [1.0, 0, 0]],
+            slice_thickness=2.0,
+            rescale_slope=None,
+            rescale_intercept=None,
+            rescale_type=None,
+        )
+        meta = build_duckn_metadata(geom, datasets, anonymized=None, include_tags=True)
+        dicom_ext = meta.extensions["dicom"]
+        assert "ImagePositionPatient" not in dicom_ext.get("tags", {})
+        # Also not in per-sample extensions
+        slice_axis = meta.axes[0]
+        if slice_axis.samples:
+            for s in slice_axis.samples:
+                if s.extensions and "dicom" in s.extensions:
+                    assert "ImagePositionPatient" not in s.extensions["dicom"]
