@@ -1180,17 +1180,17 @@ def _build_samples(
             use_position = False
             break
 
-    # Check if spacing is uniform (matches space_direction model)
-    # Non-uniform if: along-normal spacing varies OR in-plane origin shifts
-    is_uniform = use_position  # in-plane variation → not uniform
-    if is_uniform and dir_mag > 0:
-        expected_positions = [
-            projections[0] + i * dir_mag for i in range(n_slices)
-        ]
-        for actual, expected in zip(projections, expected_positions):
-            if abs(actual - expected) > 1e-4 * dir_mag:
-                is_uniform = False
-                break
+    # Check if positions match the space_direction model exactly:
+    # position[i] = space_origin + i * space_direction
+    # If they do, no samples needed for geometry.
+    is_uniform = True
+    dir_3d = np.array(space_direction)
+    origin_3d = np.array(positions_3d[0])
+    for i, pos in enumerate(positions_3d):
+        expected = origin_3d + i * dir_3d
+        if not np.allclose(pos, expected, atol=1e-3):
+            is_uniform = False
+            break
 
     # Split tags: find tags that vary across slices
     per_slice_tags: list[dict[str, Any] | None] = [None] * n_slices
