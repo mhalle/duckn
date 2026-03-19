@@ -68,6 +68,11 @@ duckn.dicom_to_zarr("dicom_series/", "ct.zarr")
 # Convert back
 duckn.zarr_to_nrrd("scan.zarr", "scan_out.nrrd")
 duckn.zarr_to_nifti("brain.zarr", "brain_out.nii.gz")
+duckn.zarr_to_dicom("ct.zarr", "ct_enhanced.dcm")
+
+# Generate BIDS sidecar
+from duckn.bids import duckn_to_bids_sidecar
+sidecar = duckn_to_bids_sidecar(meta)
 ```
 
 ### CLI
@@ -78,6 +83,8 @@ duckn to-nrrd scan.zarr scan_out.nrrd
 duckn from-nifti brain.nii.gz brain.zarr
 duckn to-nifti brain.zarr brain_out.nii.gz
 duckn from-dicom dicom_series/ ct.zarr
+duckn to-bids ct.zarr ct.json           # BIDS sidecar from Zarr
+duckn to-bids dicom_series/             # BIDS sidecar from DICOM
 duckn info scan.zarr
 duckn header scan.zarr
 duckn roundtrip scan.nrrd
@@ -123,8 +130,10 @@ A duckn store is a standard Zarr V3 array with a `"duckn"` key in its attributes
 | Format | To Zarr | From Zarr | Zero-copy |
 |--------|---------|-----------|-----------|
 | NRRD   | `nrrd_to_zarr()` | `zarr_to_nrrd()` | Both directions |
-| NIfTI  | `nifti_to_zarr()` | `zarr_to_nifti()` | Possible |
-| DICOM  | `dicom_to_zarr()` | `zarr_to_dicom()` | Possible |
+| NIfTI  | `nifti_to_zarr()` | `zarr_to_nifti()` | — |
+| DICOM  | `dicom_to_zarr()` | `zarr_to_dicom()` | Streaming mode |
+| DICOM SEG | `dicom_to_zarr()` | — | — |
+| BIDS sidecar | — | `duckn_to_bids_sidecar()` | — |
 
 Zero-copy mode copies compressed data blobs directly without decompression/recompression (raw and gzip encodings).
 
