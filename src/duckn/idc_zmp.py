@@ -29,8 +29,111 @@ from .dicom_convert import (
     geometry_from_headers,
     DicomGeometry,
 )
+from .wsi_zmp import _TS_TO_CODEC
 
 IDC_S3_BASE = "https://idc-open-data.s3.amazonaws.com"
+
+
+def _scan_encapsulated_frames(
+    url: str,
+    pixel_data_offset: int,
+    file_size: int,
+    n_frames: int,
+    *,
+    client: Any,
+) -> list[tuple[int, int]]:
+    """Scan encapsulated pixel data for per-frame byte offsets via HTTP.
+
+    Fetches just enough bytes to read the BOT and item tags.
+    Returns list of (file_offset, length) for each frame.
+    """
+    import struct
+
+    # Fetch the pixel data tag header + BOT + item headers
+    # Tag header: 12 bytes (explicit VR) or 8 bytes (implicit)
+    # BOT item: 8 bytes header + 4*n_frames bytes data (if present)
+    # Each frame item: 8 bytes header
+    # Estimate: need ~12 + 8 + 4*n_frames + 8*n_frames bytes for headers
+    header_size = 12 + 8 + (4 + 8) * n_frames + 1024  # generous padding
+
+    resp = client.get(url, headers={
+        "Range": f"bytes={pixel_data_offset}-{pixel_data_offset + header_size - 1}"
+    })
+    if resp.status_code not in (200, 206):
+        raise ValueError(f"Failed to fetch encapsulation headers from {url}")
+
+    data = resp.content
+    pos = 0
+
+    # Skip pixel data tag header
+    # tag(4) + check if explicit VR
+    if len(data) < 12:
+        raise ValueError("Not enough data for pixel data tag")
+    tag = data[0:4]
+    next2 = data[4:6]
+    if next2[0:1].isalpha() and next2[1:2].isalpha():
+        pos = 12  # explicit VR: tag(4) + VR(2) + reserved(2) + length(4)
+    else:
+        pos = 8   # implicit VR: tag(4) + length(4)
+
+    # BOT item: tag(4) + length(4)
+    bot_tag = data[pos:pos+4]
+    bot_len = struct.unpack("<I", data[pos+4:pos+8])[0]
+    pos += 8
+
+    frame_offsets_from_bot = []
+    if bot_len > 0:
+        n_bot_offsets = bot_len // 4
+        frame_offsets_from_bot = list(struct.unpack(
+            f"<{n_bot_offsets}I", data[pos:pos+bot_len]
+        ))
+        pos += bot_len
+
+    # Data items start here — file offset of the first frame item
+    items_file_offset = pixel_data_offset + pos
+
+    if frame_offsets_from_bot:
+        # BOT gives offsets relative to the first item
+        # We still need to scan item headers to get lengths
+        pass
+
+    # Scan frame items from what we have; if we need more, fetch more
+    frames: list[tuple[int, int]] = []
+    while len(frames) < n_frames and pos + 8 <= len(data):
+        item_tag = data[pos:pos+4]
+        if item_tag == b"\xfe\xff\xdd\xe0":  # sequence delimiter
+            break
+        if item_tag != b"\xfe\xff\x00\xe0":  # not an item tag
+            break
+        item_len = struct.unpack("<I", data[pos+4:pos+8])[0]
+        frame_file_offset = pixel_data_offset + pos + 8
+        frames.append((frame_file_offset, item_len))
+        pos += 8 + item_len
+
+    if len(frames) < n_frames and pos + 8 > len(data):
+        # Need to fetch more — the compressed frames are large
+        # Fall back to fetching the full encapsulated data structure
+        # by scanning item-by-item with range requests
+        remaining_start = pixel_data_offset + pos
+        remaining_size = file_size - remaining_start
+        resp2 = client.get(url, headers={
+            "Range": f"bytes={remaining_start}-{file_size - 1}"
+        })
+        if resp2.status_code in (200, 206):
+            more_data = resp2.content
+            mpos = 0
+            while len(frames) < n_frames and mpos + 8 <= len(more_data):
+                item_tag = more_data[mpos:mpos+4]
+                if item_tag == b"\xfe\xff\xdd\xe0":
+                    break
+                if item_tag != b"\xfe\xff\x00\xe0":
+                    break
+                item_len = struct.unpack("<I", more_data[mpos+4:mpos+8])[0]
+                frame_file_offset = remaining_start + mpos + 8
+                frames.append((frame_file_offset, item_len))
+                mpos += 8 + item_len
+
+    return frames
 
 
 # ---------------------------------------------------------------------------
@@ -44,10 +147,34 @@ def _list_series_files(
     base_url: str = IDC_S3_BASE,
     client: Any = None,
 ) -> list[str]:
-    """List .dcm file keys in an IDC series via S3 ListObjectsV2."""
+    """List .dcm file keys in an IDC series.
+
+    Supports both S3 (ListObjectsV2 XML API) and GCS (JSON API).
+    """
     import httpx
 
     _client = client or httpx.Client(timeout=30)
+
+    if "googleapis.com" in base_url:
+        keys = _list_gcs(series_uuid, base_url, _client)
+    else:
+        keys = _list_s3(series_uuid, base_url, _client)
+
+    if client is None:
+        _client.close()
+
+    if not keys:
+        raise FileNotFoundError(
+            f"No .dcm files found for series UUID {series_uuid} at {base_url}"
+        )
+
+    return keys
+
+
+def _list_s3(
+    series_uuid: str, base_url: str, client: Any
+) -> list[str]:
+    """List files via S3 ListObjectsV2 XML API."""
     keys: list[str] = []
     continuation_token = None
 
@@ -59,7 +186,7 @@ def _list_series_files(
         if continuation_token:
             params["continuation-token"] = continuation_token
 
-        resp = _client.get(base_url, params=params)
+        resp = client.get(base_url, params=params)
         resp.raise_for_status()
 
         root = ElementTree.fromstring(resp.text)
@@ -70,7 +197,6 @@ def _list_series_files(
             if key_el is not None and key_el.text and key_el.text.endswith(".dcm"):
                 keys.append(key_el.text)
 
-        # Check for truncation
         is_truncated = root.findtext("s3:IsTruncated", namespaces=ns)
         if is_truncated == "true":
             continuation_token = root.findtext(
@@ -79,13 +205,41 @@ def _list_series_files(
         else:
             break
 
-    if client is None:
-        _client.close()
+    return keys
 
-    if not keys:
-        raise FileNotFoundError(
-            f"No .dcm files found for series UUID {series_uuid} at {base_url}"
-        )
+
+def _list_gcs(
+    series_uuid: str, base_url: str, client: Any
+) -> list[str]:
+    """List files via GCS JSON API."""
+    # Extract bucket name from base_url
+    # e.g. "https://storage.googleapis.com/idc-open-data" → "idc-open-data"
+    bucket = base_url.rstrip("/").split("/")[-1]
+    api_base = "https://storage.googleapis.com/storage/v1"
+
+    keys: list[str] = []
+    page_token = None
+
+    while True:
+        params: dict[str, str] = {
+            "prefix": f"{series_uuid}/",
+            "maxResults": "1000",
+        }
+        if page_token:
+            params["pageToken"] = page_token
+
+        resp = client.get(f"{api_base}/b/{bucket}/o", params=params)
+        resp.raise_for_status()
+        data = resp.json()
+
+        for item in data.get("items", []):
+            name = item.get("name", "")
+            if name.endswith(".dcm"):
+                keys.append(name)
+
+        page_token = data.get("nextPageToken")
+        if not page_token:
+            break
 
     return keys
 
@@ -294,14 +448,18 @@ def build_idc_zmp(
         if not slices:
             raise ValueError(f"No valid DICOM files found for {series_uuid}")
 
-        # Check transfer syntax
+        # Determine transfer syntax and whether data is compressed
         tsuid = str(
             getattr(slices[0].dataset.file_meta, "TransferSyntaxUID", "")
         )
-        if tsuid not in UNCOMPRESSED_TRANSFER_SYNTAXES:
+        is_uncompressed = tsuid in UNCOMPRESSED_TRANSFER_SYNTAXES
+        is_compressed = not is_uncompressed
+        image_codec = _TS_TO_CODEC.get(tsuid) if is_compressed else None
+
+        if is_compressed and image_codec is None:
             raise ValueError(
-                f"Series uses compressed transfer syntax {tsuid}. "
-                f"ZMP virtual references require uncompressed DICOM."
+                f"Unsupported compressed transfer syntax {tsuid}. "
+                f"No image codec mapping available."
             )
 
         # Sort by slice position
@@ -358,7 +516,7 @@ def build_idc_zmp(
                 "configuration": {"separator": "/"},
             },
             "fill_value": 0,
-            "codecs": [
+            "codecs": [image_codec] if is_compressed else [
                 {
                     "name": "bytes",
                     "configuration": {"endian": "little"},
@@ -379,15 +537,46 @@ def build_idc_zmp(
         )
         builder.add("zarr.json", text=zarr_json_text)
 
+        # For compressed DICOM, scan encapsulated frame offsets.
+        # _fetch_header gave us the pixel data tag position in
+        # pixel_offset — but for uncompressed it's the data start,
+        # for compressed it may point past the tag. We need to
+        # re-find the tag and scan the encapsulation structure.
+        if is_compressed:
+            for s in slices:
+                # Fetch bytes around the pixel data area to find the tag
+                # The pixel_offset from _find_pixel_range may be wrong for
+                # compressed data, so search backwards from it
+                search_start = max(0, s.pixel_offset - 20)
+                resp = client.get(
+                    s.url,
+                    headers={"Range": f"bytes={search_start}-{min(search_start + 1024, s.file_size - 1)}"},
+                )
+                resp.raise_for_status()
+                chunk = resp.content
+                # Find PixelData tag
+                tag_pos = chunk.find(b"\xe0\x7f\x10\x00")
+                if tag_pos < 0:
+                    raise ValueError(f"PixelData tag not found near offset {search_start}")
+                tag_file_offset = search_start + tag_pos
+
+                frames = _scan_encapsulated_frames(
+                    s.url, tag_file_offset, s.file_size, 1, client=client
+                )
+                if not frames:
+                    raise ValueError(f"No encapsulated frames found in {s.url}")
+                s.pixel_offset, s.pixel_length = frames[0]
+
         for k, s in enumerate(slices):
             chunk_path = f"c/{k}/0/0"
+            chunk_length = s.pixel_length if is_compressed else pixel_bytes_per_slice
 
             if inline_data or content_hash:
                 # Fetch pixel data
                 resp = client.get(
                     s.url,
                     headers={
-                        "Range": f"bytes={s.pixel_offset}-{s.pixel_offset + pixel_bytes_per_slice - 1}"
+                        "Range": f"bytes={s.pixel_offset}-{s.pixel_offset + chunk_length - 1}"
                     },
                 )
                 resp.raise_for_status()
@@ -406,7 +595,7 @@ def build_idc_zmp(
                     chunk_path,
                     uri=s.url,
                     offset=s.pixel_offset,
-                    length=pixel_bytes_per_slice,
+                    length=chunk_length,
                     size=s.file_size,
                     retrieval_key=_git_blob_hash(pixel_data),
                 )
@@ -415,7 +604,7 @@ def build_idc_zmp(
                     chunk_path,
                     uri=s.url,
                     offset=s.pixel_offset,
-                    length=pixel_bytes_per_slice,
+                    length=chunk_length,
                     size=s.file_size,
                 )
 
