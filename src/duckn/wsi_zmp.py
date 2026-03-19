@@ -214,10 +214,41 @@ def build_wsi_zmp(
 
     builder = ZMPBuilder()
 
-    # Root group metadata
+    # Build OME-NGFF multiscales metadata for the root group
+    # so OME-Zarr viewers can discover and navigate the pyramid
+    ome_datasets = []
+    for level_idx, level in enumerate(levels):
+        ps = level["pixel_spacing"]
+        downsample = (
+            levels[0]["total_cols"] / level["total_cols"]
+            if level_idx > 0 else 1.0
+        )
+        ome_datasets.append({
+            "path": str(level_idx),
+            "coordinateTransformations": [
+                {"type": "scale", "scale": [ps[0], ps[1]]},
+            ],
+        })
+
+    ps0 = levels[0]["pixel_spacing"]
+    ome_multiscales = [{
+        "version": "0.4",
+        "name": "slide",
+        "axes": [
+            {"name": "y", "type": "space", "unit": "millimeter"},
+            {"name": "x", "type": "space", "unit": "millimeter"},
+        ],
+        "datasets": ome_datasets,
+        "type": "gaussian",
+    }]
+
+    # Root group with both duckn and OME-NGFF metadata
     root_meta = {
         "zarr_format": 3,
         "node_type": "group",
+        "attributes": {
+            "multiscales": ome_multiscales,
+        },
     }
     builder.add("zarr.json", text=json.dumps(root_meta))
 
