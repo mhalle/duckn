@@ -621,3 +621,43 @@ def to_bids(input_path: str, output_path: str | None) -> None:
         click.echo(f"Wrote {output_path}")
     else:
         click.echo(json.dumps(sidecar, indent=2))
+
+
+@cli.command("from-zarr-zip")
+@click.argument("source", type=str)
+@click.argument("output_path", type=click.Path())
+@click.option("--prefix", default="", help="Path prefix inside the zip (e.g. 'data.zarr/')")
+@click.option("--hydrate", is_flag=True, help="Embed chunk data inline (default: virtual byte ranges)")
+@click.option("--no-duckn", is_flag=True, help="Skip duckn metadata injection")
+@click.option("--overwrite", is_flag=True, help="Overwrite existing output")
+def from_zarr_zip(
+    source: str,
+    output_path: str,
+    prefix: str,
+    hydrate: bool,
+    no_duckn: bool,
+    overwrite: bool,
+) -> None:
+    """Convert a Zarr v2/v3 zip store to a duckn ZMP manifest.
+
+    SOURCE is a local path or HTTP/HTTPS URL to a .zarr.zip file.
+    Supports both Zarr v2 and v3, including OME-NGFF multi-resolution pyramids.
+
+    \b
+    Examples:
+      duckn from-zarr-zip data.zarr.zip data.zmp
+      duckn from-zarr-zip https://s3.../data.zarr.zip data.zmp
+      duckn from-zarr-zip data.zarr.zip data.zmp --hydrate
+      duckn from-zarr-zip big.zarr.zip out.zmp --prefix="nested.zarr/"
+    """
+    from .zarr_zip_convert import zarr_zip_to_zmp
+
+    zarr_zip_to_zmp(
+        source,
+        output_path,
+        prefix=prefix,
+        hydrate=hydrate,
+        duckn=not no_duckn,
+        overwrite=overwrite,
+    )
+    click.echo(f"Wrote {output_path}")
