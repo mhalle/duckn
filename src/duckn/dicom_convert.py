@@ -2418,8 +2418,6 @@ def build_local_zmp(
     binary_tags: bool = False,
     content_hash: bool = False,
     inline_data: bool = False,
-    data_compression: str = "none",
-    data_compression_level: int | None = None,
     overwrite: bool = False,
 ) -> Path:
     """Build a ZMP manifest for a local DICOM series.
@@ -2438,8 +2436,6 @@ def build_local_zmp(
     content_hash : if True, compute git-sha1 retrieval keys for chunks
     inline_data : if True, read pixel data and store inline in the ZMP.
         Creates a self-contained archive. Implies content_hash=True.
-    data_compression : parquet compression for the data column
-    data_compression_level : compression level (codec-dependent)
     overwrite : if True, overwrite existing file
 
     Returns
@@ -2507,10 +2503,7 @@ def build_local_zmp(
     zarr_json_text = json.dumps(zarr_meta)
 
     # Phase 5: build ZMP
-    builder = ZMPBuilder(
-        data_compression=data_compression,
-        data_compression_level=data_compression_level,
-    )
+    builder = ZMPBuilder()
     builder.add("zarr.json", text=zarr_json_text)
 
     for k, (dcm_path, ds) in enumerate(entries):
@@ -2523,24 +2516,20 @@ def build_local_zmp(
 
         if inline_data:
             pixel_data = dcm_path.read_bytes()[offset:offset + pixel_bytes_per_slice]
-            builder.add(chunk_path, data=pixel_data, source=uri)
+            builder.add(chunk_path, data=pixel_data)
         elif content_hash:
             pixel_data = dcm_path.read_bytes()[offset:offset + pixel_bytes_per_slice]
-            from zarr_zmp.builder import _git_blob_hash
+            from zarr_zmp import git_blob_hash
+            hash_val = git_blob_hash(pixel_data)
             builder.add(
                 chunk_path,
-                uri=uri,
-                offset=offset,
-                length=pixel_bytes_per_slice,
-                size=file_size,
-                retrieval_key=_git_blob_hash(pixel_data),
+                resolve={"http": {"url": uri, "offset": offset, "length": pixel_bytes_per_slice}, "git": {"oid": hash_val}},
+                checksum=hash_val, size=file_size,
             )
         else:
             builder.add(
                 chunk_path,
-                uri=uri,
-                offset=offset,
-                length=pixel_bytes_per_slice,
+                resolve={"http": {"url": uri, "offset": offset, "length": pixel_bytes_per_slice}},
                 size=file_size,
             )
 

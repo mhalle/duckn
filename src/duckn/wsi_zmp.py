@@ -363,9 +363,7 @@ def build_wsi_zmp(
                     chunk_path = f"{array_prefix}c/{ty}/{tx}"
                 builder.add(
                     chunk_path,
-                    uri=level["uri"],
-                    offset=offset,
-                    length=length,
+                    resolve={"http": {"url": level["uri"], "offset": offset, "length": length}},
                     size=length,
                 )
 

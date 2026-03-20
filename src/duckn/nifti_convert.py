@@ -858,9 +858,7 @@ def build_nifti_zmp(
     for k in range(z_dim):
         builder.add(
             f"c/{k}/0/0",
-            uri=uri,
-            offset=vox_offset + k * slice_bytes,
-            length=slice_bytes,
+            resolve={"http": {"url": uri, "offset": vox_offset + k * slice_bytes, "length": slice_bytes}},
             size=file_size,
         )
 
@@ -1013,9 +1011,7 @@ def build_nifti_zmp(
         offset = vox_offset + k * slice_bytes
         builder.add(
             chunk_path,
-            uri=uri,
-            offset=offset,
-            length=slice_bytes,
+            resolve={"http": {"url": uri, "offset": offset, "length": slice_bytes}},
             size=file_size,
         )
 

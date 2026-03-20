@@ -430,8 +430,6 @@ async def async_build_idc_zmp(
     binary_tags: bool = False,
     content_hash: bool = False,
     inline_data: bool = False,
-    data_compression: str = "none",
-    data_compression_level: int | None = None,
     overwrite: bool = False,
     max_concurrent: int = 50,
 ) -> Path:
@@ -448,8 +446,6 @@ async def async_build_idc_zmp(
     binary_tags : if True, include binary VR tags as base64
     content_hash : if True, compute git-sha1 retrieval keys for chunks
     inline_data : if True, fetch pixel data and store inline
-    data_compression : parquet compression for the data column
-    data_compression_level : compression level (codec-dependent)
     overwrite : if True, overwrite existing file
     max_concurrent : maximum parallel header fetches (default 50)
 
@@ -592,8 +588,6 @@ async def async_build_idc_zmp(
     # Phase 5: build ZMP via ZMPBuilder
     builder = ZMPBuilder(
         metadata={"idc_series_uuid": series_uuid},
-        data_compression=data_compression,
-        data_compression_level=data_compression_level,
     )
     builder.add("zarr.json", text=zarr_json_text)
 
@@ -718,13 +712,14 @@ async def async_build_idc_zmp(
             pixel_data = pixel_results[k]
 
             if inline_data:
-                builder.add(chunk_path, data=pixel_data, source=s.url)
+                builder.add(chunk_path, data=pixel_data)
             else:
-                from zarr_zmp.builder import _git_blob_hash
+                from zarr_zmp import git_blob_hash
+                hash_val = git_blob_hash(pixel_data)
                 builder.add(
-                    chunk_path, uri=s.url, offset=s.pixel_offset,
-                    length=chunk_length, size=s.file_size,
-                    retrieval_key=_git_blob_hash(pixel_data),
+                    chunk_path,
+                    resolve={"http": {"url": s.url, "offset": s.pixel_offset, "length": chunk_length}, "git": {"oid": hash_val}},
+                    checksum=hash_val, size=s.file_size,
                 )
     else:
         # Virtual references only
@@ -732,8 +727,9 @@ async def async_build_idc_zmp(
             chunk_path = f"c/{k}/0/0"
             chunk_length = s.pixel_length if is_compressed else pixel_bytes_per_slice
             builder.add(
-                chunk_path, uri=s.url, offset=s.pixel_offset,
-                length=chunk_length, size=s.file_size,
+                chunk_path,
+                resolve={"http": {"url": s.url, "offset": s.pixel_offset, "length": chunk_length}},
+                size=s.file_size,
             )
 
     if output_path.exists() and overwrite:
@@ -752,8 +748,6 @@ def build_idc_zmp(
     binary_tags: bool = False,
     content_hash: bool = False,
     inline_data: bool = False,
-    data_compression: str = "none",
-    data_compression_level: int | None = None,
     overwrite: bool = False,
     max_concurrent: int = 50,
 ) -> Path:
@@ -771,8 +765,6 @@ def build_idc_zmp(
     binary_tags : if True, include binary VR tags as base64
     content_hash : if True, compute git-sha1 retrieval keys for chunks
     inline_data : if True, fetch pixel data and store inline
-    data_compression : parquet compression for the data column
-    data_compression_level : compression level (codec-dependent)
     overwrite : if True, overwrite existing file
     max_concurrent : maximum parallel header fetches (default 50)
 
@@ -786,8 +778,6 @@ def build_idc_zmp(
         series_uuid, output_path,
         base_url=base_url, tags=tags, binary_tags=binary_tags,
         content_hash=content_hash, inline_data=inline_data,
-        data_compression=data_compression,
-        data_compression_level=data_compression_level,
         overwrite=overwrite, max_concurrent=max_concurrent,
     ))
 
@@ -1086,8 +1076,8 @@ def build_dicomweb_zmp(
         rel_uri = f"instances/{si['sop_uid']}/frames/1"
         builder.add(
             f"c/{k}/0/0",
-            uri=rel_uri,
-            base_uri=series_base + "/",
+            resolve={"http": {"url": rel_uri}},
+            base_resolve={"http": {"url": series_base + "/"}},
         )
 
     if output_path.exists() and overwrite:
