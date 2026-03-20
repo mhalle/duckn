@@ -2,12 +2,14 @@
 
 Reads NIfTI-1/NIfTI-2 files via nibabel and writes duckn Zarr v3 stores
 with the NIfTI provenance extension. Also converts back from Zarr to NIfTI.
+Also builds ZMP manifests for zero-copy slice access to .nii files.
 
 Requires nibabel: install with ``pip install duckn[nifti]``.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -678,3 +680,347 @@ def zarr_to_nifti(
                 fh.seek(slope_offset)
                 fh.write(_struct.pack(fmt, _slope_to_patch))
                 fh.write(_struct.pack(fmt, _inter_to_patch or 0.0))
+
+
+# ---------------------------------------------------------------------------
+# NIfTI ZMP builder (no nibabel required)
+# ---------------------------------------------------------------------------
+
+# NIfTI datatype code → (zarr dtype string, itemsize)
+_NII_DATATYPE_MAP: dict[int, tuple[str, int]] = {
+    2: ("uint8", 1), 4: ("int16", 2), 8: ("int32", 4),
+    16: ("float32", 4), 64: ("float64", 8),
+    256: ("int8", 1), 512: ("uint16", 2), 768: ("uint32", 4),
+}
+
+_NII_SFORM_TO_SPACE: dict[int, str] = {
+    1: "scanner-xyz",
+    2: "right-anterior-superior",
+    3: "right-anterior-superior",
+    4: "right-anterior-superior",
+}
+
+_NII_SPATIAL_UNITS: dict[int, str] = {1: "m", 2: "mm", 3: "um"}
+
+
+def build_nifti_zmp(
+    input_path: str | Path,
+    output_path: str | Path,
+    *,
+    overwrite: bool = False,
+) -> Path:
+    """Build a ZMP manifest for a NIfTI file with per-slice byte ranges.
+
+    Parses the NIfTI-1 header directly (no nibabel required) and creates
+    a ZMP where each chunk is one axial slice — a contiguous byte range
+    in the .nii file.
+
+    The Zarr array shape is (z, y, x) with chunk shape (1, y, x).
+
+    Requirements:
+    - Uncompressed .nii (not .nii.gz)
+    - NIfTI-1 format (348-byte header)
+    - 3D volume
+    - sform_code > 0 (sform affine present)
+
+    Parameters
+    ----------
+    input_path : path to the .nii file (or HTTP/S3 URL)
+    output_path : path for the output .zmp file
+    overwrite : if True, overwrite existing file
+
+    Returns
+    -------
+    Path to the created .zmp file
+    """
+    import struct
+    from zarr_zmp import Builder as ZMPBuilder
+
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(f"{output_path} already exists")
+
+    if str(input_path).endswith(".gz"):
+        raise ValueError("ZMP requires uncompressed .nii (not .nii.gz)")
+
+    # Read 348-byte NIfTI-1 header
+    with open(input_path, "rb") as f:
+        hdr = f.read(348)
+
+    # Detect endianness from sizeof_hdr (must be 348)
+    if struct.unpack_from("<i", hdr, 0)[0] == 348:
+        e = "<"
+        endian = "little"
+    elif struct.unpack_from(">i", hdr, 0)[0] == 348:
+        e = ">"
+        endian = "big"
+    else:
+        raise ValueError("Not a valid NIfTI-1 file (sizeof_hdr != 348)")
+
+    # Parse header fields
+    dim = struct.unpack_from(f"{e}8h", hdr, 40)
+    ndim = dim[0]
+    datatype = struct.unpack_from(f"{e}h", hdr, 70)[0]
+    vox_offset = max(352, int(struct.unpack_from(f"{e}f", hdr, 108)[0]))
+    sform_code = struct.unpack_from(f"{e}h", hdr, 254)[0]
+    srow_x = struct.unpack_from(f"{e}4f", hdr, 280)
+    srow_y = struct.unpack_from(f"{e}4f", hdr, 296)
+    srow_z = struct.unpack_from(f"{e}4f", hdr, 312)
+    xyzt_units = hdr[123]
+
+    if ndim != 3:
+        raise ValueError(f"ZMP currently supports 3D NIfTI only, got {ndim}D")
+
+    if datatype not in _NII_DATATYPE_MAP:
+        raise ValueError(f"Unsupported NIfTI datatype code: {datatype}")
+
+    if sform_code <= 0:
+        raise ValueError("NIfTI file has no sform (sform_code <= 0)")
+
+    dtype_str, itemsize = _NII_DATATYPE_MAP[datatype]
+    x_dim, y_dim, z_dim = dim[1], dim[2], dim[3]
+    slice_bytes = x_dim * y_dim * itemsize
+    spatial_unit = _NII_SPATIAL_UNITS.get(xyzt_units & 0x07, "mm")
+
+    # Geometry from sform: columns are space_directions, last col is origin
+    origin = [srow_x[3], srow_y[3], srow_z[3]]
+    dir_x = [srow_x[0], srow_y[0], srow_z[0]]
+    dir_y = [srow_x[1], srow_y[1], srow_z[1]]
+    dir_z = [srow_x[2], srow_y[2], srow_z[2]]
+    space = _NII_SFORM_TO_SPACE.get(sform_code, "right-anterior-superior")
+
+    # Build duckn metadata in Zarr (z, y, x) order
+    duckn_meta = {
+        "version": "1.0",
+        "space": space,
+        "space_origin": origin,
+        "axes": [
+            {"kind": "space", "centering": "cell",
+             "space_direction": dir_z, "unit": spatial_unit},
+            {"kind": "space", "centering": "cell",
+             "space_direction": dir_y, "unit": spatial_unit},
+            {"kind": "space", "centering": "cell",
+             "space_direction": dir_x, "unit": spatial_unit},
+        ],
+        "extensions": {
+            "nifti": {
+                "version": "1.0",
+                "nifti_version": 1,
+                "tags": {"sform_code": sform_code},
+            },
+        },
+    }
+
+    # Value transforms from scl_slope/scl_inter
+    scl_slope = struct.unpack_from(f"{e}f", hdr, 112)[0]
+    scl_inter = struct.unpack_from(f"{e}f", hdr, 116)[0]
+    import math
+    slope_set = not (math.isnan(scl_slope) or scl_slope == 0)
+    if slope_set and not (scl_slope == 1.0 and (scl_inter == 0.0 or math.isnan(scl_inter))):
+        if math.isnan(scl_inter):
+            scl_inter = 0.0
+        duckn_meta["value_transforms"] = [
+            {"name": "linear", "parameters": {"slope": scl_slope, "intercept": scl_inter}}
+        ]
+
+    # Build zarr.json
+    zarr_meta = {
+        "zarr_format": 3,
+        "node_type": "array",
+        "shape": [z_dim, y_dim, x_dim],
+        "data_type": dtype_str,
+        "chunk_grid": {
+            "name": "regular",
+            "configuration": {"chunk_shape": [1, y_dim, x_dim]},
+        },
+        "chunk_key_encoding": {
+            "name": "default",
+            "configuration": {"separator": "/"},
+        },
+        "fill_value": 0,
+        "codecs": [
+            {"name": "bytes", "configuration": {"endian": endian}},
+        ],
+        "attributes": {"duckn": duckn_meta},
+        "dimension_names": ["k", "j", "i"],
+    }
+
+    zarr_json_text = json.dumps(zarr_meta)
+    uri = input_path.resolve().as_uri()
+    file_size = input_path.stat().st_size
+
+    # Build ZMP — one chunk per axial slice
+    builder = ZMPBuilder()
+    builder.add("zarr.json", text=zarr_json_text)
+
+    for k in range(z_dim):
+        builder.add(
+            f"c/{k}/0/0",
+            uri=uri,
+            offset=vox_offset + k * slice_bytes,
+            length=slice_bytes,
+            size=file_size,
+        )
+
+    if output_path.exists() and overwrite:
+        output_path.unlink()
+
+    builder.write(output_path)
+    return output_path
+
+
+# ---------------------------------------------------------------------------
+# NIfTI ZMP builder
+# ---------------------------------------------------------------------------
+
+
+def build_nifti_zmp(
+    input_path: str | Path,
+    output_path: str | Path,
+    *,
+    overwrite: bool = False,
+) -> Path:
+    """Build a ZMP manifest for a NIfTI file with per-slice byte ranges.
+
+    Creates a lightweight Parquet file that maps Zarr chunk paths to
+    byte ranges within the NIfTI file. Each chunk is one axial slice,
+    readable via byte-range requests (HTTP or local file:// URI).
+
+    The Zarr array shape is (z, y, x) — C-order with Z slowest —
+    matching the NIfTI file's on-disk byte layout where X varies fastest.
+    Each chunk (1, y, x) is a contiguous byte range.
+
+    Requirements:
+    - Uncompressed .nii (not .nii.gz)
+    - 3D volume (4D not yet supported)
+
+    Parameters
+    ----------
+    input_path : path to the .nii file
+    output_path : path for the output .zmp file
+    overwrite : if True, overwrite existing file
+
+    Returns
+    -------
+    Path to the created .zmp file
+    """
+    _require_nibabel()
+    import nibabel as nib
+    from zarr_zmp import Builder as ZMPBuilder
+
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(f"{output_path} already exists")
+
+    if str(input_path).endswith(".gz"):
+        raise ValueError("ZMP requires uncompressed .nii (not .nii.gz)")
+
+    img = nib.load(str(input_path))
+    hdr = img.header
+    ndim = len(img.shape)
+
+    if ndim != 3:
+        raise ValueError(f"ZMP currently supports 3D NIfTI only, got {ndim}D")
+
+    # NIfTI shape is (x_dim, y_dim, z_dim) with x varying fastest on disk
+    # Zarr C-order shape is (z_dim, y_dim, x_dim) with x varying fastest
+    x_dim, y_dim, z_dim = img.shape
+    shape_zyx = [z_dim, y_dim, x_dim]
+
+    # Data offset and dtype
+    vox_offset = max(352, int(hdr["vox_offset"]))
+    dtype = img.dataobj.dtype
+    itemsize = dtype.itemsize
+
+    # Endianness
+    byteorder = dtype.byteorder
+    if byteorder == "=":
+        import sys
+        byteorder = "<" if sys.byteorder == "little" else ">"
+    endian = "little" if byteorder in ("<", "|") else "big"
+
+    # Slice size: one (y, x) plane
+    slice_bytes = y_dim * x_dim * itemsize
+
+    # Build duckn metadata via nifti_to_zarr's logic
+    # We do a metadata-only conversion to a temp store
+    import tempfile
+    import shutil
+    tmp = Path(tempfile.mkdtemp())
+    tmp_zarr = tmp / "meta.zarr"
+    try:
+        nifti_to_zarr(input_path, tmp_zarr)
+        import zarr
+        store = zarr.storage.LocalStore(str(tmp_zarr))
+        arr = zarr.open_array(store, mode="r")
+        duckn_meta = dict(arr.attrs).get("duckn", {})
+    finally:
+        shutil.rmtree(tmp)
+
+    # The metadata was built with nibabel's (x,y,z) axis order.
+    # We need to reverse the axes for (z,y,x) Zarr order.
+    if "axes" in duckn_meta and len(duckn_meta["axes"]) == 3:
+        duckn_meta["axes"] = list(reversed(duckn_meta["axes"]))
+
+    # Zarr dtype string
+    _dtype_map = {
+        "int8": "int8", "uint8": "uint8",
+        "int16": "int16", "uint16": "uint16",
+        "int32": "int32", "uint32": "uint32",
+        "float32": "float32", "float64": "float64",
+    }
+    dtype_str = _dtype_map.get(str(dtype).replace("<", "").replace(">", ""), "int16")
+
+    # Build zarr.json
+    zarr_meta = {
+        "zarr_format": 3,
+        "node_type": "array",
+        "shape": shape_zyx,
+        "data_type": dtype_str,
+        "chunk_grid": {
+            "name": "regular",
+            "configuration": {"chunk_shape": [1, y_dim, x_dim]},
+        },
+        "chunk_key_encoding": {
+            "name": "default",
+            "configuration": {"separator": "/"},
+        },
+        "fill_value": 0,
+        "codecs": [
+            {
+                "name": "bytes",
+                "configuration": {"endian": endian},
+            }
+        ],
+        "attributes": {"duckn": duckn_meta},
+        "dimension_names": ["k", "j", "i"],
+    }
+
+    zarr_json_text = json.dumps(zarr_meta)
+    uri = input_path.resolve().as_uri()
+    file_size = input_path.stat().st_size
+
+    # Build ZMP
+    builder = ZMPBuilder()
+    builder.add("zarr.json", text=zarr_json_text)
+
+    for k in range(z_dim):
+        chunk_path = f"c/{k}/0/0"
+        offset = vox_offset + k * slice_bytes
+        builder.add(
+            chunk_path,
+            uri=uri,
+            offset=offset,
+            length=slice_bytes,
+            size=file_size,
+        )
+
+    if output_path.exists() and overwrite:
+        output_path.unlink()
+
+    builder.write(output_path)
+    return output_path

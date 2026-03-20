@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import sys
 import tempfile
 from pathlib import Path
 
 import click
+
+# Silence httpx request logging
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 from .convert import nrrd_to_zarr, nrrd_to_zarr_zerocopy, zarr_to_nrrd, zarr_to_nrrd_zerocopy
 from .models import DucknMetadata
@@ -353,6 +357,8 @@ def to_nifti_cmd(
     help="Override anonymization flag (auto-detect if omitted)",
 )
 @click.option("--no-tags", is_flag=True, help="Skip DICOM tag extraction")
+@click.option("--content-hash", is_flag=True, help="Compute git-sha1 retrieval keys (ZMP only)")
+@click.option("--inline-data", is_flag=True, help="Store pixel data inline (ZMP only)")
 def from_dicom(
     input_path: str,
     output_path: str,
@@ -362,29 +368,155 @@ def from_dicom(
     overwrite: bool,
     anonymized: bool | None,
     no_tags: bool,
+    content_hash: bool,
+    inline_data: bool,
 ) -> None:
-    """Convert DICOM file(s) to a duckn Zarr v3 store.
+    """Convert DICOM file(s) to a duckn Zarr v3 store or ZMP manifest.
 
     INPUT_PATH is a directory of single-frame .dcm files (one series)
     or a single enhanced multi-frame DICOM file.
+
+    Output format is determined by OUTPUT_PATH extension:
+    .zarr → Zarr v3 store, .zmp → ZMP Parquet manifest.
     """
-    from .dicom_convert import dicom_to_zarr
+    out = Path(output_path)
 
-    parsed_chunks = None
-    if chunks is not None:
-        parsed_chunks = tuple(int(c) for c in chunks.split(","))
+    if out.suffix == ".zmp":
+        from .dicom_convert import build_local_zmp
 
-    dicom_to_zarr(
-        input_path,
-        output_path,
-        chunks=parsed_chunks,
-        compressor=compressor,
-        level=level,
-        overwrite=overwrite,
-        anonymized=anonymized,
-        tags=not no_tags,
-    )
+        build_local_zmp(
+            input_path,
+            output_path,
+            tags=not no_tags,
+            content_hash=content_hash,
+            inline_data=inline_data,
+            overwrite=overwrite,
+        )
+    else:
+        from .dicom_convert import dicom_to_zarr
+
+        parsed_chunks = None
+        if chunks is not None:
+            parsed_chunks = tuple(int(c) for c in chunks.split(","))
+
+        dicom_to_zarr(
+            input_path,
+            output_path,
+            chunks=parsed_chunks,
+            compressor=compressor,
+            level=level,
+            overwrite=overwrite,
+            anonymized=anonymized,
+            tags=not no_tags,
+        )
     click.echo(f"Wrote {output_path}")
+
+
+@cli.command("from-idc")
+@click.argument("identifier")
+@click.argument("output_path", type=click.Path())
+@click.option("--base-url", default=None, help="IDC bucket base URL (default: public S3)")
+@click.option("--no-tags", is_flag=True, help="Skip DICOM tag extraction")
+@click.option("--content-hash", is_flag=True, help="Compute git-sha1 retrieval keys")
+@click.option("--inline-data", is_flag=True, help="Fetch and store pixel data inline")
+@click.option(
+    "--data-compression",
+    type=click.Choice(["none", "zstd", "snappy", "gzip", "lz4", "brotli"]),
+    default="none",
+    help="Parquet compression for data column (default: none)",
+)
+@click.option("--overwrite", is_flag=True, help="Overwrite existing output")
+def from_idc(
+    identifier: str,
+    output_path: str,
+    base_url: str | None,
+    no_tags: bool,
+    content_hash: bool,
+    inline_data: bool,
+    data_compression: str,
+    overwrite: bool,
+) -> None:
+    """Build a ZMP manifest for an IDC DICOM series.
+
+    IDENTIFIER is a CRDC series UUID, a DICOM SeriesInstanceUID, or a
+    SOPInstanceUID. If it contains dots it is treated as a DICOM UID and
+    resolved via idc-index; otherwise it is used as a CRDC UUID directly.
+    """
+    from .idc_zmp import build_idc_zmp
+
+    series_uuid = _resolve_idc_identifier(identifier)
+
+    kwargs: dict = dict(
+        series_uuid=series_uuid,
+        output_path=output_path,
+        tags=not no_tags,
+        content_hash=content_hash,
+        inline_data=inline_data,
+        data_compression=data_compression,
+        overwrite=overwrite,
+    )
+    if base_url is not None:
+        kwargs["base_url"] = base_url
+
+    build_idc_zmp(**kwargs)
+    click.echo(f"Wrote {output_path}")
+
+
+def _resolve_idc_identifier(identifier: str) -> str:
+    """Resolve a DICOM UID or CRDC UUID to a crdc_series_uuid.
+
+    CRDC UUIDs look like ``8-4-4-4-12`` hex (e.g.
+    ``bfa2aab6-85de-4f92-b311-e6c8a52b9299``). Anything else is
+    treated as a DICOM UID and resolved via idc-index.
+    """
+    import re
+
+    if re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+        identifier,
+        re.IGNORECASE,
+    ):
+        return identifier
+
+    try:
+        from idc_index import IDCClient
+    except ImportError:
+        raise click.ClickException(
+            "idc-index is required for DICOM UID lookup. "
+            "Install it with: pip install idc-index"
+        )
+
+    client = IDCClient()
+
+    # Try SeriesInstanceUID first
+    result = client.sql_query(
+        "SELECT DISTINCT crdc_series_uuid "
+        "FROM index "
+        f"WHERE SeriesInstanceUID = '{identifier}'"
+    )
+    if len(result) == 1:
+        return result["crdc_series_uuid"].iloc[0]
+    if len(result) > 1:
+        raise click.ClickException(
+            f"Multiple series found for SeriesInstanceUID {identifier}"
+        )
+
+    # Try SOPInstanceUID
+    result = client.sql_query(
+        "SELECT DISTINCT crdc_series_uuid "
+        "FROM index "
+        f"WHERE SOPInstanceUID = '{identifier}'"
+    )
+    if len(result) == 1:
+        return result["crdc_series_uuid"].iloc[0]
+    if len(result) > 1:
+        raise click.ClickException(
+            f"Multiple series found for SOPInstanceUID {identifier}"
+        )
+
+    raise click.ClickException(
+        f"No IDC series found for identifier: {identifier}"
+    )
 
 
 @cli.command("info")

@@ -38,6 +38,14 @@ _TS_TO_CODEC = {
         "name": "imagecodecs_jpeg8",
         "configuration": {},
     },
+    "1.2.840.10008.1.2.4.57": {  # JPEG Lossless, Non-Hierarchical
+        "name": "imagecodecs_jpeg8",
+        "configuration": {},
+    },
+    "1.2.840.10008.1.2.4.70": {  # JPEG Lossless, SV1 (most common lossless CT)
+        "name": "imagecodecs_jpeg8",
+        "configuration": {},
+    },
     "1.2.840.10008.1.2.4.80": {  # JPEG-LS Lossless
         "name": "imagecodecs_jpegls",
         "configuration": {},
