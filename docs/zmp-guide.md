@@ -1,13 +1,15 @@
 # Building ZMP Manifests
 
-A ZMP (Zarr Manifest Parquet) is a lightweight index file that gives Zarr-compatible random access to imaging data without copying or converting it. The data stays where it is — on S3, in a zip archive, on a DICOM server, or in a local file. The ZMP just maps chunk paths to byte ranges or URLs.
+[ZMP](https://github.com/mhalle/zarr-zmp) (Zarr Manifest Parquet) is a general-purpose index format for Zarr stores. A ZMP maps chunk paths to byte ranges in external files — zip archives, DICOM files on S3, NIfTI files, DICOMweb servers — giving Zarr-compatible random access without copying or converting data. ZMP is an independent project with no dependency on duckn.
+
+This guide covers the tools in the duckn library that build ZMP manifests from imaging sources. These tools optionally inject duckn metadata (spatial calibration, axis semantics, domain extensions) into the ZMP's `zarr.json` entry, but duckn metadata is not required — you can build ZMPs without it.
 
 ZMPs come in two flavors:
 
 - **Virtual**: chunk entries are byte-range references to external files. The ZMP is tiny (typically 10-100 KB) and data is fetched on demand.
 - **Hydrated**: chunk data is embedded inline in the ZMP's Parquet data column. The ZMP is self-contained but larger.
 
-All ZMPs carry duckn metadata (spatial calibration, axis semantics, extensions) in their `zarr.json` entry, queryable via DuckDB or any Parquet reader.
+The `zarr.json` entry in every ZMP is queryable via DuckDB or any Parquet reader — whether or not it contains duckn metadata.
 
 ---
 
@@ -48,7 +50,7 @@ zarr_zip_to_zmp("data.zarr.zip", "data.zmp", hydrate=True)
 zarr_zip_to_zmp("data.zarr.zip", "data.zmp", duckn=False)
 ```
 
-For Zarr v2 stores, the converter automatically translates `.zarray` metadata to Zarr v3 `zarr.json` format, including codec conversion (blosc, zstd, gzip). For OME-NGFF stores, duckn spatial metadata is auto-generated from `multiscales` coordinate transformations.
+For Zarr v2 stores, the converter automatically translates `.zarray` metadata to Zarr v3 `zarr.json` format, including codec conversion (blosc, zstd, gzip). For OME-NGFF stores, duckn spatial metadata is optionally auto-generated from `multiscales` coordinate transformations (use `--no-duckn` to skip).
 
 **Requirements**: zip must use `ZIP_STORED` (no zip-level compression) for virtual references. Chunk-level compression (blosc, zstd) is preserved as-is.
 
