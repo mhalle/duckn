@@ -249,7 +249,7 @@ def _list_gcs(
 # ---------------------------------------------------------------------------
 
 
-_CHUNK_SIZES = [5120, 7680, 10240, 51200, 51200, 524288, 10 * 1024 * 1024]
+_CHUNK_SIZES = [15360, 51200, 524288, 10 * 1024 * 1024]
 
 
 def _fetch_header(
@@ -257,7 +257,7 @@ def _fetch_header(
     *,
     client: Any,
 ) -> tuple[Any, int, int, int]:
-    """Fetch a DICOM header via progressive range requests.
+    """Fetch a DICOM header via progressive range requests (sync).
 
     Returns (dataset, file_size, pixel_offset, pixel_length).
     """
@@ -298,6 +298,59 @@ def _fetch_header(
             continue
 
     raise ValueError(f"Failed to parse DICOM header from {url}")
+
+
+async def _fetch_header_async(
+    url: str,
+    *,
+    client: Any,
+    semaphore: Any = None,
+) -> tuple[Any, int, int, int]:
+    """Fetch a DICOM header via range requests (async).
+
+    Returns (dataset, file_size, pixel_offset, pixel_length).
+    """
+    import pydicom
+
+    if semaphore:
+        await semaphore.acquire()
+
+    try:
+        accumulated = b""
+
+        for chunk_size in _CHUNK_SIZES:
+            start = len(accumulated)
+            end = start + chunk_size - 1
+            resp = await client.get(url, headers={"Range": f"bytes={start}-{end}"})
+
+            if resp.status_code == 206:
+                accumulated += resp.content
+                cr = resp.headers.get("content-range", "")
+                file_size = int(cr.split("/")[-1]) if "/" in cr else 0
+            elif resp.status_code == 200:
+                accumulated = resp.content
+                file_size = len(accumulated)
+            else:
+                resp.raise_for_status()
+
+            try:
+                ds = pydicom.dcmread(
+                    BytesIO(accumulated), stop_before_pixels=True, force=True
+                )
+                if not hasattr(ds, "Rows"):
+                    continue
+
+                pixel_offset, pixel_length = _find_pixel_range(
+                    accumulated, ds, file_size
+                )
+                return ds, file_size, pixel_offset, pixel_length
+            except Exception:
+                continue
+
+        raise ValueError(f"Failed to parse DICOM header from {url}")
+    finally:
+        if semaphore:
+            semaphore.release()
 
 
 def _find_pixel_range(
@@ -368,6 +421,328 @@ class _SliceInfo:
     projection: float
 
 
+async def async_build_idc_zmp(
+    series_uuid: str,
+    output_path: str | Path,
+    *,
+    base_url: str = IDC_S3_BASE,
+    tags: bool = True,
+    binary_tags: bool = False,
+    content_hash: bool = False,
+    inline_data: bool = False,
+    data_compression: str = "none",
+    data_compression_level: int | None = None,
+    overwrite: bool = False,
+    max_concurrent: int = 50,
+) -> Path:
+    """Build a ZMP manifest for an IDC DICOM series (async).
+
+    Fetches DICOM headers in parallel via HTTP/2 range requests.
+
+    Parameters
+    ----------
+    series_uuid : CRDC series UUID (e.g. "bfa2aab6-85de-4f92-b311-e6c8a52b9299")
+    output_path : path for the output .zmp file
+    base_url : base URL for the IDC bucket (default: public S3)
+    tags : if True, include DICOM tags in metadata
+    binary_tags : if True, include binary VR tags as base64
+    content_hash : if True, compute git-sha1 retrieval keys for chunks
+    inline_data : if True, fetch pixel data and store inline
+    data_compression : parquet compression for the data column
+    data_compression_level : compression level (codec-dependent)
+    overwrite : if True, overwrite existing file
+    max_concurrent : maximum parallel header fetches (default 50)
+
+    Returns
+    -------
+    Path to the created .zmp file
+    """
+    import asyncio
+    import httpx
+    from zarr_zmp import Builder as ZMPBuilder
+
+    if inline_data:
+        content_hash = True
+
+    output_path = Path(output_path)
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(f"{output_path} already exists")
+
+    # Phase 1: list files (sync — single request)
+    sync_client = httpx.Client(timeout=30)
+    try:
+        keys = _list_series_files(series_uuid, base_url=base_url, client=sync_client)
+    finally:
+        sync_client.close()
+
+    # Phase 2: fetch all headers in parallel with HTTP/2
+    semaphore = asyncio.Semaphore(max_concurrent)
+
+    async with httpx.AsyncClient(
+        timeout=60, http2=True, limits=httpx.Limits(
+            max_connections=max_concurrent,
+            max_keepalive_connections=max_concurrent,
+        ),
+    ) as client:
+        urls = [f"{base_url}/{key}" for key in keys]
+        tasks = [
+            _fetch_header_async(url, client=client, semaphore=semaphore)
+            for url in urls
+        ]
+        results = await asyncio.gather(*tasks)
+
+    slices: list[_SliceInfo] = []
+    for url, (ds, file_size, pixel_offset, pixel_length) in zip(urls, results):
+        slices.append(
+            _SliceInfo(
+                url=url,
+                dataset=ds,
+                file_size=file_size,
+                pixel_offset=pixel_offset,
+                pixel_length=pixel_length,
+                projection=0.0,
+            )
+        )
+
+    # Validate
+    if not slices:
+        raise ValueError(f"No valid DICOM files found for {series_uuid}")
+
+    # Determine transfer syntax and whether data is compressed
+    tsuid = str(
+        getattr(slices[0].dataset.file_meta, "TransferSyntaxUID", "")
+    )
+    is_uncompressed = tsuid in UNCOMPRESSED_TRANSFER_SYNTAXES
+    is_compressed = not is_uncompressed
+    image_codec = _TS_TO_CODEC.get(tsuid) if is_compressed else None
+
+    if is_compressed and image_codec is None:
+        raise ValueError(
+            f"Unsupported compressed transfer syntax {tsuid}. "
+            f"No image codec mapping available."
+        )
+
+    # Sort by slice position
+    ds0 = slices[0].dataset
+    iop = [float(x) for x in ds0.ImageOrientationPatient]
+    row_cos = np.array(iop[:3])
+    col_cos = np.array(iop[3:])
+    slice_normal = np.cross(row_cos, col_cos)
+    nrm = np.linalg.norm(slice_normal)
+    if nrm > 0:
+        slice_normal = slice_normal / nrm
+
+    for s in slices:
+        pos = np.array(
+            [float(x) for x in s.dataset.ImagePositionPatient]
+        )
+        s.projection = float(np.dot(pos, slice_normal))
+
+    slices.sort(key=lambda s: s.projection)
+
+    # Validate uniform dimensions
+    shapes = {(int(s.dataset.Rows), int(s.dataset.Columns)) for s in slices}
+    if len(shapes) > 1:
+        raise ValueError(f"Non-uniform slice dimensions: {shapes}")
+
+    # Phase 3: compute geometry and metadata
+    headers = [s.dataset for s in slices]
+    geometry = geometry_from_headers(headers)
+    meta = build_duckn_metadata(geometry, headers, None, tags, binary_tags)
+    n_slices, rows, cols = geometry.shape
+
+    # Phase 4: build zarr.json
+    ds0 = slices[0].dataset
+    bits = int(ds0.BitsAllocated)
+    signed = int(ds0.PixelRepresentation)
+    _dtype_map = {
+        (8, 0): "uint8", (8, 1): "int8",
+        (16, 0): "uint16", (16, 1): "int16",
+        (32, 0): "uint32", (32, 1): "int32",
+    }
+    dtype_str = _dtype_map.get((bits, signed), "uint16")
+
+    zarr_meta = {
+        "zarr_format": 3,
+        "node_type": "array",
+        "shape": [n_slices, rows, cols],
+        "data_type": dtype_str,
+        "chunk_grid": {
+            "name": "regular",
+            "configuration": {"chunk_shape": [1, rows, cols]},
+        },
+        "chunk_key_encoding": {
+            "name": "default",
+            "configuration": {"separator": "/"},
+        },
+        "fill_value": 0,
+        "codecs": [image_codec] if is_compressed else [
+            {
+                "name": "bytes",
+                "configuration": {"endian": "little"},
+            }
+        ],
+        "attributes": {"duckn": meta.model_dump(exclude_none=True)},
+        "dimension_names": ["k", "j", "i"],
+    }
+
+    zarr_json_text = json.dumps(zarr_meta)
+    pixel_bytes_per_slice = rows * cols * (bits // 8)
+
+    # Phase 5: build ZMP via ZMPBuilder
+    builder = ZMPBuilder(
+        metadata={"idc_series_uuid": series_uuid},
+        data_compression=data_compression,
+        data_compression_level=data_compression_level,
+    )
+    builder.add("zarr.json", text=zarr_json_text)
+
+    # For compressed DICOM, scan encapsulated frame offsets in parallel.
+    if is_compressed:
+        import asyncio as _aio
+        import httpx
+
+        async def _scan_one_frame(s: _SliceInfo, client: Any, sem: Any) -> None:
+            """Find the encapsulated frame offset/length for one slice."""
+            async with sem:
+                search_start = max(0, s.pixel_offset - 20)
+                # Fetch enough bytes for the pixel data tag + BOT + first item header
+                fetch_end = min(search_start + 2048, s.file_size - 1)
+                resp = await client.get(
+                    s.url,
+                    headers={"Range": f"bytes={search_start}-{fetch_end}"},
+                )
+                resp.raise_for_status()
+                chunk = resp.content
+
+                # Find PixelData tag
+                tag_pos = chunk.find(b"\xe0\x7f\x10\x00")
+                if tag_pos < 0:
+                    raise ValueError(
+                        f"PixelData tag not found near offset {search_start}"
+                    )
+                tag_file_offset = search_start + tag_pos
+
+                # Parse encapsulation structure from fetched bytes
+                import struct
+                data = chunk[tag_pos:]
+                pos = 0
+
+                # Skip pixel data tag header
+                if len(data) >= 12:
+                    next2 = data[4:6]
+                    if next2[0:1].isalpha() and next2[1:2].isalpha():
+                        pos = 12
+                    else:
+                        pos = 8
+                else:
+                    pos = 8
+
+                # BOT item
+                if pos + 8 <= len(data):
+                    bot_len = struct.unpack_from("<I", data, pos + 4)[0]
+                    pos += 8 + bot_len
+
+                # First frame item
+                if pos + 8 <= len(data):
+                    item_tag = data[pos:pos + 4]
+                    if item_tag == b"\xfe\xff\x00\xe0":
+                        item_len = struct.unpack_from("<I", data, pos + 4)[0]
+                        s.pixel_offset = tag_file_offset + pos + 8
+                        s.pixel_length = item_len
+                        return
+
+                # Fallback: need more data
+                resp2 = await client.get(
+                    s.url,
+                    headers={"Range": f"bytes={tag_file_offset}-{min(tag_file_offset + 65536, s.file_size - 1)}"},
+                )
+                resp2.raise_for_status()
+                data2 = resp2.content
+                pos2 = 12 if data2[4:5].isalpha() else 8
+                if pos2 + 8 <= len(data2):
+                    bot_len2 = struct.unpack_from("<I", data2, pos2 + 4)[0]
+                    pos2 += 8 + bot_len2
+                if pos2 + 8 <= len(data2):
+                    item_len2 = struct.unpack_from("<I", data2, pos2 + 4)[0]
+                    s.pixel_offset = tag_file_offset + pos2 + 8
+                    s.pixel_length = item_len2
+                    return
+
+                raise ValueError(f"Could not find encapsulated frame in {s.url}")
+
+        sem = _aio.Semaphore(max_concurrent)
+        async with httpx.AsyncClient(
+            timeout=60, http2=True,
+            limits=httpx.Limits(
+                max_connections=max_concurrent,
+                max_keepalive_connections=max_concurrent,
+            ),
+        ) as scan_client:
+            await _aio.gather(*[
+                _scan_one_frame(s, scan_client, sem) for s in slices
+            ])
+
+    # Fetch pixel data for inline/content_hash (async parallel)
+    if inline_data or content_hash:
+        import asyncio as _aio
+        import httpx
+
+        pixel_results: dict[int, bytes] = {}
+
+        async def _fetch_pixel(k: int, s: _SliceInfo, client: Any, sem: Any) -> None:
+            async with sem:
+                chunk_length = s.pixel_length if is_compressed else pixel_bytes_per_slice
+                resp = await client.get(
+                    s.url,
+                    headers={"Range": f"bytes={s.pixel_offset}-{s.pixel_offset + chunk_length - 1}"},
+                )
+                resp.raise_for_status()
+                pixel_results[k] = resp.content
+
+        sem = _aio.Semaphore(max_concurrent)
+        async with httpx.AsyncClient(
+            timeout=60, http2=True,
+            limits=httpx.Limits(
+                max_connections=max_concurrent,
+                max_keepalive_connections=max_concurrent,
+            ),
+        ) as pixel_client:
+            await _aio.gather(*[
+                _fetch_pixel(k, s, pixel_client, sem) for k, s in enumerate(slices)
+            ])
+
+        for k, s in enumerate(slices):
+            chunk_path = f"c/{k}/0/0"
+            chunk_length = s.pixel_length if is_compressed else pixel_bytes_per_slice
+            pixel_data = pixel_results[k]
+
+            if inline_data:
+                builder.add(chunk_path, data=pixel_data, source=s.url)
+            else:
+                from zarr_zmp.builder import _git_blob_hash
+                builder.add(
+                    chunk_path, uri=s.url, offset=s.pixel_offset,
+                    length=chunk_length, size=s.file_size,
+                    retrieval_key=_git_blob_hash(pixel_data),
+                )
+    else:
+        # Virtual references only
+        for k, s in enumerate(slices):
+            chunk_path = f"c/{k}/0/0"
+            chunk_length = s.pixel_length if is_compressed else pixel_bytes_per_slice
+            builder.add(
+                chunk_path, uri=s.url, offset=s.pixel_offset,
+                length=chunk_length, size=s.file_size,
+            )
+
+    if output_path.exists() and overwrite:
+        output_path.unlink()
+
+    builder.write(output_path)
+    return output_path
+
+
 def build_idc_zmp(
     series_uuid: str,
     output_path: str | Path,
@@ -380,240 +755,38 @@ def build_idc_zmp(
     data_compression: str = "none",
     data_compression_level: int | None = None,
     overwrite: bool = False,
+    max_concurrent: int = 50,
 ) -> Path:
     """Build a ZMP manifest for an IDC DICOM series.
 
-    Fetches only DICOM headers via HTTP range requests unless inline_data
-    is True, in which case pixel data is also fetched and stored directly
-    in the ZMP file.
+    Sync wrapper around ``async_build_idc_zmp``. Fetches DICOM headers
+    in parallel via HTTP/2 range requests.
 
     Parameters
     ----------
-    series_uuid : CRDC series UUID (e.g. "bfa2aab6-85de-4f92-b311-e6c8a52b9299")
+    series_uuid : CRDC series UUID
     output_path : path for the output .zmp file
     base_url : base URL for the IDC bucket (default: public S3)
     tags : if True, include DICOM tags in metadata
     binary_tags : if True, include binary VR tags as base64
-    content_hash : if True, compute git-sha1 retrieval keys for chunks.
-        When inline_data is True, hashes are computed from the fetched data
-        at no extra cost. When False, requires separate range requests.
-    inline_data : if True, fetch pixel data and store it inline in the
-        ZMP file's ``data`` column. Creates a self-contained archive.
-        Implies content_hash=True.
-    data_compression : parquet compression for the data column.
-        "none" (default), "zstd", "snappy", "gzip", "lz4", "brotli".
-    data_compression_level : compression level (codec-dependent). None
-        uses the codec's default.
+    content_hash : if True, compute git-sha1 retrieval keys for chunks
+    inline_data : if True, fetch pixel data and store inline
+    data_compression : parquet compression for the data column
+    data_compression_level : compression level (codec-dependent)
     overwrite : if True, overwrite existing file
+    max_concurrent : maximum parallel header fetches (default 50)
 
     Returns
     -------
     Path to the created .zmp file
     """
-    import httpx
-    from zarr_zmp import Builder as ZMPBuilder
+    import asyncio
 
-    if inline_data:
-        content_hash = True  # free when we already have the bytes
-
-    output_path = Path(output_path)
-    if output_path.exists() and not overwrite:
-        raise FileExistsError(f"{output_path} already exists")
-
-    client = httpx.Client(timeout=60)
-
-    try:
-        # Phase 1: list files
-        keys = _list_series_files(series_uuid, base_url=base_url, client=client)
-
-        # Phase 2: fetch headers and pixel data ranges
-        slices: list[_SliceInfo] = []
-        for key in keys:
-            url = f"{base_url}/{key}"
-            ds, file_size, pixel_offset, pixel_length = _fetch_header(
-                url, client=client
-            )
-            slices.append(
-                _SliceInfo(
-                    url=url,
-                    dataset=ds,
-                    file_size=file_size,
-                    pixel_offset=pixel_offset,
-                    pixel_length=pixel_length,
-                    projection=0.0,  # filled after sorting
-                )
-            )
-
-        # Validate
-        if not slices:
-            raise ValueError(f"No valid DICOM files found for {series_uuid}")
-
-        # Determine transfer syntax and whether data is compressed
-        tsuid = str(
-            getattr(slices[0].dataset.file_meta, "TransferSyntaxUID", "")
-        )
-        is_uncompressed = tsuid in UNCOMPRESSED_TRANSFER_SYNTAXES
-        is_compressed = not is_uncompressed
-        image_codec = _TS_TO_CODEC.get(tsuid) if is_compressed else None
-
-        if is_compressed and image_codec is None:
-            raise ValueError(
-                f"Unsupported compressed transfer syntax {tsuid}. "
-                f"No image codec mapping available."
-            )
-
-        # Sort by slice position
-        ds0 = slices[0].dataset
-        iop = [float(x) for x in ds0.ImageOrientationPatient]
-        row_cos = np.array(iop[:3])
-        col_cos = np.array(iop[3:])
-        slice_normal = np.cross(row_cos, col_cos)
-        nrm = np.linalg.norm(slice_normal)
-        if nrm > 0:
-            slice_normal = slice_normal / nrm
-
-        for s in slices:
-            pos = np.array(
-                [float(x) for x in s.dataset.ImagePositionPatient]
-            )
-            s.projection = float(np.dot(pos, slice_normal))
-
-        slices.sort(key=lambda s: s.projection)
-
-        # Validate uniform dimensions
-        shapes = {(int(s.dataset.Rows), int(s.dataset.Columns)) for s in slices}
-        if len(shapes) > 1:
-            raise ValueError(f"Non-uniform slice dimensions: {shapes}")
-
-        # Phase 3: compute geometry and metadata
-        headers = [s.dataset for s in slices]
-        geometry = geometry_from_headers(headers)
-        meta = build_duckn_metadata(geometry, headers, None, tags, binary_tags)
-        n_slices, rows, cols = geometry.shape
-
-        # Phase 4: build zarr.json
-        ds0 = slices[0].dataset
-        bits = int(ds0.BitsAllocated)
-        signed = int(ds0.PixelRepresentation)
-        _dtype_map = {
-            (8, 0): "uint8", (8, 1): "int8",
-            (16, 0): "uint16", (16, 1): "int16",
-            (32, 0): "uint32", (32, 1): "int32",
-        }
-        dtype_str = _dtype_map.get((bits, signed), "uint16")
-
-        zarr_meta = {
-            "zarr_format": 3,
-            "node_type": "array",
-            "shape": [n_slices, rows, cols],
-            "data_type": dtype_str,
-            "chunk_grid": {
-                "name": "regular",
-                "configuration": {"chunk_shape": [1, rows, cols]},
-            },
-            "chunk_key_encoding": {
-                "name": "default",
-                "configuration": {"separator": "/"},
-            },
-            "fill_value": 0,
-            "codecs": [image_codec] if is_compressed else [
-                {
-                    "name": "bytes",
-                    "configuration": {"endian": "little"},
-                }
-            ],
-            "attributes": {"duckn": meta.model_dump(exclude_none=True)},
-            "dimension_names": ["k", "j", "i"],
-        }
-
-        zarr_json_text = json.dumps(zarr_meta)
-        pixel_bytes_per_slice = rows * cols * (bits // 8)
-
-        # Phase 5: build ZMP via ZMPBuilder
-        builder = ZMPBuilder(
-            metadata={"idc_series_uuid": series_uuid},
-            data_compression=data_compression,
-            data_compression_level=data_compression_level,
-        )
-        builder.add("zarr.json", text=zarr_json_text)
-
-        # For compressed DICOM, scan encapsulated frame offsets.
-        # _fetch_header gave us the pixel data tag position in
-        # pixel_offset — but for uncompressed it's the data start,
-        # for compressed it may point past the tag. We need to
-        # re-find the tag and scan the encapsulation structure.
-        if is_compressed:
-            for s in slices:
-                # Fetch bytes around the pixel data area to find the tag
-                # The pixel_offset from _find_pixel_range may be wrong for
-                # compressed data, so search backwards from it
-                search_start = max(0, s.pixel_offset - 20)
-                resp = client.get(
-                    s.url,
-                    headers={"Range": f"bytes={search_start}-{min(search_start + 1024, s.file_size - 1)}"},
-                )
-                resp.raise_for_status()
-                chunk = resp.content
-                # Find PixelData tag
-                tag_pos = chunk.find(b"\xe0\x7f\x10\x00")
-                if tag_pos < 0:
-                    raise ValueError(f"PixelData tag not found near offset {search_start}")
-                tag_file_offset = search_start + tag_pos
-
-                frames = _scan_encapsulated_frames(
-                    s.url, tag_file_offset, s.file_size, 1, client=client
-                )
-                if not frames:
-                    raise ValueError(f"No encapsulated frames found in {s.url}")
-                s.pixel_offset, s.pixel_length = frames[0]
-
-        for k, s in enumerate(slices):
-            chunk_path = f"c/{k}/0/0"
-            chunk_length = s.pixel_length if is_compressed else pixel_bytes_per_slice
-
-            if inline_data or content_hash:
-                # Fetch pixel data
-                resp = client.get(
-                    s.url,
-                    headers={
-                        "Range": f"bytes={s.pixel_offset}-{s.pixel_offset + chunk_length - 1}"
-                    },
-                )
-                resp.raise_for_status()
-                pixel_data = resp.content
-
-            if inline_data:
-                builder.add(
-                    chunk_path,
-                    data=pixel_data,
-                    source=s.url,
-                )
-            elif content_hash:
-                from zarr_zmp.builder import _git_blob_hash
-
-                builder.add(
-                    chunk_path,
-                    uri=s.url,
-                    offset=s.pixel_offset,
-                    length=chunk_length,
-                    size=s.file_size,
-                    retrieval_key=_git_blob_hash(pixel_data),
-                )
-            else:
-                builder.add(
-                    chunk_path,
-                    uri=s.url,
-                    offset=s.pixel_offset,
-                    length=chunk_length,
-                    size=s.file_size,
-                )
-
-        if output_path.exists() and overwrite:
-            output_path.unlink()
-
-        builder.write(output_path)
-
-    finally:
-        client.close()
-
-    return output_path
+    return asyncio.run(async_build_idc_zmp(
+        series_uuid, output_path,
+        base_url=base_url, tags=tags, binary_tags=binary_tags,
+        content_hash=content_hash, inline_data=inline_data,
+        data_compression=data_compression,
+        data_compression_level=data_compression_level,
+        overwrite=overwrite, max_concurrent=max_concurrent,
+    ))
