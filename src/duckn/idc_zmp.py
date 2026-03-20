@@ -790,3 +790,308 @@ def build_idc_zmp(
         data_compression_level=data_compression_level,
         overwrite=overwrite, max_concurrent=max_concurrent,
     ))
+
+
+# ---------------------------------------------------------------------------
+# DICOMweb ZMP builder
+# ---------------------------------------------------------------------------
+
+# DICOM PS3.18 JSON tag codes → duckn field mapping
+_DICOM_TAG = {
+    "SOPClassUID": "00080016",
+    "SOPInstanceUID": "00080018",
+    "Modality": "00080060",
+    "InstanceNumber": "00200013",
+    "ImagePositionPatient": "00200032",
+    "ImageOrientationPatient": "00200037",
+    "Rows": "00280010",
+    "Columns": "00280011",
+    "PixelSpacing": "00280030",
+    "BitsAllocated": "00280100",
+    "PixelRepresentation": "00280103",
+    "SliceThickness": "00180050",
+    "SpacingBetweenSlices": "00180088",
+    "NumberOfFrames": "00200105",
+    "RescaleSlope": "00281053",
+    "RescaleIntercept": "00281052",
+    "RescaleType": "00281054",
+    "TransferSyntaxUID": "00020010",
+}
+
+
+def _dicom_json_value(instance: dict, tag_code: str) -> Any:
+    """Extract a value from a PS3.18 JSON instance dict."""
+    entry = instance.get(tag_code)
+    if entry is None:
+        return None
+    values = entry.get("Value")
+    if values is None or len(values) == 0:
+        return None
+    if len(values) == 1:
+        return values[0]
+    return values
+
+
+def build_dicomweb_zmp(
+    dicomweb_url: str,
+    study_uid: str,
+    series_uid: str,
+    output_path: str | Path,
+    *,
+    tags: bool = True,
+    overwrite: bool = False,
+) -> Path:
+    """Build a ZMP manifest from a DICOMweb server.
+
+    Fetches instance metadata via WADO-RS (one request for all instances),
+    builds duckn spatial metadata from DICOM geometry fields, and creates
+    a ZMP with WADO-RS frame retrieval URLs as chunk URIs.
+
+    No pixel data is fetched. The ZMP uses relative URIs off the
+    DICOMweb series base URL stored in the manifest's base_uri.
+
+    Parameters
+    ----------
+    dicomweb_url : DICOMweb base URL (e.g. "https://server/dicomWeb")
+    study_uid : StudyInstanceUID
+    series_uid : SeriesInstanceUID
+    output_path : path for the output .zmp file
+    tags : if True, include DICOM tags in metadata
+    overwrite : if True, overwrite existing file
+
+    Returns
+    -------
+    Path to the created .zmp file
+    """
+    import httpx
+    from zarr_zmp import Builder as ZMPBuilder
+
+    output_path = Path(output_path)
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(f"{output_path} already exists")
+
+    # Base URL for this series (all frame URLs are relative to this)
+    series_base = f"{dicomweb_url}/studies/{study_uid}/series/{series_uid}"
+
+    client = httpx.Client(timeout=60, follow_redirects=True)
+    try:
+        # Fetch all instance metadata in one request
+        meta_url = f"{series_base}/metadata"
+        resp = client.get(meta_url, headers={"Accept": "application/dicom+json"})
+        resp.raise_for_status()
+        instances = resp.json()
+    finally:
+        client.close()
+
+    if not instances:
+        raise ValueError(f"No instances found for series {series_uid}")
+
+    # Extract geometry and sort by slice position
+    T = _DICOM_TAG
+    inst0 = instances[0]
+
+    rows = _dicom_json_value(inst0, T["Rows"])
+    cols = _dicom_json_value(inst0, T["Columns"])
+    bits = _dicom_json_value(inst0, T["BitsAllocated"])
+    pixel_rep = _dicom_json_value(inst0, T["PixelRepresentation"]) or 0
+    ps = _dicom_json_value(inst0, T["PixelSpacing"])
+    iop = _dicom_json_value(inst0, T["ImageOrientationPatient"])
+    slice_thickness = _dicom_json_value(inst0, T["SliceThickness"])
+    modality = _dicom_json_value(inst0, T["Modality"])
+
+    if not iop or len(iop) != 6:
+        raise ValueError("ImageOrientationPatient missing or invalid")
+    if not ps or len(ps) != 2:
+        raise ValueError("PixelSpacing missing or invalid")
+
+    row_cos = np.array(iop[:3])
+    col_cos = np.array(iop[3:])
+    slice_normal = np.cross(row_cos, col_cos)
+    nrm = np.linalg.norm(slice_normal)
+    if nrm > 0:
+        slice_normal = slice_normal / nrm
+
+    row_spacing = float(ps[0])
+    col_spacing = float(ps[1])
+
+    # Sort instances by slice position
+    sorted_instances = []
+    for inst in instances:
+        ipp = _dicom_json_value(inst, T["ImagePositionPatient"])
+        if ipp is None or len(ipp) != 3:
+            continue
+        pos = np.array([float(x) for x in ipp])
+        projection = float(np.dot(pos, slice_normal))
+        sop_uid = _dicom_json_value(inst, T["SOPInstanceUID"])
+        sorted_instances.append({
+            "sop_uid": sop_uid,
+            "position": [float(x) for x in ipp],
+            "projection": projection,
+            "instance": inst,
+        })
+
+    sorted_instances.sort(key=lambda x: x["projection"])
+    n_slices = len(sorted_instances)
+
+    if n_slices == 0:
+        raise ValueError("No instances with ImagePositionPatient found")
+
+    # Compute slice spacing
+    if n_slices > 1:
+        projections = [s["projection"] for s in sorted_instances]
+        diffs = np.diff(projections)
+        slice_spacing = float(np.median(diffs))
+    elif slice_thickness:
+        slice_spacing = float(slice_thickness)
+    else:
+        slice_spacing = 1.0
+
+    # Space directions in C order: [slice, row, col]
+    space_origin = sorted_instances[0]["position"]
+    space_directions = [
+        (slice_normal * slice_spacing).tolist(),
+        (col_cos * row_spacing).tolist(),
+        (row_cos * col_spacing).tolist(),
+    ]
+
+    # Build duckn metadata
+    from .models import (
+        AxisKind, AxisMetadata, Centering, DucknMetadata,
+        SampleMetadata, SpaceName,
+    )
+
+    # Per-sample positions
+    samples = None
+    if n_slices > 1:
+        dir_3d = np.array(space_directions[0])
+        origin_3d = np.array(space_origin)
+        is_uniform = True
+        for i, si in enumerate(sorted_instances):
+            expected = origin_3d + i * dir_3d
+            if not np.allclose(si["position"], expected, atol=1e-3):
+                is_uniform = False
+                break
+        if not is_uniform:
+            # Check position vs origin
+            residuals = []
+            for si in sorted_instances:
+                p = np.array(si["position"])
+                along = float(np.dot(p, slice_normal)) * slice_normal
+                residuals.append(p - along)
+            use_position = all(
+                np.allclose(r, residuals[0], atol=1e-4) for r in residuals[1:]
+            )
+            if use_position:
+                samples = [
+                    SampleMetadata(position=si["projection"])
+                    for si in sorted_instances
+                ]
+            else:
+                samples = [
+                    SampleMetadata(origin=si["position"])
+                    for si in sorted_instances
+                ]
+
+    axes = [
+        AxisMetadata(
+            kind=AxisKind.SPACE, centering=Centering.CELL,
+            space_direction=space_directions[0],
+            thickness=float(slice_thickness) if slice_thickness else None,
+            unit="mm", samples=samples,
+        ),
+        AxisMetadata(
+            kind=AxisKind.SPACE, centering=Centering.CELL,
+            space_direction=space_directions[1], unit="mm",
+        ),
+        AxisMetadata(
+            kind=AxisKind.SPACE, centering=Centering.CELL,
+            space_direction=space_directions[2], unit="mm",
+        ),
+    ]
+
+    # DICOM extension tags (series-level — from first instance, skip geometry)
+    extensions = None
+    if tags:
+        from .dicom_convert import DicomExtension
+        skip_tags = {
+            T["Rows"], T["Columns"], T["BitsAllocated"],
+            T["PixelRepresentation"], T["ImagePositionPatient"],
+            T["ImageOrientationPatient"], T["PixelSpacing"],
+            T["SOPInstanceUID"], T["NumberOfFrames"],
+        }
+        dicom_tags = {}
+        for tag_code, entry in inst0.items():
+            if tag_code in skip_tags:
+                continue
+            # Use hex code as key (we don't have keyword lookup here)
+            values = entry.get("Value")
+            if values is None:
+                continue
+            if len(values) == 1:
+                dicom_tags[tag_code] = values[0]
+            else:
+                dicom_tags[tag_code] = values
+
+        dicom_ext = {"version": "1.0"}
+        if dicom_tags:
+            dicom_ext["tags"] = dicom_tags
+        extensions = {"dicom": dicom_ext}
+
+    space = SpaceName.LEFT_POSTERIOR_SUPERIOR
+
+    duckn_meta = DucknMetadata(
+        version="1.0",
+        space=space,
+        space_origin=space_origin,
+        axes=axes,
+        extensions=extensions,
+    )
+
+    # Dtype
+    _dtype_map = {
+        (8, 0): "uint8", (8, 1): "int8",
+        (16, 0): "uint16", (16, 1): "int16",
+        (32, 0): "uint32", (32, 1): "int32",
+    }
+    dtype_str = _dtype_map.get((bits, pixel_rep), "uint16")
+
+    # Build zarr.json
+    zarr_meta = {
+        "zarr_format": 3,
+        "node_type": "array",
+        "shape": [n_slices, rows, cols],
+        "data_type": dtype_str,
+        "chunk_grid": {
+            "name": "regular",
+            "configuration": {"chunk_shape": [1, rows, cols]},
+        },
+        "chunk_key_encoding": {
+            "name": "default",
+            "configuration": {"separator": "/"},
+        },
+        "fill_value": 0,
+        "codecs": [
+            {"name": "bytes", "configuration": {"endian": "little"}},
+        ],
+        "attributes": {"duckn": duckn_meta.model_dump(exclude_none=True)},
+        "dimension_names": ["k", "j", "i"],
+    }
+
+    # Build ZMP with relative URIs off series_base
+    builder = ZMPBuilder()
+    builder.add("zarr.json", text=json.dumps(zarr_meta))
+
+    for k, si in enumerate(sorted_instances):
+        # Relative URI: instances/{sop_uid}/frames/1
+        rel_uri = f"instances/{si['sop_uid']}/frames/1"
+        builder.add(
+            f"c/{k}/0/0",
+            uri=rel_uri,
+            base_uri=series_base,
+        )
+
+    if output_path.exists() and overwrite:
+        output_path.unlink()
+
+    builder.write(output_path)
+    return output_path
