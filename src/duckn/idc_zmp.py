@@ -870,7 +870,7 @@ def build_dicomweb_zmp(
     if output_path.exists() and not overwrite:
         raise FileExistsError(f"{output_path} already exists")
 
-    # Base URL for this series (all frame URLs are relative to this)
+    # Base URL for this series
     series_base = f"{dicomweb_url}/studies/{study_uid}/series/{series_uid}"
 
     client = httpx.Client(timeout=60, follow_redirects=True)
@@ -1087,7 +1087,7 @@ def build_dicomweb_zmp(
         builder.add(
             f"c/{k}/0/0",
             uri=rel_uri,
-            base_uri=series_base,
+            base_uri=series_base + "/",
         )
 
     if output_path.exists() and overwrite:
