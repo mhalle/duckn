@@ -24,6 +24,22 @@ Semantic elements are clearly separated so they don't overlap the core Zarr and 
 - **Full Zarr compatibility**, which brings high-performance data access on the desktop, in the cloud, and everything in between.
 - **Extensible** to new imaging domains and evolutions of existing ones.
 
+## Two independent projects
+
+This repository contains two things that work well together but are completely independent:
+
+**duckn** is a metadata convention for Zarr V3 arrays. It defines what goes in the `"duckn"` key of a Zarr array's attributes — spatial calibration, axis semantics, and domain-specific extensions. Any Zarr store can carry duckn metadata. duckn has no dependency on ZMP.
+
+**[ZMP](https://github.com/mhalle/zarr-zmp)** (Zarr Manifest Parquet) is a lightweight index format for Zarr stores. A ZMP maps chunk paths to byte ranges in external files — zip archives, DICOM files on S3, NIfTI files, DICOMweb servers. ZMP works with any Zarr store and has no dependency on duckn.
+
+**Together**, a ZMP can carry duckn metadata in its `zarr.json` entry, giving you both virtual data access and rich imaging semantics in a single small file. But each is useful on its own:
+
+| | duckn alone | ZMP alone | duckn + ZMP |
+|---|---|---|---|
+| Use case | Zarr store with imaging metadata | Virtual index to remote data | Virtual imaging data with full metadata |
+| Example | `brain.zarr/` with spatial calibration | 20 KB manifest → 47 GB zip on S3 | Same, plus coordinate systems and provenance |
+| Size | Part of the Zarr store | 10-100 KB | 10-100 KB |
+
 ## Design principles
 
 - **The storage format is Zarr.** No new file types, no custom parsers. All metadata lives in `attributes` of a standard `zarr.json`.
@@ -69,10 +85,6 @@ duckn.dicom_to_zarr("dicom_series/", "ct.zarr")
 duckn.zarr_to_nrrd("scan.zarr", "scan_out.nrrd")
 duckn.zarr_to_nifti("brain.zarr", "brain_out.nii.gz")
 duckn.zarr_to_dicom("ct.zarr", "ct_enhanced.dcm")
-
-# Generate BIDS sidecar
-from duckn.bids import duckn_to_bids_sidecar
-sidecar = duckn_to_bids_sidecar(meta)
 ```
 
 ### CLI
@@ -83,8 +95,7 @@ duckn to-nrrd scan.zarr scan_out.nrrd
 duckn from-nifti brain.nii.gz brain.zarr
 duckn to-nifti brain.zarr brain_out.nii.gz
 duckn from-dicom dicom_series/ ct.zarr
-duckn to-bids ct.zarr ct.json           # BIDS sidecar from Zarr
-duckn to-bids dicom_series/             # BIDS sidecar from DICOM
+duckn from-zarr-zip data.zarr.zip data.zmp
 duckn info scan.zarr
 duckn header scan.zarr
 duckn roundtrip scan.nrrd
@@ -125,17 +136,17 @@ A duckn store is a standard Zarr V3 array with a `"duckn"` key in its attributes
 }
 ```
 
+duckn metadata can live in any Zarr store — a directory on disk, a `.zarr.zip` archive, or a ZMP manifest. The metadata convention is independent of the storage mechanism.
+
 ## Converters
 
 | Format | To Zarr | From Zarr | Zero-copy |
 |--------|---------|-----------|-----------|
 | NRRD   | `nrrd_to_zarr()` | `zarr_to_nrrd()` | Both directions |
-| NIfTI  | `nifti_to_zarr()` | `zarr_to_nifti()` | — |
+| NIfTI  | `nifti_to_zarr()` | `zarr_to_nifti()` | Possible |
 | DICOM  | `dicom_to_zarr()` | `zarr_to_dicom()` | Streaming mode |
 | DICOM SEG | `dicom_to_zarr()` | — | — |
-| BIDS sidecar | — | `duckn_to_bids_sidecar()` | — |
-
-Zero-copy mode copies compressed data blobs directly without decompression/recompression (raw and gzip encodings).
+| Zarr zip | `zarr_zip_to_zmp()` | — | Virtual or hydrated |
 
 ## Extensions
 
@@ -146,18 +157,17 @@ Domain-specific metadata lives inside `duckn.extensions`. Extensions depend on d
 - **nifti** — NIfTI provenance (sform/qform codes, intent, legacy affines)
 - **dicom** — DICOM provenance (tags, transfer syntax, anonymization status)
 
-## ZMP: Virtual Access to DICOM at Rest
+## ZMP integration
 
-duckn stores can be represented as [ZMP](https://github.com/mhalle/zarr-zmp)
-manifests — lightweight Parquet files that map Zarr chunk paths to byte
-ranges within existing DICOM files on S3 or GCS. No data is copied or
-converted; compressed DICOM frames (JPEG, JPEG 2000) are decoded on
-demand using matching Zarr codecs.
+This library includes tools that build [ZMP](https://github.com/mhalle/zarr-zmp) manifests with duckn metadata from various imaging sources. ZMP is a separate project — a general-purpose virtual index for Zarr stores. duckn uses it but does not require it.
 
-A 59 KB ZMP manifest gives random-access to any slice of a 147-slice
-CT scan stored as DICOM on S3, readable through the standard Zarr API.
+When used together, a ZMP manifest can give virtual random access to imaging data on S3, in zip archives, or on DICOMweb servers — with full duckn spatial metadata and provenance, queryable via DuckDB.
 
-See [performance benchmarks](docs/performance.md) for read speeds.
+See the [ZMP building guide](docs/zmp-guide.md) for details on:
+- Building virtual ZMPs from Zarr zip stores, NIfTI files, DICOM series, and DICOMweb servers
+- Hydrating ZMPs for offline use
+- Composing multiple ZMPs into a single manifest
+- Querying ZMP metadata with DuckDB
 
 ## Specifications
 
@@ -170,6 +180,7 @@ See [performance benchmarks](docs/performance.md) for read speeds.
 - [Microscopy extension](docs/microscopy-extension.md) — whole-slide and fluorescence imaging
 - [Provenance extension](docs/provenance-extension.md) — general processing history
 - [Units](docs/units-spec.md) — structured unit system
+- [ZMP building guide](docs/zmp-guide.md) — virtual and hydrated manifests
 
 ## License
 
