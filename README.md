@@ -179,6 +179,7 @@ See the [ZMP building guide](docs/zmp-guide.md) for details on:
 - [FITS extension](docs/fits-extension.md) — astronomy FITS provenance (first pass at a non-medical imaging domain)
 - [Microscopy extension](docs/microscopy-extension.md) — whole-slide and fluorescence imaging
 - [Provenance extension](docs/provenance-extension.md) — general processing history
+- [Space transforms](docs/transform-spec.md) — named coordinate spaces and affine transforms
 - [Units](docs/units-spec.md) — structured unit system
 - [ZMP building guide](docs/zmp-guide.md) — virtual and hydrated manifests
 
