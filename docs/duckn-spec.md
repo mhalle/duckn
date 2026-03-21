@@ -1,7 +1,7 @@
 # duckn: Axis-Rich Array Metadata Convention for Zarr V3
 
 **Status:** Draft proposal
-**Version:** 0.1
+**Version:** 1.1
 
 ---
 

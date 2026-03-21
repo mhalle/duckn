@@ -44,11 +44,11 @@ Two implicit transforms connect them:
 | `index` | `world` | `space_origin` + `space_direction` (adjusted for `centering`) |
 | `world` | `axis-aligned` | Derived: rotation component of the array affine |
 
-For arrays whose `space_direction` vectors are already axis-aligned, `world` and `axis-aligned` are identical.
+For arrays whose `space_direction` vectors are already axis-aligned, `world` and `axis-aligned` are identical. The rotation component is extracted via polar decomposition of the linear part of the index-to-world affine. For acquisitions with shear, the polar decomposition yields the closest rotation matrix (in the Frobenius norm sense).
 
 The convention also defines `measurement_frame`, which transforms vector/tensor *component values* from their storage frame to world space. This is not a spatial coordinate space — it operates on the meaning of stored values, not on positions. It is not a valid `from` or `to` target in `space_transforms` and is not part of the spatial transform graph.
 
-Built-in space names (`world`, `axis-aligned`, `index`) are reserved. They appear only in the `space` field of `from` and `to` objects (§4) and must not be used as transform target names.
+Built-in space names (`world`, `axis-aligned`, `index`, `measurement`) are reserved. The first three appear in the `space` field of `from` and `to` objects (§4). `measurement` is reserved because it names a distinct frame (the `measurement_frame` field) that is not a spatial coordinate space. None of these may be used as transform target names.
 
 ---
 
@@ -246,9 +246,9 @@ destination = affine × [source; 1]
 
 where `[source; 1]` is the source coordinate vector with a 1 appended (homogeneous coordinates).
 
-For a 3D space, `affine` is 3×4. For a 2D space, `affine` is 2×3. The number of rows must equal the space dimension of the source. The number of columns must equal the space dimension plus one.
+For a 3D space, `affine` is 3×4. For a 2D space, `affine` is 2×3. The number of rows must equal the space dimension. The number of columns must equal the space dimension plus one. (Source and destination spaces always have the same dimensionality — see §8.)
 
-The matrix must be non-singular (invertible).
+The N×N linear submatrix (all columns except the last) must be non-singular. This ensures the affine mapping is invertible.
 
 ### 6.3 Future Transform Types
 
@@ -301,6 +301,10 @@ For a 4D fMRI volume with `space: "right-anterior-superior"` (3D) and a time axi
 
 Future amendments may extend the transform scope to include temporal dimensions.
 
+**Non-uniform spacing.** When per-axis `samples` override the uniform spacing model (e.g., non-uniform slice positions or gantry tilt), the built-in `world` and `index` spaces are defined by the **nominal** affine from `space_origin` and `space_direction`. Per-sample corrections are outside the scope of `space_transforms`. A transform declared from `world` to a named space applies to the nominal world coordinates, not the per-sample-corrected positions.
+
+**Index space.** The `index` space uses raw integer array indices (0, 1, 2, ...). The centering adjustment (half-voxel offset for cell-centered data) is part of the index-to-world transform, not part of the index space itself.
+
 ---
 
 ## 9. Consistency Rules
@@ -315,7 +319,7 @@ Future amendments may extend the transform scope to include temporal dimensions.
 - All matrices are stored in row-major (C) order (§7).
 - If `axes` is present on a `to` reference, its length must equal the space dimension.
 - If both `forward` and `inverse` are present, they should be approximate inverses of each other. Implementations may warn on inconsistency.
-- A given target space name must appear at most once across all entries in `space_transforms` on a single array.
+- A given `(from, to)` pair must appear at most once across all entries in `space_transforms` on a single array. Different `from` spaces to the same `to` are permitted (e.g., both `world → nifti:mni152` and `axis-aligned → nifti:mni152`).
 - `metadata` is optional and open. Implementations must preserve unrecognized fields on round-trip.
 
 ---
@@ -592,7 +596,14 @@ The NIfTI extension declares a transform to its own named space within its own b
 
 The key `"mni152"` is unqualified because it is inside the `nifti` extension block. The library resolves it to `nifti:mni152`. This is equivalent to declaring `"nifti:mni152"` in the convention-level `space_transforms`.
 
-Both patterns — convention-level with qualified names, or inside domain extensions with unqualified names — produce the same graph edge. A given fully qualified space name must appear at most once across all `space_transforms` declarations on a single array.
+**Extension-level declaration rules:**
+
+- An extension may include a `space_transforms` array within its own block.
+- The array uses the same schema as the convention-level `space_transforms` (§5).
+- Space names in `to` are unqualified — the extension name is prepended automatically (e.g., `"mni152"` inside the `nifti` block resolves to `nifti:mni152`).
+- `from` defaults to `{"space": "world"}`, same as the convention level.
+- All consistency rules from §9 apply after name resolution.
+- A given fully qualified `(from, to)` pair must not appear in both convention-level and extension-level declarations on the same array.
 
 ---
 
@@ -646,6 +657,21 @@ Domain extensions may declare `space_transforms` within their own blocks using u
 
 Both produce equivalent graph edges. A given fully qualified space name must not appear in both locations on the same array.
 
-### 11.7 Forward Compatibility with Group-Level Transforms
+### 11.7 Spatial Transforms vs. Value-Frame Transforms
+
+`space_transforms` maps between spatial coordinate systems — where a point is in physical space. This is distinct from two other transform-like concepts in the convention:
+
+- **`measurement_frame`** transforms vector/tensor *component values* from their storage frame to world space. It operates on the meaning of stored values, not on positions. A vector field's components are rotated by the measurement frame; its voxel positions are mapped by `space_transforms`.
+- **`gradient_frame`** (DWI extension) identifies the coordinate frame of diffusion gradient vectors. When working in a space reached via `space_transforms` (e.g., MNI), a reader may need to rotate gradient vectors accordingly — but that is a downstream interpretation step, not something `space_transforms` defines.
+
+The boundary is: `space_transforms` says where things are, `measurement_frame` says how vector values are oriented, and `gradient_frame` says which convention the gradients follow. These are orthogonal concerns.
+
+### 11.8 Star Topology
+
+At the array level, `from` is always a built-in space (`world`, `axis-aligned`, or `index`). This means the transform graph is always a star: built-in spaces at the center, named spaces at the leaves. There are no edges between named spaces — you cannot declare a transform from `nifti:mni152` to `nifti:talairach` directly.
+
+This is deliberate. Multi-hop composition and cross-space transforms introduce ambiguity about which path to take. A library that needs `mni152 → talairach` can compose `inverse(world → mni152)` with `world → talairach` using the stored affines.
+
+### 11.9 Forward Compatibility with Group-Level Transforms
 
 The `from` and `to` fields use a structured object form (`{"space": "..."}`, `{"name": "..."}`) rather than bare strings. This reserves space for a future `{"path": "...", "space": "..."}` form that references another array's built-in space by Zarr path. The array-level syntax is a subset of the group-level syntax, ensuring that no migration is needed when group-level transforms are specified.
