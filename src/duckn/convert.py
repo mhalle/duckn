@@ -282,8 +282,7 @@ def _header_to_metadata(
         meta_kwargs["space_origin"] = _clean_float_list(space_origin_raw)
 
     if mf_raw is not None:
-        mf_list = [_clean_float_list(row) for row in mf_raw]
-        meta_kwargs["measurement_frame"] = _transpose_matrix(mf_list)
+        meta_kwargs["measurement_frame"] = [_clean_float_list(row) for row in mf_raw]
 
     sample_units_raw = header.get("sample units")
     if sample_units_raw:
@@ -365,9 +364,7 @@ def _metadata_to_header(
 
     # --- measurement frame ---
     if meta.measurement_frame is not None:
-        mf_cols = meta.measurement_frame
-        mf_rows = _transpose_matrix(mf_cols)
-        header["measurement frame"] = np.array(mf_rows)
+        header["measurement frame"] = np.array(meta.measurement_frame)
 
     # --- Per-axis fields ---
     axes = meta.axes or []

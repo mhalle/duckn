@@ -128,13 +128,17 @@ A vector (JSON array of numbers) giving the world-space position of the first sa
 
 #### `measurement_frame`
 
-A matrix (JSON array of column vectors) that transforms coordinates in the measurement frame to coordinates in world space. Each inner array is one column of the matrix.
+A matrix (JSON array of row vectors) that transforms coordinates in the measurement frame to coordinates in world space. Each inner array is one row of the matrix — consistent with C order used throughout the convention.
 
 ```json
 "measurement_frame": [[1,0,0], [0,1,0], [0,0,1]]
 ```
 
+To apply the transform: `world = measurement_frame @ measurement_coords` (matrix × column vector).
+
 The matrix is always square with side length equal to the space dimension, regardless of which axes carry vector/tensor kinds. This addresses the distinction between the coordinate frame used to measure vector/tensor coefficients and the world space in which the image orientation is defined.
+
+**Note**: NRRD stores the measurement frame as column vectors. The duckn convention stores it as row vectors (transposed relative to NRRD) for consistency with the rest of the convention.
 
 #### `sample_units`
 
@@ -396,7 +400,7 @@ A reader that does not understand the `"dwmri"` extension still knows the axis i
 
 ## 4. Consistency Rules
 
-- If `space` is present, it implies a space dimension. All `space_direction` vectors, the `space_origin` vector, `measurement_frame` column vectors, and any `space_dimension` (if present instead of `space`) must have this number of components.
+- If `space` is present, it implies a space dimension. All `space_direction` vectors, the `space_origin` vector, `measurement_frame` rows (and columns), and any `space_dimension` (if present instead of `space`) must have this number of components.
 - The length of `axes` must equal the number of dimensions (`len(shape)`).
 - Where a `kind` specifies a required axis size, the corresponding element of `shape` must match.
 - If an axis has `samples`, its length must equal the corresponding element of `shape`.

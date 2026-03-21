@@ -278,16 +278,16 @@ class DucknMetadata(BaseModel):
 
         # measurement_frame must be square with side = space dimension
         if self.measurement_frame is not None:
-            ncols = len(self.measurement_frame)
-            if sd is not None and ncols != sd:
+            nrows = len(self.measurement_frame)
+            if sd is not None and nrows != sd:
                 raise ValueError(
-                    f"measurement_frame has {ncols} columns, expected {sd}"
+                    f"measurement_frame has {nrows} rows, expected {sd}"
                 )
-            for i, col in enumerate(self.measurement_frame):
-                if len(col) != ncols:
+            for i, row in enumerate(self.measurement_frame):
+                if len(row) != nrows:
                     raise ValueError(
-                        f"measurement_frame column {i} has {len(col)} rows, "
-                        f"expected {ncols}"
+                        f"measurement_frame row {i} has {len(row)} columns, "
+                        f"expected {nrows}"
                     )
 
         return self
