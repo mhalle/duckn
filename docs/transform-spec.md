@@ -33,22 +33,85 @@ The convention defines implicit coordinate spaces for each array with spatial me
 
 | Name | Defined by | Description |
 |------|-----------|-------------|
-| `index` | Zarr `shape` + convention `axes` | Discrete array coordinates |
+| `index` | Zarr `shape` + convention `axes` | Discrete array coordinates (0, 1, 2, ...) |
 | `world` | `space` / `space_dimension`, `space_origin`, per-axis `space_direction` | Continuous, possibly oblique physical coordinates |
 | `axis-aligned` | Derived from `world` | Axis-aligned physical coordinates: same origin and voxel scale as `world`, axes aligned to the cardinal directions of the declared `space` convention |
-| `axis-aligned-centered` | Derived from `axis-aligned` | Same as `axis-aligned` but with origin translated to the center of the volume's bounding box |
+| `axis-aligned-centered` | Derived from `axis-aligned` | Same as `axis-aligned` but with origin at the center of the volume's bounding box |
 
-Implicit transforms connect them:
+### 2.1 Mathematical Definitions
 
-| From | To | Defined by |
+Let:
+- **D** = the N×N direction matrix whose column *i* is `space_direction[i]`
+- **o** = `space_origin` (N-vector)
+- **n** = shape of the spatial dimensions
+- **c** = centering offset vector: `c[i] = 0.5` if `centering[i]` is `cell`, `0.0` if `node`
+
+#### Index → World
+
+```
+world = D × (index + c) + o
+```
+
+Equivalently, as an N×(N+1) affine matrix **A**:
+
+```
+      ┌                              ┐
+A  =  │  D₀₀  D₀₁  D₀₂   o₀ + D·c₀ │
+      │  D₁₀  D₁₁  D₁₂   o₁ + D·c₁ │
+      │  D₂₀  D₂₁  D₂₂   o₂ + D·c₂ │
+      └                              ┘
+
+world = A × [index; 1]
+```
+
+where `D·c` is the matrix-vector product `D × c` — the centering adjustment in world coordinates.
+
+#### World → Axis-Aligned
+
+Decompose **D** via polar decomposition: `D = R × S`, where **R** is the orthogonal (rotation) matrix and **S** is symmetric positive definite (the spacing/shear). Then:
+
+```
+axis_aligned = Rᵀ × (world − p) + p
+```
+
+where `p = o + D × c` is the adjusted origin (world position of the first voxel center). This rotates world coordinates around the adjusted origin, removing the oblique orientation while preserving the origin and voxel scale.
+
+For arrays whose `space_direction` vectors are already axis-aligned, **R** is the identity and `world` and `axis-aligned` are identical. For acquisitions with shear, the polar decomposition yields the closest rotation matrix in the Frobenius norm sense.
+
+#### Axis-Aligned → Axis-Aligned-Centered
+
+Translate the origin to the center of the volume's bounding box:
+
+```
+axis_aligned_centered = axis_aligned − center
+```
+
+where the center is:
+
+```
+center[i] = p_aa[i] + extent[i] / 2
+```
+
+and the extent along each axis-aligned axis is:
+
+```
+extent[i] = S[i,i] × n[i]          if centering[i] == cell
+            S[i,i] × (n[i] − 1)    if centering[i] == node
+```
+
+Here `S[i,i]` is the spacing along axis *i* (diagonal of **S** when there is no shear), `p_aa` is the adjusted origin in axis-aligned coordinates (= `p` since the rotation preserves it), and `n[i]` is the shape along spatial axis *i*.
+
+This space places the volume center at the origin — useful as a pivot point for rotation and scaling operations, and for display systems that center the volume.
+
+### 2.2 Summary of Implicit Transforms
+
+| From | To | Transform |
 |------|----|-----------|
-| `index` | `world` | `space_origin` + `space_direction` (adjusted for `centering`) |
-| `world` | `axis-aligned` | Derived: rotation component of the array affine |
-| `axis-aligned` | `axis-aligned-centered` | Translation: origin shifted to volume center |
+| `index` | `world` | `D × (index + c) + o` |
+| `world` | `axis-aligned` | `Rᵀ × (world − p) + p` |
+| `axis-aligned` | `axis-aligned-centered` | `axis_aligned − center` |
 
-For arrays whose `space_direction` vectors are already axis-aligned, `world` and `axis-aligned` are identical. The rotation component is extracted via polar decomposition of the linear part of the index-to-world affine. For acquisitions with shear, the polar decomposition yields the closest rotation matrix (in the Frobenius norm sense).
-
-The center of `axis-aligned-centered` is the midpoint of the volume's axis-aligned bounding box: for each spatial axis, the center coordinate is `origin_i + 0.5 * (shape_i - 1) * spacing_i` (for cell-centered data) or `origin_i + 0.5 * shape_i * spacing_i` (for node-centered data), where `spacing_i` is the magnitude of the axis-aligned direction vector. This space is useful as a pivot point for rotation and scaling operations, and for display systems that center the volume at the origin.
+All three are invertible affine transforms. Implementations should compose them as needed rather than storing intermediate results.
 
 The convention also defines `measurement_frame`, which transforms vector/tensor *component values* from their storage frame to world space. This is not a spatial coordinate space — it operates on the meaning of stored values, not on positions. It is not a valid `from` or `to` target in `space_transforms` and is not part of the spatial transform graph.
 
