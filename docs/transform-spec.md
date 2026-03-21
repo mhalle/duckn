@@ -36,19 +36,23 @@ The convention defines implicit coordinate spaces for each array with spatial me
 | `index` | Zarr `shape` + convention `axes` | Discrete array coordinates |
 | `world` | `space` / `space_dimension`, `space_origin`, per-axis `space_direction` | Continuous, possibly oblique physical coordinates |
 | `axis-aligned` | Derived from `world` | Axis-aligned physical coordinates: same origin and voxel scale as `world`, axes aligned to the cardinal directions of the declared `space` convention |
+| `axis-aligned-centered` | Derived from `axis-aligned` | Same as `axis-aligned` but with origin translated to the center of the volume's bounding box |
 
-Two implicit transforms connect them:
+Implicit transforms connect them:
 
 | From | To | Defined by |
 |------|----|-----------|
 | `index` | `world` | `space_origin` + `space_direction` (adjusted for `centering`) |
 | `world` | `axis-aligned` | Derived: rotation component of the array affine |
+| `axis-aligned` | `axis-aligned-centered` | Translation: origin shifted to volume center |
 
 For arrays whose `space_direction` vectors are already axis-aligned, `world` and `axis-aligned` are identical. The rotation component is extracted via polar decomposition of the linear part of the index-to-world affine. For acquisitions with shear, the polar decomposition yields the closest rotation matrix (in the Frobenius norm sense).
 
+The center of `axis-aligned-centered` is the midpoint of the volume's axis-aligned bounding box: for each spatial axis, the center coordinate is `origin_i + 0.5 * (shape_i - 1) * spacing_i` (for cell-centered data) or `origin_i + 0.5 * shape_i * spacing_i` (for node-centered data), where `spacing_i` is the magnitude of the axis-aligned direction vector. This space is useful as a pivot point for rotation and scaling operations, and for display systems that center the volume at the origin.
+
 The convention also defines `measurement_frame`, which transforms vector/tensor *component values* from their storage frame to world space. This is not a spatial coordinate space — it operates on the meaning of stored values, not on positions. It is not a valid `from` or `to` target in `space_transforms` and is not part of the spatial transform graph.
 
-Built-in space names (`world`, `axis-aligned`, `index`, `measurement`) are reserved. The first three appear in the `space` field of `from` and `to` objects (§4). `measurement` is reserved because it names a distinct frame (the `measurement_frame` field) that is not a spatial coordinate space. None of these may be used as transform target names.
+Built-in space names (`world`, `axis-aligned`, `axis-aligned-centered`, `index`, `measurement`) are reserved. The first four appear in the `space` field of `from` and `to` objects (§4). `measurement` is reserved because it names a distinct frame (the `measurement_frame` field) that is not a spatial coordinate space. None of these may be used as transform target names.
 
 ---
 
@@ -100,7 +104,7 @@ References one of the array's own built-in spaces (§2):
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `space` | string | **yes** | One of: `"world"`, `"axis-aligned"`, `"index"` |
+| `space` | string | **yes** | One of: `"world"`, `"axis-aligned"`, `"axis-aligned-centered"`, `"index"` |
 
 ### 4.2 Named Space Reference
 
@@ -157,7 +161,7 @@ surgical_plan       — project-specific coordinate space
 experiment_rig      — lab-specific coordinate space
 ```
 
-**Reserved:** Names must not match any built-in space name (`world`, `axis-aligned`, `index`, `measurement`).
+**Reserved:** Names must not match any built-in space name (`world`, `axis-aligned`, `axis-aligned-centered`, `index`, `measurement`).
 
 ---
 
@@ -313,7 +317,7 @@ Future amendments may extend the transform scope to include temporal dimensions.
 - When `from` is omitted, it defaults to `{"space": "world"}`.
 - At the array level, `from` must be a built-in space reference (`{"space": "..."}`). Path-qualified references are reserved for future group-level usage.
 - Extension-qualified names in `to` must reference a declared extension (present in the top-level `extensions` object with at least a `version`).
-- Space names must not match built-in space names (`world`, `axis-aligned`, `index`).
+- Space names must not match built-in space names (`world`, `axis-aligned`, `axis-aligned-centered`, `index`, `measurement`).
 - The `affine` matrix must have N rows and N+1 columns, where N equals the space dimension.
 - The `affine` matrix must be non-singular. A singular matrix is an error.
 - All matrices are stored in row-major (C) order (§7).
@@ -649,7 +653,7 @@ This amendment covers a subset of NGFF RFC-5's scope (named coordinate spaces, t
 | Extension-qualified | `nifti:mni152` | The named extension's specification |
 | Unqualified (inside extension block) | `mni152` | The enclosing extension; resolves to `extension:name` |
 | Ad hoc | `surgical_plan` | This file / local context only |
-| Built-in | `world`, `axis-aligned`, `index` | duckn convention (used in `space` field of references, not as target names) |
+| Built-in | `world`, `axis-aligned`, `axis-aligned-centered`, `index` | duckn convention (used in `space` field of references, not as target names) |
 
 ### 11.6 Convention-Level vs. Extension-Level Declaration
 
