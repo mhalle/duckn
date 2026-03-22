@@ -20,7 +20,7 @@ from .models import DucknMetadata
 
 @click.group()
 def cli() -> None:
-    """duckn: convert between NRRD and duckn Zarr v3 stores."""
+    """duckn: imaging format converters and ZMP manifest builders."""
 
 
 @cli.command("to-zarr")
@@ -45,8 +45,41 @@ def to_zarr(
     overwrite: bool,
     zerocopy: bool,
 ) -> None:
-    """Convert an NRRD file to a duckn Zarr v3 store."""
-    if zerocopy:
+    """Convert an NRRD file to a duckn Zarr v3 store or ZMP manifest.
+
+    Output format is determined by OUTPUT_PATH extension:
+    .zarr/.zarr.zip → Zarr v3 store, .zmp → virtual ZMP manifest.
+    """
+    out = Path(output_path)
+
+    if out.suffix == ".zmp":
+        from .nifti_convert import build_nifti_zmp as _build_nifti_zmp  # noqa: F811
+
+        # NRRD → Zarr first (temp), then build ZMP from the .nii-like layout
+        # Actually, for NRRD we convert to Zarr then wrap as ZMP
+        # Simpler: convert to temp zarr.zip, then zarr_zip_to_zmp
+        tmp = Path(tempfile.mkdtemp(prefix="duckn_zmp_"))
+        try:
+            zip_path = tmp / "temp.zarr.zip"
+            if zerocopy:
+                nrrd_to_zarr_zerocopy(input_path, str(zip_path), overwrite=True)
+            else:
+                parsed_chunks = None
+                if chunks is not None:
+                    parsed_chunks = tuple(int(c) for c in chunks.split(","))
+                nrrd_to_zarr(
+                    input_path, str(zip_path),
+                    chunks=parsed_chunks, compressor=compressor,
+                    level=level, overwrite=True,
+                )
+
+            from .zarr_zip_convert import zarr_zip_to_zmp
+
+            zarr_zip_to_zmp(str(zip_path), output_path, overwrite=overwrite)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        click.echo(f"Wrote {output_path}")
+    elif zerocopy:
         nrrd_to_zarr_zerocopy(
             input_path,
             output_path,
@@ -295,24 +328,36 @@ def from_nifti(
     level: int,
     overwrite: bool,
 ) -> None:
-    """Convert a NIfTI file to a duckn Zarr v3 store.
+    """Convert a NIfTI file to a duckn Zarr v3 store or ZMP manifest.
 
     INPUT_PATH is a .nii or .nii.gz file.
+    Output format is determined by OUTPUT_PATH extension:
+    .zarr → Zarr v3 store, .zmp → virtual ZMP manifest.
+
+    For .zmp output with .nii files, the ZMP contains per-slice byte-range
+    references into the NIfTI file (no data copied). Requires uncompressed .nii.
     """
-    from .nifti_convert import nifti_to_zarr
+    out = Path(output_path)
 
-    parsed_chunks = None
-    if chunks is not None:
-        parsed_chunks = tuple(int(c) for c in chunks.split(","))
+    if out.suffix == ".zmp":
+        from .nifti_convert import build_nifti_zmp
 
-    nifti_to_zarr(
-        input_path,
-        output_path,
-        chunks=parsed_chunks,
-        compressor=compressor,
-        level=level,
-        overwrite=overwrite,
-    )
+        build_nifti_zmp(input_path, output_path, overwrite=overwrite)
+    else:
+        from .nifti_convert import nifti_to_zarr
+
+        parsed_chunks = None
+        if chunks is not None:
+            parsed_chunks = tuple(int(c) for c in chunks.split(","))
+
+        nifti_to_zarr(
+            input_path,
+            output_path,
+            chunks=parsed_chunks,
+            compressor=compressor,
+            level=level,
+            overwrite=overwrite,
+        )
     click.echo(f"Wrote {output_path}")
 
 
@@ -419,12 +464,6 @@ def from_dicom(
 @click.option("--no-tags", is_flag=True, help="Skip DICOM tag extraction")
 @click.option("--content-hash", is_flag=True, help="Compute git-sha1 retrieval keys")
 @click.option("--inline-data", is_flag=True, help="Fetch and store pixel data inline")
-@click.option(
-    "--data-compression",
-    type=click.Choice(["none", "zstd", "snappy", "gzip", "lz4", "brotli"]),
-    default="none",
-    help="Parquet compression for data column (default: none)",
-)
 @click.option("--overwrite", is_flag=True, help="Overwrite existing output")
 def from_idc(
     identifier: str,
@@ -433,7 +472,6 @@ def from_idc(
     no_tags: bool,
     content_hash: bool,
     inline_data: bool,
-    data_compression: str,
     overwrite: bool,
 ) -> None:
     """Build a ZMP manifest for an IDC DICOM series.
@@ -452,7 +490,6 @@ def from_idc(
         tags=not no_tags,
         content_hash=content_hash,
         inline_data=inline_data,
-        data_compression=data_compression,
         overwrite=overwrite,
     )
     if base_url is not None:
@@ -519,6 +556,59 @@ def _resolve_idc_identifier(identifier: str) -> str:
     )
 
 
+@cli.command("from-dicomweb")
+@click.argument("dicomweb_url", type=str)
+@click.argument("study_uid", type=str)
+@click.argument("series_uid", type=str)
+@click.argument("output_path", type=click.Path())
+@click.option("--no-tags", is_flag=True, help="Skip DICOM tag extraction")
+@click.option("--overwrite", is_flag=True, help="Overwrite existing output")
+def from_dicomweb(
+    dicomweb_url: str,
+    study_uid: str,
+    series_uid: str,
+    output_path: str,
+    no_tags: bool,
+    overwrite: bool,
+) -> None:
+    """Build a ZMP manifest from a DICOMweb server.
+
+    Uses a single WADO-RS metadata request to build a virtual ZMP with
+    per-frame WADO-RS URLs. No pixel data is fetched.
+
+    \b
+    Example:
+      duckn from-dicomweb https://server/dicomWeb 1.2.840... 1.2.840... out.zmp
+    """
+    from .idc_zmp import build_dicomweb_zmp
+
+    build_dicomweb_zmp(
+        dicomweb_url, study_uid, series_uid, output_path,
+        tags=not no_tags, overwrite=overwrite,
+    )
+    click.echo(f"Wrote {output_path}")
+
+
+@cli.command("to-dicom")
+@click.argument("input_path", type=click.Path(exists=True))
+@click.argument("output_path", type=click.Path())
+@click.option("--overwrite", is_flag=True, help="Overwrite existing output")
+def to_dicom(
+    input_path: str,
+    output_path: str,
+    overwrite: bool,
+) -> None:
+    """Convert a duckn Zarr v3 store to an Enhanced Multi-frame DICOM file.
+
+    Supports 3D and 4D volumes. Per-sample metadata and geometry are
+    restored from duckn metadata when available.
+    """
+    from .dicom_convert import zarr_to_dicom
+
+    zarr_to_dicom(input_path, output_path, overwrite=overwrite)
+    click.echo(f"Wrote {output_path}")
+
+
 @cli.command("info")
 @click.argument("input_path", type=click.Path(exists=True))
 def info(input_path: str) -> None:
@@ -569,7 +659,7 @@ def header(input_path: str) -> None:
 
         _data, hdr = nrrd_lib.read(str(path), index_order="C")
         ndim = int(hdr["dimension"])
-        meta, _dim_names, _extra = _header_to_metadata(hdr, ndim)
+        meta, _dim_names = _header_to_metadata(hdr, ndim)
     else:
         from .zarr_io import read_duckn_metadata
 
