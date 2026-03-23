@@ -1,14 +1,14 @@
 # Segmentation Extension for duckn
 
-**Extension name:** `slicerseg`
-**Version:** 1.0
+**Extension name:** `seg`
+**Version:** 1.1
 **Status:** Draft
 
 ---
 
 ## 1. Purpose
 
-This document defines the `slicerseg` extension for the duckn convention. It replaces the `.seg.nrrd` metadata encoding — where segment properties were flattened into NRRD key/value pairs with `SegmentN_` prefixes and `~^|&`-delimited substructure — with a clean JSON representation.
+This document defines the `seg` extension for the duckn convention. It replaces the `.seg.nrrd` metadata encoding — where segment properties were flattened into NRRD key/value pairs with `SegmentN_` prefixes and `~^|&`-delimited substructure — with a clean JSON representation.
 
 The data model is the same. What changes is the encoding: structured objects replace string packing.
 
@@ -18,6 +18,8 @@ A secondary goal is to decouple segment identity from any single ontology. The `
 - **DICOM classification:** the category/type/region pattern needed specifically for DICOM SEG round-tripping
 
 A segment can carry multiple designations from different ontologies simultaneously. The DICOM classification structure is available when needed, but is no longer the mandatory backbone of segment identity.
+
+**Version 1.1 adds:** string references in `label_value`, allowing a segment to be defined as the union of other named segments. This enables hierarchical ontologies (such as brain atlas parcellations) to be represented compactly and without redundancy, using the existing `id` field as the reference target.
 
 ---
 
@@ -45,6 +47,12 @@ Not all label values in the volume need to be described by a segment entry. Unde
 
 The layer and label-union mechanisms are independent and may coexist in the same segmentation. They address overlapping segments through different strategies: layers duplicate the spatial volume; label unions partition it.
 
+### Hierarchical segments: segment references
+
+A segment's `label_value` may contain string entries that reference other segments by their `id`. A segment defined this way is the union of the effective voxel sets of all referenced segments, plus any integer label values it also directly lists.
+
+This allows hierarchical ontologies to be expressed compactly. A parent region is defined by listing its children by `id`; the full set of voxels belonging to the parent is the transitive union of all descendant leaf segments — without materializing that full list of integers in the file. Leaf segments have only integer `label_value` entries; interior nodes reference other segments by `id`.
+
 ### Empty segmentation
 
 Unlike `.seg.nrrd`, a Zarr store does not require non-empty data. An empty segmentation can be represented as a zero-extent array or by providing only the extension metadata with no voxel data. The single-voxel sentinel hack is not needed.
@@ -53,7 +61,7 @@ Unlike `.seg.nrrd`, a Zarr store does not require non-empty data. An empty segme
 
 ## 3. Extension Fields
 
-The `slicerseg` extension is declared at the top level of the `"duckn"` object's `"extensions"` and carries the array-wide segmentation metadata. Per-segment metadata lives in a `"segments"` array within this object.
+The `seg` extension is declared at the top level of the `"duckn"` object's `"extensions"` and carries the array-wide segmentation metadata. Per-segment metadata lives in a `"segments"` array within this object.
 
 ### 3.1 Top-Level Extension Fields
 
@@ -62,7 +70,7 @@ The `slicerseg` extension is declared at the top level of the `"duckn"` object's
 Required. The version of this extension specification.
 
 ```json
-"version": "1.0"
+"version": "1.1"
 ```
 
 #### `source_representation`
@@ -78,39 +86,35 @@ The representation type stored in this file.
 "source_representation": "binary-labelmap"
 ```
 
-#### `contained_representations`
+#### `metadata`
 
-An array of representation names that an application should be prepared to generate from this data.
+An open-ended object for application-specific metadata. Each key identifies the application or pipeline that produced the metadata. The spec does not define the contents — applications are free to store whatever they need.
+
+Well-known keys:
+
+- **`slicer`** — 3D Slicer application state:
+  - `contained_representations`: array of representation names the application should be prepared to generate (e.g., `["binary-labelmap", "closed-surface"]`)
+  - `conversion_parameters`: mesh generation parameters (smoothing factor, decimation factor, etc.), replacing the `&`-and-`|`-delimited `Segmentation_ConversionParameters` string from `.seg.nrrd`
+  - `reference_extent_offset`: a 3-element array `[i, j, k]` giving the voxel-coordinate offset of this array's origin relative to a reference image grid. Allows reconstructing the original image extent when the segmentation covers only a subregion.
 
 ```json
-"contained_representations": ["binary-labelmap", "closed-surface"]
-```
-
-#### `conversion_parameters`
-
-An object whose keys are parameter names and whose values are objects with `value` and optionally `description`.
-
-```json
-"conversion_parameters": {
-  "Smoothing factor": {
-    "value": "0.5",
-    "description": "Fraction of Gaussian standard deviation relative to voxel size"
+"metadata": {
+  "slicer": {
+    "contained_representations": ["binary-labelmap", "closed-surface"],
+    "conversion_parameters": {
+      "Smoothing factor": {
+        "value": "0.5",
+        "description": "Fraction of Gaussian standard deviation relative to voxel size"
+      }
+    },
+    "reference_extent_offset": [100, 50, 0]
   },
-  "Decimation factor": {
-    "value": "0.0",
-    "description": "Target reduction of triangle count (0 = no decimation)"
+  "totalsegmentator": {
+    "task": "total",
+    "model": "3d_fullres",
+    "version": "1.5.6"
   }
 }
-```
-
-This replaces the `&`-and-`|`-delimited `Segmentation_ConversionParameters` string.
-
-#### `reference_extent_offset`
-
-A 3-element array `[i, j, k]` giving the voxel-coordinate offset of this array's origin relative to a reference image grid. Allows reconstructing the original image extent when the segmentation covers only a subregion.
-
-```json
-"reference_extent_offset": [100, 50, 0]
 ```
 
 #### `terminologies`
@@ -157,7 +161,7 @@ Each element of the `segments` array is a JSON object with the following fields.
 
 #### `id`
 
-A stable, unique identifier for the segment within this segmentation. Does not change when the segment is renamed.
+A stable, unique identifier for the segment within this segmentation. Does not change when the segment is renamed. String entries in other segments' `label_value` arrays resolve against this field.
 
 ```json
 "id": "Segment_1"
@@ -187,10 +191,6 @@ An optional object providing the segment's display name in additional languages,
 
 When `display` is present, the value of `name` should also appear under the appropriate language key so that `display` is self-contained. A reader using `display` can ignore `name`; a reader not using `display` can ignore it.
 
-#### `name_auto_generated`
-
-Boolean. `true` if the name was generated automatically (e.g., derived from terminology); `false` or absent if the user chose it.
-
 #### `color`
 
 Display color as an RGB array with values in [0.0, 1.0].
@@ -199,31 +199,37 @@ Display color as an RGB array with values in [0.0, 1.0].
 "color": [0.89, 0.85, 0.78]
 ```
 
-#### `color_auto_generated`
-
-Boolean. `true` if the color was generated automatically; `false` or absent if the user chose it.
-
 #### `label_value`
 
-The label value or values used to represent this segment in its layer. Required.
+The label value or values identifying the voxels belonging to this segment. Required.
 
-When `label_value` is a single integer, the segment occupies all voxels with that value:
+Each element is either an **integer** or a **string**:
+
+- An **integer** is a literal voxel label value. The segment includes all voxels in its layer whose value equals this integer.
+- A **string** is a reference to another segment by its `id`. The segment includes the full effective voxel set of the referenced segment, resolved recursively.
+
+A scalar value follows the same rule: a bare integer is a literal; a bare string is a reference.
 
 ```json
-"label_value": 1
+"label_value": 1                          // leaf: single literal voxel value
+"label_value": [1, 3, 7]                  // leaf: literal label union (island model)
+"label_value": ["child-a", "child-b"]     // interior node: references only
+"label_value": [1, "child-a", "child-b"]  // mixed: own voxels plus referenced children
 ```
 
-When `label_value` is an array of integers, the segment is the union of all voxels whose value matches any element in the array:
+The **effective voxel set** of a segment is the union of:
+- all voxels whose label value matches any integer in `label_value`, and
+- the effective voxel sets of all segments referenced by string entries in `label_value`.
 
-```json
-"label_value": [1, 3, 7]
-```
+Resolution is recursive and terminates at leaf segments (those with no string entries). Circular references are forbidden.
 
-A reader should treat a bare integer as equivalent to a single-element array. The array form enables representing overlapping structures in a single volume without layers (see §2, "Overlapping segments: label unions").
+A reader that does not support string references may still process segments whose `label_value` contains only integers. Segments with string entries are opaque to such a reader, but their presence does not invalidate the file.
 
 #### `layer`
 
-The zero-based index of the layer (position along the `list` axis) that contains this segment. Omit for non-overlapping segmentations where there is only one layer (implicitly 0).
+The zero-based index of the layer (position along the `list` axis) that contains this segment's literal voxel values. Omit for non-overlapping segmentations where there is only one layer (implicitly 0).
+
+The `layer` field applies only to integer label values within this segment. Referenced segments have their own `layer` assignments, which are respected during recursive resolution.
 
 ```json
 "layer": 0
@@ -231,28 +237,48 @@ The zero-based index of the layer (position along the `list` axis) that contains
 
 #### `extent`
 
-The bounding box of the non-empty region within the segment, as a 6-element array: `[min_i, max_i, min_j, max_j, min_k, max_k]` in voxel coordinates.
+The bounding box of the non-empty region within the segment, as a 6-element array: `[min_i, max_i, min_j, max_j, min_k, max_k]` in voxel coordinates. For segments defined by references, `extent` describes the bounding box of the full effective voxel set, not only any directly-owned integer label values.
 
 ```json
 "extent": [45, 102, 30, 98, 12, 55]
 ```
 
-#### `designations`
+#### `identifiers`
 
-An array of coded entries identifying what this segment represents, drawn from any number of coding systems. See §4.1. This is the primary mechanism for segment identity.
-
-#### `dicom`
-
-An optional object providing the DICOM Segmentation IOD classification structure (category, type, type modifier, anatomic region, region modifier). See §4.2. Present only when DICOM SEG interoperability is needed.
-
-#### `tags`
-
-An object for arbitrary key/value metadata associated with this segment. Keys and values are strings. This is the open-ended escape hatch — anything that doesn't have a dedicated field goes here.
+An object keyed by terminology name, identifying what this segment represents in external coding systems. Each key must match an entry in the extension-level `terminologies` registry. Each value has `id` (the concept identifier in that system) and `name` (the human-readable term).
 
 ```json
-"tags": {
-  "Status": "reviewed",
-  "Operator": "JDoe"
+"identifiers": {
+  "snomedct": {"id": "64033007", "name": "Kidney"},
+  "fma": {"id": "7205", "name": "Right kidney"},
+  "ta2": {"id": "2164", "name": "Ren"}
+}
+```
+
+#### `metadata`
+
+An open-ended object for application-specific per-segment metadata, following the same pattern as the extension-level `metadata` field. Each key identifies the source application or standard.
+
+Well-known keys:
+
+- **`dicom`** — DICOM Segmentation IOD classification structure (category, type, type modifier, anatomic region, region modifier). See §4.2. Present only when DICOM SEG interoperability is needed.
+- **`slicer`** — 3D Slicer per-segment state:
+  - `name_auto_generated`: boolean, `true` if the name was derived from terminology
+  - `color_auto_generated`: boolean, `true` if the color was auto-assigned
+  - `tags`: arbitrary key/value pairs from Slicer's internal tagging system
+
+```json
+"metadata": {
+  "dicom": {
+    "category": {"scheme": "SCT", "code": "123037004", "meaning": "Body structure"},
+    "type": {"scheme": "SCT", "code": "64033007", "meaning": "Kidney"},
+    "anatomic_region": {"scheme": "SCT", "code": "18639004", "meaning": "Right kidney"}
+  },
+  "slicer": {
+    "name_auto_generated": true,
+    "color_auto_generated": false,
+    "tags": {"Status": "reviewed"}
+  }
 }
 ```
 
@@ -260,166 +286,78 @@ An object for arbitrary key/value metadata associated with this segment. Keys an
 
 ## 4. Segment Identity
 
-Segment identity is modeled in two layers:
+Segment identity has two parts:
 
-1. **Designations** — a flat list of coded entries saying "this segment is *X*" in various ontologies, plus a user-level display name. This is the general-purpose mechanism. Most segments need only this.
+1. **Identifiers** — a dict of coded references saying "this segment is concept *X* in system *Y*". Keyed by terminology name. This is the primary mechanism for interoperable segment identity.
 
-2. **DICOM classification** — the specific category/type/modifier/region structure required by DICOM Segmentation IOD. This is needed only for DICOM round-tripping and is expressed as a separate optional object that provides its own coded entries.
+2. **DICOM classification** — the structured category/type/modifier/region hierarchy required by DICOM Segmentation IOD. Lives in `metadata.dicom` on the segment. Needed only for DICOM round-tripping.
 
-The two layers are complementary. A segment can have designations without a DICOM block (common for research or non-clinical use). It can have a DICOM block without standalone designations (if the DICOM classification is the only labeling). Or it can have both, with the DICOM block providing the classification structure and the designations providing broader ontological coverage.
+### 4.1 Identifiers
 
-### 4.1 Designations
-
-Each entry in the `designations` array identifies the segment in one coding system:
+The `identifiers` dict maps terminology names to concept references. Each key must match an entry in the extension-level `terminologies` registry:
 
 ```json
-"designations": [
-  {
-    "scheme": "SCT",
-    "code": "64033007",
-    "meaning": "Kidney",
-    "url": "https://browser.ihtsdotools.org/?perspective=full&conceptId1=64033007"
-  },
-  {
-    "scheme": "FMA",
-    "code": "7203",
-    "meaning": "Kidney",
-    "url": "http://purl.org/sig/ont/fma/fma7203"
-  },
-  {
-    "scheme": "TA2",
-    "code": "5765",
-    "meaning": "Kidney",
-    "display": {
-      "la": "Ren",
-      "en": "Kidney"
-    }
-  }
-]
+"identifiers": {
+  "snomedct": {"id": "64033007", "name": "Kidney"},
+  "fma": {"id": "7205", "name": "Right kidney"},
+  "ta2": {"id": "5767", "name": "Right kidney"}
+}
 ```
 
 | Field | Required | Type | Description |
 |-------|----------|------|-------------|
-| `scheme` | yes | string | Coding system identifier. Should match a key in the top-level `terminologies` registry. |
-| `code` | yes | string | Code value within the system |
-| `meaning` | yes | string | Primary human-readable label for the code |
-| `display` | no | object | Additional display names keyed by BCP 47 language tag (see below) |
-| `url` | no | string | Resolvable URL for this specific concept — a browser link, persistent identifier, or ontology IRI |
-| `modifier` | no | object | A qualifier on the primary code (e.g., laterality). Same shape: `{scheme, code, meaning, display, url}` |
+| `id` | yes | string | The concept identifier within the coding system |
+| `name` | yes | string | Human-readable name for the concept |
 
-#### Multilingual display names
+Multilingual names can be provided via the segment-level `display` field, which maps BCP 47 language tags to display strings.
 
-The `meaning` field is the default display string — the label a reader should show when no language preference is specified. The optional `display` object provides the same concept's name in additional languages, keyed by [BCP 47](https://www.rfc-editor.org/info/bcp47) language tags:
+#### Relationship to `name`
 
-```json
-{
-  "scheme": "TA2",
-  "code": "5765",
-  "meaning": "Kidney",
-  "display": {
-    "la": "Ren",
-    "en": "Kidney",
-    "de": "Niere",
-    "ja": "腎臓"
-  }
-}
-```
-
-Rules:
-
-- `meaning` is always present and always a plain string. It is the fallback for readers that do not inspect `display`.
-- `display` keys are BCP 47 language tags: `"en"`, `"la"`, `"de"`, `"ja"`, `"zh-Hans"`, etc.
-- The value of `meaning` should also appear under the appropriate language key in `display` when `display` is present, so that the `display` object is self-contained. A reader using `display` can ignore `meaning`; a reader not using `display` can ignore it.
-- `display` on a `modifier` follows the same rules.
-
-This pattern follows FHIR's approach to multilingual coded concepts (CodeSystem designations with language tags) and aligns with BCP 47 usage in JSON-LD, HTML, and HTTP.
-
-For anatomical terminology, the most common case is Latin (`"la"`) alongside a modern clinical language (`"en"`, `"de"`, etc.). TA2, for example, defines both Latin and English names for every structure. FMA uses English. SNOMED uses English with translations maintained by national release centers.
-
-#### Modifiers
-
-The `modifier` field handles the common case where a concept needs qualification — typically laterality, but the pattern is general:
-
-```json
-{
-  "scheme": "SCT",
-  "code": "64033007",
-  "meaning": "Kidney",
-  "modifier": {
-    "scheme": "SCT",
-    "code": "24028007",
-    "meaning": "Right",
-    "display": {
-      "en": "Right",
-      "la": "Dexter"
-    }
-  }
-}
-```
-
-#### Ordering and relationship to `name`
-
-**Ordering:** The first designation in the array is the preferred / primary identification. Readers that can only handle one coded identity should use the first entry.
-
-**Relationship to `name`:** The `name` field on the segment is the user-facing display label. It may echo a designation's `meaning`, or it may be entirely different ("Bob's left kidney"). The two are independent. `name` is what you show in the UI; `designations` are what you use for computation, interoperability, and lookup.
+The `name` field on the segment is the user-facing display label. It may echo an identifier's `name`, or it may be entirely different ("Bob's left kidney"). The two are independent: `name` is what you show in the UI; `identifiers` are what you use for computation, interoperability, and lookup.
 
 ### 4.2 DICOM Classification
 
-The `dicom` object provides the seven-part classification structure defined by the DICOM Segmentation IOD. This is the information needed to write a DICOM SEG object.
+The DICOM classification structure lives in `metadata.dicom` on the segment. It provides the specific category/type/modifier/region hierarchy defined by the DICOM Segmentation IOD — the information needed to write a DICOM SEG object.
 
 ```json
-"dicom": {
-  "category": {
-    "scheme": "SCT",
-    "code": "49755003",
-    "meaning": "Morphologically abnormal structure"
-  },
-  "type": {
-    "scheme": "SCT",
-    "code": "4147007",
-    "meaning": "Mass"
-  },
-  "anatomic_region": {
-    "scheme": "SCT",
-    "code": "23451007",
-    "meaning": "Adrenal gland"
-  },
-  "anatomic_region_modifier": {
-    "scheme": "SCT",
-    "code": "24028007",
-    "meaning": "Right"
+"metadata": {
+  "dicom": {
+    "category": {"id": "49755003", "name": "Morphologically abnormal structure"},
+    "type": {"id": "4147007", "name": "Mass"},
+    "anatomic_region": {"id": "23451007", "name": "Adrenal gland"},
+    "anatomic_region_modifier": {"id": "24028007", "name": "Right"}
   }
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `category` | coded entry | Segmentation Category (e.g., "Morphologically abnormal structure", "Tissue", "Body structure") |
-| `type` | coded entry | Segmentation Type within the category (e.g., "Mass", "Neoplasm") |
-| `type_modifier` | coded entry | Qualifier on the type. Omit if not applicable. |
-| `anatomic_region` | coded entry | Anatomic region |
-| `anatomic_region_modifier` | coded entry | Qualifier on the region (typically laterality). Omit if not applicable. |
+| `category` | `{id, name}` | Segmentation Category (e.g., "Morphologically abnormal structure", "Tissue") |
+| `type` | `{id, name}` | Segmentation Type within the category (e.g., "Mass", "Neoplasm") |
+| `type_modifier` | `{id, name}` | Qualifier on the type. Omit if not applicable. |
+| `anatomic_region` | `{id, name}` | Anatomic region |
+| `anatomic_region_modifier` | `{id, name}` | Qualifier on the region (typically laterality). Omit if not applicable. |
 
-Each coded entry has the same shape as a designation: `{scheme, code, meaning}`, optionally with `display` and `url`. The `scheme` values should match keys in the top-level `terminologies` registry. Following the convention's "absent means unknown" principle, omit optional fields entirely rather than setting them to `null`.
+DICOM classification entries use SNOMED CT codes by convention. The terminology is implicit — all entries in `metadata.dicom` are SNOMED unless otherwise noted.
 
-The `.seg.nrrd` `TerminologyEntry` also stored two "context name" strings (e.g., "Segmentation category and type - 3D Slicer General Anatomy list" and "Anatomic codes - DICOM master list"). These named the lookup tables used by 3D Slicer's terminology selector UI. They are application state, not data semantics, and are intentionally omitted here. If an application needs to record which terminology context was active, it can use `tags`.
+The `.seg.nrrd` `TerminologyEntry` also stored "context name" strings naming 3D Slicer's terminology selector lookup tables. These are application state, not data semantics, and belong in `metadata.slicer` if needed.
 
-### 4.3 Relationship Between Designations and DICOM
+### 4.3 Relationship Between Identifiers and DICOM
 
-The `designations` and `dicom` fields are independent — they do not reference each other. The same SNOMED code might appear in both, and that's fine. They serve different purposes:
+The `identifiers` and `metadata.dicom` fields are independent. The same SNOMED concept might appear in both — once as a flat identifier, once within the structured classification. They serve different purposes:
 
-- `designations` answers: "What is this structure, in any ontology?"
-- `dicom` answers: "How should this segment be classified in a DICOM Segmentation IOD?"
+- `identifiers` answers: "What is this structure, in any ontology?"
+- `metadata.dicom` answers: "How should this segment be classified in a DICOM Segmentation IOD?"
 
-When converting to DICOM SEG, a writer should use the `dicom` block if present. When performing ontology-based lookup, matching, or cross-referencing, a reader should use `designations`.
+When converting to DICOM SEG, a writer uses `metadata.dicom`. When performing ontology-based lookup or cross-referencing, a reader uses `identifiers`.
 
 ### 4.4 Absence and Omission
 
-Following the duckn convention's "absent means unknown" principle:
+Following the duckn specification's "absent means unknown" principle:
 
-- If a segment has no designations, omit the `designations` field. Do not include an empty array.
-- If a segment has no DICOM classification, omit the `dicom` field. Do not include an empty object.
-- Within the `dicom` object, omit `type_modifier` and `anatomic_region_modifier` when they do not apply. Do not use `null`.
+- If a segment has no identifiers, omit the `identifiers` field. Do not include an empty object.
+- If a segment has no DICOM classification, omit `metadata.dicom`. Do not include an empty object.
+- Within `metadata.dicom`, omit `type_modifier` and `anatomic_region_modifier` when they do not apply. Do not use `null`.
 - If no terminology registrations are needed, omit the `terminologies` field entirely.
 
 ---
@@ -430,16 +368,18 @@ Following the duckn convention's "absent means unknown" principle:
 - Where a segment specifies a `layer`, there must be a `list`-kind axis in the array, and the `layer` value must be a valid index into that axis.
 - Where a `kind` constraint requires a specific axis size (from the duckn convention), the corresponding `shape` element must match.
 - `scheme` values used in `designations` or `dicom` coded entries should have a corresponding key in the top-level `terminologies` registry. This is not strictly required (the file is valid without it), but it provides provenance and discoverability.
-- When `label_value` is a single integer: it must be unique within a given layer. Two segments in the same layer with the same scalar `label_value` would be ambiguous.
-- When `label_value` is an array: no two segments in the same layer may have identical `label_value` arrays (compared as sets). Individual label values *may* appear in multiple segments' arrays — this is the mechanism for representing overlapping structures. However, the overall set of label values for each segment must be distinct.
+- When `label_value` contains only integers and is a single integer: it must be unique within a given layer. Two segments in the same layer with the same scalar integer `label_value` would be ambiguous.
+- When `label_value` is an array: no two segments in the same layer may have identical effective integer label sets (compared as sets, after resolving all string references). Individual integers *may* appear in multiple segments' effective sets — this is the mechanism for representing overlapping structures.
 - `id` must be unique across all segments in the segmentation.
-- Not all label values present in the voxel data need to appear in a segment entry. Undescribed label values are implementation-defined.
+- String entries in `label_value` must match the `id` of a segment within the same `segments` array.
+- The segment reference graph formed by string entries in `label_value` must be acyclic. A segment may not directly or transitively reference itself.
+- Not all integer label values present in the voxel data need to appear in a segment entry. Undescribed label values are implementation-defined.
 
 ---
 
 ## 6. Mapping from `.seg.nrrd`
 
-| `.seg.nrrd` field | duckn `slicerseg` extension field |
+| `.seg.nrrd` field | duckn `seg` extension field |
 |---|---|
 | `Segmentation_MasterRepresentation` / `Segmentation_SourceRepresentation` | `source_representation` |
 | `Segmentation_ContainedRepresentationNames` | `contained_representations` (array) |
@@ -451,13 +391,14 @@ Following the duckn convention's "absent means unknown" principle:
 | `SegmentN_NameAutoGenerated` | `segments[n].name_auto_generated` (boolean) |
 | `SegmentN_Color` | `segments[n].color` (RGB array) |
 | `SegmentN_ColorAutoGenerated` | `segments[n].color_auto_generated` (boolean) |
-| `SegmentN_LabelValue` | `segments[n].label_value` (integer or array of integers) |
+| `SegmentN_LabelValue` | `segments[n].label_value` (integer, string, or mixed array) |
 | `SegmentN_Layer` | `segments[n].layer` (integer) |
 | `SegmentN_Extent` | `segments[n].extent` (6-element array) |
 | `SegmentN_Tags` (minus TerminologyEntry) | `segments[n].tags` (object) |
 | `SegmentN_Tags` TerminologyEntry — category/type/modifier/region | `segments[n].dicom` (object) |
 | `SegmentN_Tags` TerminologyEntry — type code (e.g., SCT code for the structure) | `segments[n].designations` (first entry) |
 | `SegmentN_Tags` TerminologyEntry — context names | Omitted (application state) |
+| — (no `.seg.nrrd` equivalent) | `segments[n].label_value` string entries (segment references) |
 
 ### Parsing Notes
 
@@ -500,28 +441,13 @@ A 256×256×128 binary labelmap segmentation with two segments in LPS space. Eac
       "space_origin": [-127.5, -127.5, 0.0],
       "intent": "label-map",
       "axes": [
-        {
-          "kind": "space",
-          "centering": "cell",
-          "space_direction": [1, 0, 0],
-          "unit": "mm"
-        },
-        {
-          "kind": "space",
-          "centering": "cell",
-          "space_direction": [0, 1, 0],
-          "unit": "mm"
-        },
-        {
-          "kind": "space",
-          "centering": "cell",
-          "space_direction": [0, 0, 2],
-          "unit": "mm"
-        }
+        { "kind": "space", "centering": "cell", "space_direction": [1, 0, 0], "unit": "mm" },
+        { "kind": "space", "centering": "cell", "space_direction": [0, 1, 0], "unit": "mm" },
+        { "kind": "space", "centering": "cell", "space_direction": [0, 0, 2], "unit": "mm" }
       ],
       "extensions": {
-        "slicerseg": {
-          "version": "1.0",
+        "seg": {
+          "version": "1.1",
           "source_representation": "binary-labelmap",
           "contained_representations": ["binary-labelmap", "closed-surface"],
           "terminologies": {
@@ -530,14 +456,8 @@ A 256×256×128 binary labelmap segmentation with two segments in LPS space. Eac
               "version": "2024-09-01",
               "url": "https://browser.ihtsdotools.org"
             },
-            "FMA": {
-              "name": "Foundational Model of Anatomy",
-              "url": "http://purl.org/sig/ont/fma/"
-            },
-            "TA2": {
-              "name": "Terminologia Anatomica 2nd Edition",
-              "url": "https://ta2viewer.openanatomy.org"
-            }
+            "FMA": { "name": "Foundational Model of Anatomy", "url": "http://purl.org/sig/ont/fma/" },
+            "TA2": { "name": "Terminologia Anatomica 2nd Edition", "url": "https://ta2viewer.openanatomy.org" }
           },
           "segments": [
             {
@@ -552,11 +472,7 @@ A 256×256×128 binary labelmap segmentation with two segments in LPS space. Eac
                   "code": "64033007",
                   "meaning": "Kidney",
                   "url": "https://browser.ihtsdotools.org/?perspective=full&conceptId1=64033007",
-                  "modifier": {
-                    "scheme": "SCT",
-                    "code": "24028007",
-                    "meaning": "Right"
-                  }
+                  "modifier": { "scheme": "SCT", "code": "24028007", "meaning": "Right" }
                 },
                 {
                   "scheme": "FMA",
@@ -568,33 +484,14 @@ A 256×256×128 binary labelmap segmentation with two segments in LPS space. Eac
                   "scheme": "TA2",
                   "code": "5767",
                   "meaning": "Right kidney",
-                  "display": {
-                    "la": "Ren dexter",
-                    "en": "Right kidney"
-                  }
+                  "display": { "la": "Ren dexter", "en": "Right kidney" }
                 }
               ],
               "dicom": {
-                "category": {
-                  "scheme": "SCT",
-                  "code": "123037004",
-                  "meaning": "Body structure"
-                },
-                "type": {
-                  "scheme": "SCT",
-                  "code": "64033007",
-                  "meaning": "Kidney"
-                },
-                "anatomic_region": {
-                  "scheme": "SCT",
-                  "code": "64033007",
-                  "meaning": "Kidney"
-                },
-                "anatomic_region_modifier": {
-                  "scheme": "SCT",
-                  "code": "24028007",
-                  "meaning": "Right"
-                }
+                "category": { "scheme": "SCT", "code": "123037004", "meaning": "Body structure" },
+                "type": { "scheme": "SCT", "code": "64033007", "meaning": "Kidney" },
+                "anatomic_region": { "scheme": "SCT", "code": "64033007", "meaning": "Kidney" },
+                "anatomic_region_modifier": { "scheme": "SCT", "code": "24028007", "meaning": "Right" }
               }
             },
             {
@@ -608,11 +505,7 @@ A 256×256×128 binary labelmap segmentation with two segments in LPS space. Eac
                   "scheme": "SCT",
                   "code": "64033007",
                   "meaning": "Kidney",
-                  "modifier": {
-                    "scheme": "SCT",
-                    "code": "7771000",
-                    "meaning": "Left"
-                  }
+                  "modifier": { "scheme": "SCT", "code": "7771000", "meaning": "Left" }
                 },
                 {
                   "scheme": "FMA",
@@ -624,33 +517,14 @@ A 256×256×128 binary labelmap segmentation with two segments in LPS space. Eac
                   "scheme": "TA2",
                   "code": "5766",
                   "meaning": "Left kidney",
-                  "display": {
-                    "la": "Ren sinister",
-                    "en": "Left kidney"
-                  }
+                  "display": { "la": "Ren sinister", "en": "Left kidney" }
                 }
               ],
               "dicom": {
-                "category": {
-                  "scheme": "SCT",
-                  "code": "123037004",
-                  "meaning": "Body structure"
-                },
-                "type": {
-                  "scheme": "SCT",
-                  "code": "64033007",
-                  "meaning": "Kidney"
-                },
-                "anatomic_region": {
-                  "scheme": "SCT",
-                  "code": "64033007",
-                  "meaning": "Kidney"
-                },
-                "anatomic_region_modifier": {
-                  "scheme": "SCT",
-                  "code": "7771000",
-                  "meaning": "Left"
-                }
+                "category": { "scheme": "SCT", "code": "123037004", "meaning": "Body structure" },
+                "type": { "scheme": "SCT", "code": "64033007", "meaning": "Kidney" },
+                "anatomic_region": { "scheme": "SCT", "code": "64033007", "meaning": "Kidney" },
+                "anatomic_region_modifier": { "scheme": "SCT", "code": "7771000", "meaning": "Left" }
               }
             }
           ]
@@ -663,7 +537,7 @@ A 256×256×128 binary labelmap segmentation with two segments in LPS space. Eac
 
 ### 7.2 Overlapping Segments with Layers
 
-A segmentation with two overlapping segments, requiring two layers:
+A tumor partially overlapping the liver, represented as two segments in separate layers:
 
 ```json
 {
@@ -671,7 +545,7 @@ A segmentation with two overlapping segments, requiring two layers:
   "node_type": "array",
   "shape": [2, 256, 256, 128],
   "data_type": "uint8",
-  "dimension_names": ["layer", "i", "j", "k"],
+  "dimension_names": ["list", "i", "j", "k"],
   "chunk_grid": {
     "name": "regular",
     "configuration": { "chunk_shape": [1, 64, 64, 32] }
@@ -689,28 +563,13 @@ A segmentation with two overlapping segments, requiring two layers:
       "intent": "label-map",
       "axes": [
         { "kind": "list" },
-        {
-          "kind": "space",
-          "centering": "cell",
-          "space_direction": [1, 0, 0],
-          "unit": "mm"
-        },
-        {
-          "kind": "space",
-          "centering": "cell",
-          "space_direction": [0, 1, 0],
-          "unit": "mm"
-        },
-        {
-          "kind": "space",
-          "centering": "cell",
-          "space_direction": [0, 0, 2],
-          "unit": "mm"
-        }
+        { "kind": "space", "centering": "cell", "space_direction": [1, 0, 0], "unit": "mm" },
+        { "kind": "space", "centering": "cell", "space_direction": [0, 1, 0], "unit": "mm" },
+        { "kind": "space", "centering": "cell", "space_direction": [0, 0, 2], "unit": "mm" }
       ],
       "extensions": {
-        "slicerseg": {
-          "version": "1.0",
+        "seg": {
+          "version": "1.1",
           "source_representation": "binary-labelmap",
           "segments": [
             {
@@ -719,13 +578,7 @@ A segmentation with two overlapping segments, requiring two layers:
               "label_value": 1,
               "layer": 0,
               "color": [0.8, 0.2, 0.2],
-              "designations": [
-                {
-                  "scheme": "SCT",
-                  "code": "108369006",
-                  "meaning": "Neoplasm"
-                }
-              ]
+              "designations": [{ "scheme": "SCT", "code": "108369006", "meaning": "Neoplasm" }]
             },
             {
               "id": "Segment_2",
@@ -733,13 +586,7 @@ A segmentation with two overlapping segments, requiring two layers:
               "label_value": 1,
               "layer": 1,
               "color": [0.2, 0.6, 0.8],
-              "designations": [
-                {
-                  "scheme": "SCT",
-                  "code": "10200004",
-                  "meaning": "Liver"
-                }
-              ]
+              "designations": [{ "scheme": "SCT", "code": "10200004", "meaning": "Liver" }]
             }
           ]
         }
@@ -753,7 +600,7 @@ Note that both segments use `label_value: 1` — this is valid because they are 
 
 ### 7.3 Overlapping Segments with Label Unions
 
-The same tumor-liver overlap from §7.2, represented as label unions in a single 3D volume instead of layers:
+The same tumor-liver overlap, represented as label unions in a single 3D volume:
 
 ```json
 {
@@ -778,28 +625,13 @@ The same tumor-liver overlap from §7.2, represented as label unions in a single
       "space_origin": [-127.5, -127.5, 0.0],
       "intent": "label-map",
       "axes": [
-        {
-          "kind": "space",
-          "centering": "cell",
-          "space_direction": [1, 0, 0],
-          "unit": "mm"
-        },
-        {
-          "kind": "space",
-          "centering": "cell",
-          "space_direction": [0, 1, 0],
-          "unit": "mm"
-        },
-        {
-          "kind": "space",
-          "centering": "cell",
-          "space_direction": [0, 0, 2],
-          "unit": "mm"
-        }
+        { "kind": "space", "centering": "cell", "space_direction": [1, 0, 0], "unit": "mm" },
+        { "kind": "space", "centering": "cell", "space_direction": [0, 1, 0], "unit": "mm" },
+        { "kind": "space", "centering": "cell", "space_direction": [0, 0, 2], "unit": "mm" }
       ],
       "extensions": {
-        "slicerseg": {
-          "version": "1.0",
+        "seg": {
+          "version": "1.1",
           "source_representation": "binary-labelmap",
           "segments": [
             {
@@ -807,26 +639,14 @@ The same tumor-liver overlap from §7.2, represented as label unions in a single
               "name": "Tumor",
               "label_value": [2, 3],
               "color": [0.8, 0.2, 0.2],
-              "designations": [
-                {
-                  "scheme": "SCT",
-                  "code": "108369006",
-                  "meaning": "Neoplasm"
-                }
-              ]
+              "designations": [{ "scheme": "SCT", "code": "108369006", "meaning": "Neoplasm" }]
             },
             {
               "id": "Segment_2",
               "name": "Liver",
               "label_value": [1, 3],
               "color": [0.2, 0.6, 0.8],
-              "designations": [
-                {
-                  "scheme": "SCT",
-                  "code": "10200004",
-                  "meaning": "Liver"
-                }
-              ]
+              "designations": [{ "scheme": "SCT", "code": "10200004", "meaning": "Liver" }]
             }
           ]
         }
@@ -836,7 +656,7 @@ The same tumor-liver overlap from §7.2, represented as label unions in a single
 }
 ```
 
-Label 1 is liver-only voxels, label 2 is tumor-only voxels, and label 3 is the overlap region where both structures are present. The island at label 3 has no explicit segment entry — it exists only as a shared label value in the two composite segments. No layers are needed.
+Label 1 is liver-only voxels, label 2 is tumor-only voxels, label 3 is the overlap region. The island at label 3 has no explicit segment entry — it exists only as a shared integer in the two composite segments.
 
 ### 7.4 Research Segmentation Without DICOM
 
@@ -844,57 +664,104 @@ A segmentation from a research pipeline using only FMA codes, no DICOM classific
 
 ```json
 "extensions": {
-  "slicerseg": {
-    "version": "1.0",
+  "seg": {
+    "version": "1.1",
     "source_representation": "binary-labelmap",
     "terminologies": {
-      "FMA": {
-        "name": "Foundational Model of Anatomy",
-        "url": "http://purl.org/sig/ont/fma/"
-      }
+      "FMA": { "name": "Foundational Model of Anatomy", "url": "http://purl.org/sig/ont/fma/" }
     },
     "segments": [
       {
         "id": "S1",
         "name": "Left ventricle",
         "label_value": 1,
-        "designations": [
-          {
-            "scheme": "FMA",
-            "code": "7101",
-            "meaning": "Left ventricle",
-            "url": "http://purl.org/sig/ont/fma/fma7101"
-          }
-        ]
+        "designations": [{ "scheme": "FMA", "code": "7101", "meaning": "Left ventricle", "url": "http://purl.org/sig/ont/fma/fma7101" }]
       },
       {
         "id": "S2",
         "name": "Right ventricle",
         "label_value": 2,
-        "designations": [
-          {
-            "scheme": "FMA",
-            "code": "7098",
-            "meaning": "Right ventricle",
-            "url": "http://purl.org/sig/ont/fma/fma7098"
-          }
-        ]
+        "designations": [{ "scheme": "FMA", "code": "7098", "meaning": "Right ventricle", "url": "http://purl.org/sig/ont/fma/fma7098" }]
       }
     ]
   }
 }
 ```
 
-No `dicom` block — the segments are identified purely by FMA designations.
+### 7.5 Hierarchical Ontology (Allen Mouse Brain CCF)
 
-### 7.5 Minimal
+A whole-brain mouse atlas segmentation where voxel label values are Allen CCF structure IDs. Leaf segments carry integer `label_value`; parent structures are defined by referencing their direct children by `id`. The full hierarchy is expressed compactly — the voxel set of each interior node is the transitive union of its descendants without any redundant integer lists.
+
+```json
+"extensions": {
+  "seg": {
+    "version": "1.1",
+    "source_representation": "binary-labelmap",
+    "terminologies": {
+      "CCF": {
+        "name": "Allen Mouse Brain Common Coordinate Framework",
+        "version": "3.0",
+        "url": "http://atlas.brain-map.org"
+      }
+    },
+    "segments": [
+      {
+        "id": "997",
+        "name": "root",
+        "label_value": ["8", "1009", "73", "1024", "304325711"],
+        "color": [1.0, 1.0, 1.0],
+        "designations": [{ "scheme": "CCF", "code": "997", "meaning": "root" }]
+      },
+      {
+        "id": "8",
+        "name": "Basic cell groups and regions",
+        "label_value": ["567", "343", "512"],
+        "color": [0.749, 0.855, 0.890],
+        "designations": [{ "scheme": "CCF", "code": "8", "meaning": "Basic cell groups and regions" }]
+      },
+      {
+        "id": "315",
+        "name": "Isocortex",
+        "label_value": ["184", "500", "453", "1057", "677", "247", "669", "31", "972", "44", "714", "95", "254", "22", "541", "922", "895"],
+        "color": [0.439, 1.0, 0.443],
+        "designations": [{ "scheme": "CCF", "code": "315", "meaning": "Isocortex" }]
+      },
+      {
+        "id": "184",
+        "name": "Frontal pole, cerebral cortex",
+        "label_value": ["68", "667", "526157192", "526157196", "526322264"],
+        "color": [0.149, 0.561, 0.271],
+        "designations": [{ "scheme": "CCF", "code": "184", "meaning": "Frontal pole, cerebral cortex" }]
+      },
+      {
+        "id": "68",
+        "name": "Frontal pole, layer 1",
+        "label_value": 68,
+        "color": [0.149, 0.561, 0.271],
+        "designations": [{ "scheme": "CCF", "code": "68", "meaning": "Frontal pole, layer 1" }]
+      },
+      {
+        "id": "667",
+        "name": "Frontal pole, layer 2/3",
+        "label_value": 667,
+        "color": [0.149, 0.561, 0.271],
+        "designations": [{ "scheme": "CCF", "code": "667", "meaning": "Frontal pole, layer 2/3" }]
+      }
+    ]
+  }
+}
+```
+
+The full CCF ontology follows this pattern for all 1327 structures. A reader that supports string references can reconstruct the complete hierarchy from the `label_value` arrays alone. A reader that does not support string references can still process the leaf segments and render the full-resolution labelmap; it simply cannot resolve the aggregate regions.
+
+### 7.6 Minimal
 
 A segmentation with the smallest useful metadata:
 
 ```json
 "extensions": {
-  "slicerseg": {
-    "version": "1.0",
+  "seg": {
+    "version": "1.1",
     "segments": [
       { "id": "S1", "label_value": 1, "name": "Liver" },
       { "id": "S2", "label_value": 2, "name": "Spleen" }
@@ -907,7 +774,7 @@ A segmentation with the smallest useful metadata:
 
 ## 8. Design Notes
 
-**Why `slicerseg`, not `segmentation`.** This extension's data model — layers, `source_representation`, `contained_representations`, `conversion_parameters`, `reference_extent_offset` — is inherited directly from 3D Slicer's `.seg.nrrd` format. Naming it `slicerseg` makes that lineage explicit and reserves the generic `segmentation` (or `seg`) namespace for a future platform-neutral extension that retains the broadly useful parts (segments, designations, label unions, DICOM classification) without the Slicer-specific fields.
+**Why `seg`, not `segmentation`.** This extension's data model — layers, `source_representation`, `contained_representations`, `conversion_parameters`, `reference_extent_offset` — is inherited directly from 3D Slicer's `.seg.nrrd` format. Naming it `seg` makes that lineage explicit and reserves the generic `segmentation` (or `seg`) namespace for a future platform-neutral extension that retains the broadly useful parts (segments, designations, label unions, DICOM classification) without the Slicer-specific fields.
 
 **Why `designations` is an array.** A segment is a real anatomical or pathological entity. Different communities identify that entity using different coding systems. A kidney is SNOMED 64033007, FMA 7203, TA2 5765, and NCIt C12415 — simultaneously. An array of coded entries makes this multiplicity explicit and avoids privileging any single ontology. The first entry is the preferred identification.
 
@@ -924,3 +791,9 @@ A segmentation with the smallest useful metadata:
 **Relationship to DICOM SEG.** The `dicom` classification object and the coded entry shape (`scheme`/`code`/`meaning`) are designed to be losslessly convertible to and from DICOM Segmentation IOD segment descriptions. The coded entry triplet maps directly to DICOM's `CodeSequence` items. The Slicer-specific "context name" strings are omitted — they named UI lookup tables, not data semantics.
 
 **Why `label_value` accepts arrays.** Overlapping structures are common in medical imaging — a tumor invading an organ, nested anatomical regions, or probabilistic boundaries. The layer mechanism handles this by duplicating the spatial volume, which is correct but expensive. Label unions offer an alternative: decompose the scene into non-overlapping islands (each with a unique label value in a single volume), then define each semantic segment as the union of one or more islands. The overlap region becomes a shared island. This is lossless, compact, and scales to many overlapping structures without adding dimensions. The two mechanisms coexist because they serve different workflows: layers are natural when segments are authored independently; label unions are natural when the decomposition into non-overlapping regions is computed upfront (e.g., by a segmentation pipeline that produces disjoint partitions).
+
+**Why string entries in `label_value` reference by `id`, not by array index.** Array indices are positional and change when segments are reordered, inserted, or deleted. The `id` field is defined as stable — it does not change when the segment is renamed or reordered. Using `id` as the reference target means the reference graph remains valid across edits that do not change segment identity.
+
+**Why the reference graph must be acyclic.** A cycle would make the effective voxel set of a segment depend on itself, which is undefined. An acyclic directed graph is sufficient to represent all biologically meaningful hierarchies, including ontologies with multiple inheritance, as long as there is no circularity. Writers should validate acyclicity before serializing; readers encountering a cycle should treat the affected segments' effective voxel sets as undefined and report an error.
+
+**Why string references do not carry layer information.** The `layer` field of a referenced segment is authoritative for that segment's voxel data. When resolving a reference chain, each segment's layer is taken from its own definition. This avoids needing to re-specify layer context at every reference site and ensures that layer assignments are defined once, close to the data they describe.

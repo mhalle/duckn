@@ -8,8 +8,8 @@ from typing import Any
 from .models import (
     CodedEntry,
     ConversionParameter,
-    Designation,
     DicomClassification,
+    Identifier,
     Segment,
     SegmentationExtension,
     TerminologyEntry,
@@ -85,10 +85,10 @@ def _parse_coded_entry(triplet: str) -> CodedEntry | None:
 
 def _parse_terminology_entry(
     raw: str,
-) -> tuple[DicomClassification | None, Designation | None, set[str]]:
+) -> tuple[DicomClassification | None, dict[str, Identifier] | None, set[str]]:
     """Parse a TerminologyEntry value (``~``-delimited, 7 slots).
 
-    Returns (dicom, designation, schemes_seen).
+    Returns (dicom, identifiers, schemes_seen).
     """
     slots = raw.split("~")
     # Pad to 7 slots
@@ -118,28 +118,27 @@ def _parse_terminology_entry(
             anatomic_region_modifier=anatomic_region_modifier,
         )
 
-    designation: Designation | None = None
-    if type_entry is not None:
-        designation = Designation(
-            scheme=type_entry.scheme,
-            code=type_entry.code,
-            meaning=type_entry.meaning,
-            modifier=type_modifier,
-        )
+    # Build identifiers from the type entry (primary concept)
+    identifiers: dict[str, Identifier] | None = None
+    if type_entry is not None and type_entry.scheme and type_entry.code:
+        scheme_key = type_entry.scheme.lower()
+        identifiers = {
+            scheme_key: Identifier(id=type_entry.code, name=type_entry.meaning or ""),
+        }
 
-    return dicom, designation, schemes
+    return dicom, identifiers, schemes
 
 
 def _parse_tags(
     raw: str,
-) -> tuple[dict[str, str] | None, DicomClassification | None, list[Designation] | None, set[str]]:
+) -> tuple[dict[str, str] | None, DicomClassification | None, dict[str, Identifier] | None, set[str]]:
     """Parse ``SegmentN_Tags`` value.
 
-    Returns (tags, dicom, designations, schemes_seen).
+    Returns (tags, dicom, identifiers, schemes_seen).
     """
     tags: dict[str, str] = {}
     dicom: DicomClassification | None = None
-    designations: list[Designation] | None = None
+    identifiers: dict[str, Identifier] | None = None
     all_schemes: set[str] = set()
 
     for pair in raw.split("|"):
@@ -153,16 +152,14 @@ def _parse_tags(
         value = pair[colon_idx + 1 :]
 
         if key == "TerminologyEntry":
-            dicom, designation, schemes = _parse_terminology_entry(value)
+            dicom, identifiers, schemes = _parse_terminology_entry(value)
             all_schemes |= schemes
-            if designation is not None:
-                designations = [designation]
         else:
             # Strip "Segmentation." prefix from tag keys
             tag_key = key.removeprefix("Segmentation.")
             tags[tag_key] = value
 
-    return tags or None, dicom, designations, all_schemes
+    return tags or None, dicom, identifiers, all_schemes
 
 
 def _parse_segment(
@@ -184,12 +181,8 @@ def _parse_segment(
     kwargs: dict[str, Any] = {"id": seg_id}
     if name is not None:
         kwargs["name"] = name
-    if name_auto is not None:
-        kwargs["name_auto_generated"] = _parse_bool(name_auto)
     if color_raw is not None:
         kwargs["color"] = _parse_float_list(color_raw)
-    if color_auto is not None:
-        kwargs["color_auto_generated"] = _parse_bool(color_auto)
     if label_raw is not None:
         kwargs["label_value"] = _parse_label_value(label_raw)
     else:
@@ -200,15 +193,29 @@ def _parse_segment(
         kwargs["extent"] = _parse_int_list(extent_raw)
 
     schemes: set[str] = set()
+    metadata: dict[str, Any] = {}
+
     if tags_raw is not None:
-        tags, dicom, designations, tag_schemes = _parse_tags(tags_raw)
+        tags, dicom, identifiers, tag_schemes = _parse_tags(tags_raw)
         schemes = tag_schemes
-        if tags is not None:
-            kwargs["tags"] = tags
+        if identifiers is not None:
+            kwargs["identifiers"] = identifiers
         if dicom is not None:
-            kwargs["dicom"] = dicom
-        if designations is not None:
-            kwargs["designations"] = designations
+            metadata["dicom"] = dicom.model_dump(exclude_none=True)
+        if tags is not None:
+            metadata["slicer"] = {"tags": tags}
+
+    # Slicer-specific per-segment fields → metadata.slicer
+    slicer_meta: dict[str, Any] = metadata.get("slicer", {})
+    if name_auto is not None:
+        slicer_meta["name_auto_generated"] = _parse_bool(name_auto)
+    if color_auto is not None:
+        slicer_meta["color_auto_generated"] = _parse_bool(color_auto)
+    if slicer_meta:
+        metadata["slicer"] = slicer_meta
+
+    if metadata:
+        kwargs["metadata"] = metadata
 
     return Segment(**kwargs), schemes
 
@@ -258,21 +265,27 @@ def parse_seg_keyvalues(
     if rep_raw is not None:
         ext_kwargs["source_representation"] = _normalize_representation(rep_raw)
 
+    # Slicer-specific extension-level fields → metadata.slicer
+    slicer_ext_meta: dict[str, Any] = {}
+
     contained_raw = keyvalues.get("Segmentation_ContainedRepresentationNames")
     if contained_raw is not None:
         reps = [_normalize_representation(r) for r in contained_raw.split("|") if r.strip()]
         if reps:
-            ext_kwargs["contained_representations"] = reps
+            slicer_ext_meta["contained_representations"] = reps
 
     conv_raw = keyvalues.get("Segmentation_ConversionParameters")
     if conv_raw is not None:
         params = _parse_conversion_parameters(conv_raw)
         if params:
-            ext_kwargs["conversion_parameters"] = params
+            slicer_ext_meta["conversion_parameters"] = params
 
     ref_offset_raw = keyvalues.get("Segmentation_ReferenceImageExtentOffset")
     if ref_offset_raw is not None:
-        ext_kwargs["reference_extent_offset"] = _parse_int_list(ref_offset_raw)
+        slicer_ext_meta["reference_extent_offset"] = _parse_int_list(ref_offset_raw)
+
+    if slicer_ext_meta:
+        ext_kwargs["metadata"] = {"slicer": slicer_ext_meta}
 
     # --- Per-segment ---
     all_schemes: set[str] = set()

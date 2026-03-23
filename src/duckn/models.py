@@ -331,32 +331,43 @@ class ConversionParameter(BaseModel):
     description: str | None = None
 
 
-class CodedEntry(BaseModel):
-    """Reusable coded-concept shape (scheme/code/meaning)."""
+class Identifier(BaseModel):
+    """A concept reference in a terminology system."""
 
     model_config = ConfigDict(extra="forbid")
 
-    scheme: str
-    code: str
-    meaning: str
+    id: str
+    name: str
+
+
+class CodedEntry(BaseModel):
+    """Reusable coded-concept shape (scheme/code/meaning).
+
+    Retained for backward compatibility with DICOM classification
+    and legacy designation round-tripping.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    scheme: str | None = None
+    code: str | None = None
+    meaning: str | None = None
+    id: str | None = None
+    name: str | None = None
     display: dict[str, str] | None = None
     url: str | None = None
 
 
-class Designation(CodedEntry):
-    """A coded entry with an optional modifier."""
-
-    modifier: CodedEntry | None = None
-
-
 class DicomClassification(BaseModel):
+    """DICOM SEG classification (lives in segment metadata.dicom)."""
+
     model_config = ConfigDict(extra="forbid")
 
-    category: CodedEntry | None = None
-    type: CodedEntry | None = None
-    type_modifier: CodedEntry | None = None
-    anatomic_region: CodedEntry | None = None
-    anatomic_region_modifier: CodedEntry | None = None
+    category: Identifier | CodedEntry | None = None
+    type: Identifier | CodedEntry | None = None
+    type_modifier: Identifier | CodedEntry | None = None
+    anatomic_region: Identifier | CodedEntry | None = None
+    anatomic_region_modifier: Identifier | CodedEntry | None = None
 
 
 class Segment(BaseModel):
@@ -365,15 +376,12 @@ class Segment(BaseModel):
     id: str
     name: str | None = None
     display: dict[str, str] | None = None
-    name_auto_generated: bool | None = None
     color: list[float] | None = None
-    color_auto_generated: bool | None = None
     label_value: int | list[int]
     layer: int | None = None
     extent: list[int] | None = None
-    designations: list[Designation] | None = None
-    dicom: DicomClassification | None = None
-    tags: dict[str, str] | None = None
+    identifiers: dict[str, Identifier] | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class SegmentationExtension(BaseModel):
@@ -381,11 +389,9 @@ class SegmentationExtension(BaseModel):
 
     version: str
     source_representation: SourceRepresentation | None = None
-    contained_representations: list[str] | None = None
-    conversion_parameters: dict[str, ConversionParameter] | None = None
-    reference_extent_offset: list[int] | None = None
     terminologies: dict[str, TerminologyEntry] | None = None
     segments: list[Segment]
+    metadata: dict[str, Any] | None = None
     legacy: dict[str, Any] | None = None
 
 

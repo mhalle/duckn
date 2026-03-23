@@ -1183,7 +1183,7 @@ def _load_multiframe(
 
 
 # ---------------------------------------------------------------------------
-# DICOM SEG → slicerseg extension
+# DICOM SEG → seg extension
 # ---------------------------------------------------------------------------
 
 
@@ -1251,7 +1251,7 @@ def _cielab_to_rgb(L: float, a: float, b: float) -> list[float]:
 
 
 def _extract_seg_extension(ds: Any) -> SegmentationExtension | None:
-    """Extract a slicerseg extension from a DICOM SEG dataset."""
+    """Extract a seg extension from a DICOM SEG dataset."""
     seg_seq = getattr(ds, "SegmentSequence", None)
     if seg_seq is None or len(seg_seq) == 0:
         return None
@@ -1320,7 +1320,7 @@ def _extract_seg_extension(ds: Any) -> SegmentationExtension | None:
         if color is not None:
             seg_kwargs["color"] = color
         if dicom_class is not None:
-            seg_kwargs["dicom"] = dicom_class
+            seg_kwargs["metadata"] = {"dicom": dicom_class.model_dump(exclude_none=True)}
 
         segments.append(Segment(**seg_kwargs))
 
@@ -1611,7 +1611,7 @@ def build_duckn_metadata(
         if seg_ext is not None:
             if extensions is None:
                 extensions = {}
-            extensions["slicerseg"] = seg_ext.model_dump(exclude_none=True)
+            extensions["seg"] = seg_ext.model_dump(exclude_none=True)
 
     return DucknMetadata(
         version="1.0",
