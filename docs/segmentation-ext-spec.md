@@ -1,7 +1,7 @@
 # Segmentation Extension for duckn
 
 **Extension name:** `seg`
-**Version:** 1.1
+**Version:** 0.5
 **Status:** Draft
 
 ---
@@ -70,7 +70,7 @@ The `seg` extension is declared at the top level of the `"duckn"` object's `"ext
 Required. The version of this extension specification.
 
 ```json
-"version": "1.1"
+"version": "0.5"
 ```
 
 #### `source_representation`
@@ -447,7 +447,7 @@ A 256×256×128 binary labelmap segmentation with two segments in LPS space. Eac
       ],
       "extensions": {
         "seg": {
-          "version": "1.1",
+          "version": "0.5",
           "source_representation": "binary-labelmap",
           "contained_representations": ["binary-labelmap", "closed-surface"],
           "terminologies": {
@@ -569,7 +569,7 @@ A tumor partially overlapping the liver, represented as two segments in separate
       ],
       "extensions": {
         "seg": {
-          "version": "1.1",
+          "version": "0.5",
           "source_representation": "binary-labelmap",
           "segments": [
             {
@@ -631,7 +631,7 @@ The same tumor-liver overlap, represented as label unions in a single 3D volume:
       ],
       "extensions": {
         "seg": {
-          "version": "1.1",
+          "version": "0.5",
           "source_representation": "binary-labelmap",
           "segments": [
             {
@@ -665,7 +665,7 @@ A segmentation from a research pipeline using only FMA codes, no DICOM classific
 ```json
 "extensions": {
   "seg": {
-    "version": "1.1",
+    "version": "0.5",
     "source_representation": "binary-labelmap",
     "terminologies": {
       "FMA": { "name": "Foundational Model of Anatomy", "url": "http://purl.org/sig/ont/fma/" }
@@ -695,7 +695,7 @@ A whole-brain mouse atlas segmentation where voxel label values are Allen CCF st
 ```json
 "extensions": {
   "seg": {
-    "version": "1.1",
+    "version": "0.5",
     "source_representation": "binary-labelmap",
     "terminologies": {
       "CCF": {
@@ -761,7 +761,7 @@ A segmentation with the smallest useful metadata:
 ```json
 "extensions": {
   "seg": {
-    "version": "1.1",
+    "version": "0.5",
     "segments": [
       { "id": "S1", "label_value": 1, "name": "Liver" },
       { "id": "S2", "label_value": 2, "name": "Spleen" }

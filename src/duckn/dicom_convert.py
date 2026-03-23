@@ -1325,7 +1325,7 @@ def _extract_seg_extension(ds: Any) -> SegmentationExtension | None:
         segments.append(Segment(**seg_kwargs))
 
     return SegmentationExtension(
-        version="1.0",
+        version="0.5",
         source_representation=source_rep,
         segments=segments,
     )

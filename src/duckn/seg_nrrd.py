@@ -257,7 +257,7 @@ def parse_seg_keyvalues(
             remaining[key] = keyvalues[key]
 
     # --- Global fields ---
-    ext_kwargs: dict[str, Any] = {"version": "1.0"}
+    ext_kwargs: dict[str, Any] = {"version": "0.5"}
 
     master_rep = keyvalues.get("Segmentation_MasterRepresentation")
     source_rep = keyvalues.get("Segmentation_SourceRepresentation")
