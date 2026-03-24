@@ -1424,6 +1424,21 @@ def _build_samples(
             break
 
     # Split tags: find tags that vary across slices
+    # Exclude tags that are redundant with duckn geometry or array structure
+    _REDUNDANT_PER_SLICE_TAGS = frozenset({
+        "ImagePositionPatient",     # captured by samples[i].origin
+        "SliceLocation",            # derivable from origin
+        "InstanceNumber",           # it's the array index
+        "SOPInstanceUID",           # instance identity, not interpretation
+        "MediaStorageSOPInstanceUID",
+        "InstanceCreationDate",
+        "InstanceCreationTime",
+        "ContentDate",
+        "ContentTime",
+        "SmallestImagePixelValue",  # derivable from data
+        "LargestImagePixelValue",   # derivable from data
+    })
+
     per_slice_tags: list[dict[str, Any] | None] = [None] * n_slices
     has_varying_tags = False
 
@@ -1434,13 +1449,15 @@ def _build_samples(
             for ds in datasets
         ]
 
-        # Find keys that vary
+        # Find keys that vary (excluding redundant ones)
         all_keys = set()
         for t in all_tags:
             all_keys.update(t.keys())
 
         varying_keys: set[str] = set()
         for key in all_keys:
+            if key in _REDUNDANT_PER_SLICE_TAGS:
+                continue
             values = [t.get(key) for t in all_tags]
             ref = values[0]
             for v in values[1:]:
@@ -1450,11 +1467,6 @@ def _build_samples(
 
         if varying_keys:
             has_varying_tags = True
-            # Remove varying keys from the first dataset's tags
-            # (caller uses datasets[0] for series-level tags)
-            for key in varying_keys:
-                for t in all_tags:
-                    pass  # don't mutate here; we'll handle in the caller
 
             per_slice_tags = [
                 {k: t[k] for k in varying_keys if k in t}
