@@ -8,6 +8,11 @@
 #   "zmanifest @ git+https://github.com/mhalle/zmanifest.git",
 #   "zarr-zmp @ git+https://github.com/mhalle/zarr-zmp.git",
 # ]
+#
+# [tool.uv]
+# override-dependencies = [
+#   "zmanifest @ git+https://github.com/mhalle/zmanifest.git",
+# ]
 # ///
 """Build ZMP manifests for 100 NLST CT series in parallel.
 
