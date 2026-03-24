@@ -2448,6 +2448,175 @@ def zarr_to_dicom(
     pydicom.dcmwrite(str(output_path), ds, write_like_original=False)
 
 
+def zarr_to_dicom_seg(
+    input_path: str | Path,
+    output_path: str | Path,
+    *,
+    overwrite: bool = False,
+) -> None:
+    """Convert a duckn 3D labelmap to a DICOM LABELMAP Segmentation.
+
+    Creates a DICOM Segmentation IOD file using the LABELMAP type
+    (Supplement 243). Each voxel value is a segment number. One frame
+    per slice.
+
+    Parameters
+    ----------
+    input_path : path to the input duckn Zarr store (3D labelmap)
+    output_path : path for the output .dcm file
+    overwrite : if True, overwrite existing file
+    """
+    _require_pydicom()
+    import pydicom
+    from pydicom.dataset import Dataset
+    from pydicom.sequence import Sequence
+    from pydicom.uid import generate_uid, ExplicitVRLittleEndian
+
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(f"{output_path} already exists (use --overwrite)")
+
+    with open_store(input_path, mode="r") as store:
+        arr = zarr.open_array(store, mode="r")
+        data = arr[:]
+        duckn_attrs = arr.attrs.get("duckn", {})
+        meta = DucknMetadata(**duckn_attrs)
+
+    if data.ndim != 3:
+        raise ValueError(f"Expected 3D labelmap, got {data.ndim}D")
+
+    n_slices, rows, cols = data.shape
+    data = data.astype(np.uint16 if data.max() > 255 else np.uint8)
+
+    # Decompose geometry
+    if not meta.axes or len(meta.axes) < 3:
+        raise ValueError("Missing spatial axis metadata")
+
+    slice_dir = np.array(meta.axes[0].space_direction)
+    row_dir = np.array(meta.axes[1].space_direction)
+    col_dir = np.array(meta.axes[2].space_direction)
+
+    row_spacing = float(np.linalg.norm(row_dir))
+    col_spacing = float(np.linalg.norm(col_dir))
+    slice_spacing = float(np.linalg.norm(slice_dir))
+
+    col_cosines = row_dir / row_spacing if row_spacing > 0 else np.array([0, 1, 0])
+    row_cosines = col_dir / col_spacing if col_spacing > 0 else np.array([1, 0, 0])
+    origin = np.array(meta.space_origin) if meta.space_origin else np.zeros(3)
+
+    iop = row_cosines.tolist() + col_cosines.tolist()
+
+    # Get segment metadata
+    seg_ext = None
+    segments = []
+    if meta.extensions and "seg" in meta.extensions:
+        seg_ext = SegmentationExtension(**meta.extensions["seg"])
+        segments = seg_ext.segments
+
+    # Build DICOM dataset
+    ds = Dataset()
+    sop_class_uid = "1.2.840.10008.5.1.4.1.1.66.4"  # Segmentation Storage
+    sop_instance_uid = generate_uid()
+
+    ds.SOPClassUID = sop_class_uid
+    ds.SOPInstanceUID = sop_instance_uid
+    ds.Modality = "SEG"
+    ds.Manufacturer = "duckn"
+    ds.SegmentationType = "LABELMAP"
+    ds.ContentLabel = "DUCKN_SEG"
+    ds.ContentDescription = "duckn segmentation labelmap"
+
+    ds.Rows = rows
+    ds.Columns = cols
+    ds.NumberOfFrames = n_slices
+    ds.BitsAllocated = 8 if data.dtype == np.uint8 else 16
+    ds.BitsStored = ds.BitsAllocated
+    ds.HighBit = ds.BitsAllocated - 1
+    ds.PixelRepresentation = 0
+    ds.SamplesPerPixel = 1
+    ds.PhotometricInterpretation = "MONOCHROME2"
+    ds.LossyImageCompression = "00"
+    ds.SegmentsOverlap = "NO"
+
+    # Dimension Organization
+    ds.DimensionOrganizationType = "TILED_FULL"
+
+    # Shared Functional Groups
+    shared_fg = Dataset()
+    orient_item = Dataset()
+    orient_item.ImageOrientationPatient = iop
+    shared_fg.PlaneOrientationSequence = Sequence([orient_item])
+
+    measures_item = Dataset()
+    measures_item.PixelSpacing = [row_spacing, col_spacing]
+    measures_item.SliceThickness = meta.axes[0].thickness or slice_spacing
+    measures_item.SpacingBetweenSlices = slice_spacing
+    shared_fg.PixelMeasuresSequence = Sequence([measures_item])
+
+    ds.SharedFunctionalGroupsSequence = Sequence([shared_fg])
+
+    # Segment Sequence
+    seg_sequence = []
+    for seg in segments:
+        seg_item = Dataset()
+        seg_item.SegmentNumber = seg.label_value if isinstance(seg.label_value, int) else seg.label_value[0]
+        seg_item.SegmentLabel = seg.name or seg.id
+        seg_item.SegmentAlgorithmType = "AUTOMATIC"
+        seg_item.SegmentAlgorithmName = "duckn"
+
+        # Restore DICOM classification if present
+        dicom_class = (seg.metadata or {}).get("dicom", {})
+        if dicom_class:
+            for attr, seq_name in [
+                ("category", "SegmentedPropertyCategoryCodeSequence"),
+                ("type", "SegmentedPropertyTypeCodeSequence"),
+                ("anatomic_region", "AnatomicRegionSequence"),
+            ]:
+                entry = dicom_class.get(attr)
+                if entry:
+                    code_item = Dataset()
+                    code_item.CodeValue = entry.get("code") or entry.get("id", "")
+                    code_item.CodingSchemeDesignator = entry.get("scheme", "SCT")
+                    code_item.CodeMeaning = entry.get("meaning") or entry.get("name", "")
+                    setattr(seg_item, seq_name, Sequence([code_item]))
+
+        seg_sequence.append(seg_item)
+
+    ds.SegmentSequence = Sequence(seg_sequence)
+
+    # Per-Frame Functional Groups
+    per_frame = []
+    for k in range(n_slices):
+        frame_fg = Dataset()
+
+        pos_item = Dataset()
+        frame_pos = origin + k * slice_dir
+        pos_item.ImagePositionPatient = frame_pos.tolist()
+        frame_fg.PlanePositionSequence = Sequence([pos_item])
+
+        per_frame.append(frame_fg)
+
+    ds.PerFrameFunctionalGroupsSequence = Sequence(per_frame)
+
+    # Pixel data
+    ds.PixelData = data.tobytes()
+
+    # File Meta
+    ds.file_meta = Dataset()
+    ds.file_meta.MediaStorageSOPClassUID = sop_class_uid
+    ds.file_meta.MediaStorageSOPInstanceUID = sop_instance_uid
+    ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    ds.file_meta.ImplementationClassUID = "1.2.826.0.1.3680043.8.498.1"
+    ds.file_meta.ImplementationVersionName = "duckn-0.1.0"
+
+    ds.is_little_endian = True
+    ds.is_implicit_VR = False
+
+    pydicom.dcmwrite(str(output_path), ds, write_like_original=False)
+
+
 # ---------------------------------------------------------------------------
 # Local ZMP builder
 # ---------------------------------------------------------------------------
