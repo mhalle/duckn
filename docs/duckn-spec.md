@@ -331,29 +331,29 @@ Omit for axes where units are meaningless (e.g., color component axes).
 
 An array with one entry per sample along this axis, describing per-sample variation that the uniform model (single `space_direction`, single `thickness`) cannot represent. If present, its length must equal the axis size in `shape`.
 
-Each entry is an object with the following optional fields:
+Each entry is an object. All fields are optional — an empty object `{}` means "use the defaults from the axis-level fields."
 
-- **`thickness`** — per-sample thickness. If omitted, the sample inherits the axis-level `thickness`.
-- **`position`** — a scalar giving this sample's coordinate value along this axis. Replaces only this axis's contribution to the spatial position; other axes use their standard computed values. Useful for non-uniform spacing (e.g., variable slice spacing in CT).
-- **`origin`** — a vector with the same number of components as `space_origin`, giving the complete spatial origin of this sample. Useful when the origin shifts in multiple spatial dimensions per sample (e.g., gantry tilt in CT, where each slice has a different in-plane offset).
-- **`extensions`** — per-sample extension metadata, same structure as the axis-level `extensions`. For example, a DICOM extension could store per-slice acquisition parameters.
+- **`position`** — a scalar giving this sample's coordinate value along this axis. For spatial axes, this is the distance along `space_direction` from the origin. For temporal axes, this is the timestamp in the axis `unit`. If absent, the position is computed from `space_direction` as usual (uniform spacing).
+- **`origin`** — a vector with the same number of components as `space_origin`, giving the full world-space position of this sample. Overrides the position derived from `space_origin` + index × `space_direction`. Use when the origin shifts in multiple spatial dimensions per sample (e.g., gantry tilt, non-parallel slices in cardiac MR).
+- **`thickness`** — per-sample thickness. If absent, the sample inherits the axis-level `thickness`.
+- **`directions`** — per-sample orientation matrix (array of direction vectors). Overrides the axis-level `space_direction` vectors for all spatial axes at this sample. Use for non-parallel slices (e.g., freehand ultrasound, rotational acquisitions).
+- **`metadata`** — per-sample open metadata dict, following the same pattern as segment-level `metadata`. Keyed by application or standard name. For example, a DICOM key could store per-slice acquisition parameters (`InstanceNumber`, `TriggerTime`, etc.).
 
-`position` and `origin` are mutually exclusive. `position` is a shortcut for the common case where only one spatial coordinate varies per sample.
+`position` and `origin` can coexist — `origin` is authoritative for the world position, `position` is the scalar projection along the axis direction (convenience/validation). Either can appear alone, or neither (defaults to uniform spacing).
 
-If all entries in `position` (or `origin`) are provided, they override the uniform spacing model for this axis entirely. If `position` or `origin` is absent from all entries, spacing is uniform and computed from `space_direction` as usual.
-
-Example: a CT scan with 3 slices at non-uniform Z positions:
+Example: non-uniform spacing with per-sample thickness:
 
 ```json
 {
   "kind": "space",
   "centering": "cell",
   "space_direction": [0, 0, 2.5],
+  "thickness": 2.5,
   "unit": "mm",
   "samples": [
-    { "position": 0.0 },
+    { "position": 0.0, "thickness": 3.0 },
     { "position": 2.5 },
-    { "position": 5.5 }
+    { "position": 5.5, "thickness": 2.0 }
   ]
 }
 ```
@@ -374,7 +374,17 @@ Example: per-slice gantry tilt with shifted origins:
 }
 ```
 
-`samples` is allowed on any axis — spatial, temporal, or otherwise. A time axis with irregular temporal sampling can use `position` to specify per-frame timestamps.
+Example: per-sample DICOM metadata:
+
+```json
+"samples": [
+  { "position": 0.0, "metadata": {"dicom": {"InstanceNumber": 1, "TriggerTime": 0.0}} },
+  { "position": 2.0, "metadata": {"dicom": {"InstanceNumber": 2, "TriggerTime": 42.5}} },
+  { "position": 4.0, "metadata": {"dicom": {"InstanceNumber": 3, "TriggerTime": 85.0}} }
+]
+```
+
+`samples` is allowed on any axis — spatial, temporal, or otherwise. A time axis with irregular temporal sampling can use `position` to specify per-frame timestamps. An empty object `{}` at any index means "this sample uses the uniform defaults."
 
 #### `extensions`
 
