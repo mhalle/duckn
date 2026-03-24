@@ -67,6 +67,7 @@ class DicomGeometry:
     space_origin: list[float]
     space_directions: list[list[float]]  # C order: [slice, row, col]
     slice_thickness: float | None
+    samples: list[dict[str, Any]] | None  # per-slice sample metadata
     rescale_slope: float | None
     rescale_intercept: float | None
     rescale_type: str | None
@@ -397,6 +398,9 @@ def _compute_geometry(
     cols = int(ds0.Columns)
     n_slices = len(datasets)
 
+    # Build per-slice samples with origins
+    samples = [{"origin": pos.tolist()} for pos in positions]
+
     geometry = DicomGeometry(
         shape=(n_slices, rows, cols),
         dtype=dtype,
@@ -404,6 +408,7 @@ def _compute_geometry(
         space_origin=space_origin,
         space_directions=space_directions,
         slice_thickness=slice_thickness,
+        samples=samples,
         rescale_slope=rescale_slope,
         rescale_intercept=rescale_intercept,
         rescale_type=rescale_type,
@@ -530,6 +535,7 @@ def _load_2d_series(
         space_origin=space_origin,
         space_directions=space_directions,
         slice_thickness=None,
+        samples=None,
         rescale_slope=rescale_slope,
         rescale_intercept=rescale_intercept,
         rescale_type=rescale_type,
@@ -679,6 +685,7 @@ def _load_single_frame_series(
         space_origin=geom_3d.space_origin,
         space_directions=geom_3d.space_directions,
         slice_thickness=geom_3d.slice_thickness,
+        samples=geom_3d.samples,
         rescale_slope=geom_3d.rescale_slope,
         rescale_intercept=geom_3d.rescale_intercept,
         rescale_type=geom_3d.rescale_type,
@@ -795,6 +802,9 @@ def _load_seg_labelmap(
         (row_cos * col_spacing).tolist(),
     ]
 
+    # Per-slice samples with origins
+    seg_samples = [{"origin": fi["position"]} for fi in frame_infos]
+
     geometry = DicomGeometry(
         shape=volume.shape,
         dtype=dtype,
@@ -802,6 +812,7 @@ def _load_seg_labelmap(
         space_origin=space_origin,
         space_directions=space_directions,
         slice_thickness=shared_st,
+        samples=seg_samples,
         rescale_slope=None,
         rescale_intercept=None,
         rescale_type=None,
@@ -939,6 +950,12 @@ def _load_seg(
 
     slice_thickness = shared_st
 
+    # Per-slice samples with origins from unique Z positions
+    z_to_origin = {}
+    for fr in frame_records:
+        z_to_origin[fr["z_proj"]] = fr["position"]
+    seg_bin_samples = [{"origin": z_to_origin[z]} for z in z_sorted]
+
     geometry = DicomGeometry(
         shape=volume.shape,
         dtype=np.dtype(np.uint8),
@@ -946,6 +963,7 @@ def _load_seg(
         space_origin=space_origin,
         space_directions=space_directions,
         slice_thickness=slice_thickness,
+        samples=seg_bin_samples,
         rescale_slope=None,
         rescale_intercept=None,
         rescale_type=None,
@@ -1137,6 +1155,14 @@ def _load_multiframe(
         if rt is not None:
             rescale_type = str(rt)
 
+        # Per-slice samples (from Z positions)
+        samples = [{"origin": min_z_frame["ImagePositionPatient"]}]  # placeholder
+        # Build proper per-slice origins for each Z position
+        z_to_frame = {}
+        for fi in frame_infos:
+            z_to_frame[fi["z_proj"]] = fi["ImagePositionPatient"]
+        samples = [{"origin": z_to_frame[z]} for z in z_values]
+
         geometry = DicomGeometry(
             shape=volume.shape,
             dtype=dtype,
@@ -1144,6 +1170,7 @@ def _load_multiframe(
             space_origin=space_origin,
             space_directions=space_directions,
             slice_thickness=slice_thickness,
+            samples=samples,
             rescale_slope=rescale_slope,
             rescale_intercept=rescale_intercept,
             rescale_type=rescale_type,
@@ -1450,7 +1477,7 @@ def _build_samples(
                 kwargs["origin"] = positions_3d[i]
 
         if has_varying_tags and per_slice_tags[i]:
-            kwargs["extensions"] = {"dicom": per_slice_tags[i]}
+            kwargs["metadata"] = {"dicom": per_slice_tags[i]}
 
         samples.append(SampleMetadata(**kwargs))
 
@@ -1939,6 +1966,9 @@ def geometry_from_headers(
     if rt is not None:
         rescale_type = str(rt)
 
+    # Per-slice samples with origins
+    samples = [{"origin": pos.tolist()} for pos in positions]
+
     return DicomGeometry(
         shape=(len(datasets), rows, cols),
         dtype=dtype,
@@ -1946,6 +1976,7 @@ def geometry_from_headers(
         space_origin=space_origin,
         space_directions=space_directions,
         slice_thickness=slice_thickness,
+        samples=samples,
         rescale_slope=rescale_slope,
         rescale_intercept=rescale_intercept,
         rescale_type=rescale_type,

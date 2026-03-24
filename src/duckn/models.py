@@ -192,28 +192,18 @@ class ValueTransform(BaseModel):
 class SampleMetadata(BaseModel):
     """Per-sample metadata for a single position along an axis.
 
-    Used to describe non-uniform spacing, gantry tilt, or per-sample
-    domain metadata. When ``samples`` is present on an axis, there must
-    be exactly one entry per sample along that axis.
-
-    ``position`` and ``origin`` are mutually exclusive: ``position`` is
-    a scalar shortcut for axes where only one spatial coordinate varies,
-    while ``origin`` provides the full multi-dimensional sample origin
-    (same length as the top-level ``space_origin``).
+    All fields are optional. An empty object means "use axis defaults."
+    When ``samples`` is present on an axis, there must be exactly one
+    entry per sample along that axis.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    thickness: float | None = None
     position: float | None = None
     origin: list[float] | None = None
-    extensions: dict[str, Any] | None = None
-
-    @model_validator(mode="after")
-    def _position_origin_exclusive(self) -> SampleMetadata:
-        if self.position is not None and self.origin is not None:
-            raise ValueError("position and origin are mutually exclusive")
-        return self
+    thickness: float | None = None
+    directions: list[list[float]] | None = None
+    metadata: dict[str, Any] | None = None
 
 
 class AxisMetadata(BaseModel):
