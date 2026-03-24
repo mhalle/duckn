@@ -72,17 +72,25 @@ def main():
         nonlocal completed, failed
         out = os.path.join(args.output, f"{uuid}.zmp")
         async with sem:
-            try:
-                await async_build_idc_zmp(uuid, out, overwrite=True)
-                completed += 1
-                if completed % 10 == 0:
-                    elapsed = time.perf_counter() - t_start
-                    rate = completed / elapsed
-                    eta = (len(uuids) - completed) / rate if rate > 0 else 0
-                    print(f"  {completed}/{len(uuids)} done  ({rate:.1f}/s, ETA {eta:.0f}s)")
-            except Exception as e:
-                failed += 1
-                print(f"  FAILED {uuid[:12]}: {e}", file=sys.stderr)
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    await async_build_idc_zmp(uuid, out, overwrite=True)
+                    completed += 1
+                    if completed % 10 == 0:
+                        elapsed = time.perf_counter() - t_start
+                        rate = completed / elapsed
+                        eta = (len(uuids) - completed) / rate if rate > 0 else 0
+                        print(f"  {completed}/{len(uuids)} done  ({rate:.1f}/s, ETA {eta:.0f}s)")
+                    break
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        wait = 2 ** attempt
+                        print(f"  RETRY {uuid[:12]} (attempt {attempt+2}/{max_retries}, wait {wait}s): {e}", file=sys.stderr)
+                        await asyncio.sleep(wait)
+                    else:
+                        failed += 1
+                        print(f"  FAILED {uuid[:12]}: {e}", file=sys.stderr)
 
     async def build_all():
         sem = asyncio.Semaphore(args.concurrency)
