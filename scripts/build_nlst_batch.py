@@ -70,7 +70,7 @@ def main():
 
     async def build_one(i, uuid, sem):
         nonlocal completed, failed
-        out = os.path.join(args.output, f"{i:04d}.zmp")
+        out = os.path.join(args.output, f"{uuid}.zmp")
         async with sem:
             try:
                 await async_build_idc_zmp(uuid, out, overwrite=True)
@@ -96,8 +96,8 @@ def main():
 
     # Summary
     sizes = []
-    for i in range(len(uuids)):
-        p = os.path.join(args.output, f"{i:04d}.zmp")
+    for uuid in uuids:
+        p = os.path.join(args.output, f"{uuid}.zmp")
         if os.path.exists(p):
             sizes.append(os.path.getsize(p))
 
