@@ -1,10 +1,11 @@
 # /// script
 # dependencies = [
-#   "duckn",
+#   "duckn @ git+https://github.com/mhalle/duckn.git",
 #   "idc-index",
 #   "httpx[http2]",
 #   "pydicom",
 #   "pyarrow",
+#   "zmanifest @ git+https://github.com/mhalle/zmanifest.git",
 #   "zarr-zmp @ git+https://github.com/mhalle/zarr-zmp.git",
 # ]
 # ///
