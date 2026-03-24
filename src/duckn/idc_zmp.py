@@ -591,6 +591,12 @@ async def async_build_idc_zmp(
     )
     builder.add("zarr.json", text=zarr_json_text)
 
+    # Populate archive metadata row with the duckn object for fast DuckDB search
+    builder.set_archive_metadata({
+        "idc_series_uuid": series_uuid,
+        "duckn": meta.model_dump(exclude_none=True),
+    })
+
     # For compressed DICOM, scan encapsulated frame offsets in parallel.
     if is_compressed:
         import asyncio as _aio
