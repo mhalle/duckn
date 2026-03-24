@@ -2400,8 +2400,8 @@ def zarr_to_dicom(
         # Per-slice DICOM tags from samples
         if slice_axis.samples and z_idx < len(slice_axis.samples):
             sample = slice_axis.samples[z_idx]
-            if sample.extensions and "dicom" in sample.extensions:
-                for keyword, value in sample.extensions["dicom"].items():
+            if sample.metadata and "dicom" in sample.metadata:
+                for keyword, value in sample.metadata["dicom"].items():
                     try:
                         _restore_tag(frame_fg, keyword, value)
                     except Exception:
