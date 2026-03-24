@@ -1,10 +1,12 @@
 # /// script
+# requires-python = ">=3.11"
 # dependencies = [
 #   "duckn @ git+https://github.com/mhalle/duckn.git",
 #   "idc-index",
 #   "httpx[http2]",
 #   "pydicom",
 #   "pyarrow",
+#   "numpy<2.1",
 #   "zmanifest @ git+https://github.com/mhalle/zmanifest.git",
 #   "zarr-zmp @ git+https://github.com/mhalle/zarr-zmp.git",
 # ]
@@ -12,6 +14,7 @@
 # [tool.uv]
 # override-dependencies = [
 #   "zmanifest @ git+https://github.com/mhalle/zmanifest.git",
+#   "numpy<2.1",
 # ]
 # ///
 """Build ZMP manifests for 100 NLST CT series in parallel.
