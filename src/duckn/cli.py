@@ -590,33 +590,36 @@ def _resolve_idc_identifier(identifier: str) -> str:
 
 @cli.command("from-dicomweb")
 @click.argument("dicomweb_url", type=str)
-@click.argument("study_uid", type=str)
 @click.argument("series_uid", type=str)
 @click.argument("output_path", type=click.Path())
+@click.option("--study", "study_uid", default=None, help="StudyInstanceUID (auto-discovered if omitted)")
 @click.option("--no-tags", is_flag=True, help="Skip DICOM tag extraction")
 @click.option("--overwrite", is_flag=True, help="Overwrite existing output")
 def from_dicomweb(
     dicomweb_url: str,
-    study_uid: str,
     series_uid: str,
     output_path: str,
+    study_uid: str | None,
     no_tags: bool,
     overwrite: bool,
 ) -> None:
     """Build a ZMP manifest from a DICOMweb server.
 
     Uses a single WADO-RS metadata request to build a virtual ZMP with
-    per-frame WADO-RS URLs. No pixel data is fetched.
+    DICOMweb resolve entries. No pixel data is fetched.
+
+    StudyInstanceUID is auto-discovered via QIDO-RS if not provided.
 
     \b
     Example:
-      duckn from-dicomweb https://server/dicomWeb 1.2.840... 1.2.840... out.zmp
+      duckn from-dicomweb https://server/dicomWeb 1.2.840... out.zmp
+      duckn from-dicomweb https://server/dicomWeb 1.2.840... out.zmp --study 1.2.840...
     """
     from .idc_zmp import build_dicomweb_zmp
 
     build_dicomweb_zmp(
-        dicomweb_url, study_uid, series_uid, output_path,
-        tags=not no_tags, overwrite=overwrite,
+        dicomweb_url, series_uid, output_path,
+        study_uid=study_uid, tags=not no_tags, overwrite=overwrite,
     )
     click.echo(f"Wrote {output_path}")
 

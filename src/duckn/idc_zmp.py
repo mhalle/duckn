@@ -828,12 +828,29 @@ def _dicom_json_value(instance: dict, tag_code: str) -> Any:
     return values
 
 
+def _qido_find_study(client: "httpx.Client", dicomweb_url: str, series_uid: str) -> str:
+    """Look up StudyInstanceUID for a series via QIDO-RS."""
+    resp = client.get(
+        f"{dicomweb_url}/series",
+        params={"SeriesInstanceUID": series_uid},
+        headers={"Accept": "application/dicom+json"},
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if not data:
+        raise ValueError(f"Series not found via QIDO-RS: {series_uid}")
+    study_uid = _dicom_json_value(data[0], "0020000D")
+    if not study_uid:
+        raise ValueError("No StudyInstanceUID in QIDO-RS response")
+    return study_uid
+
+
 def build_dicomweb_zmp(
     dicomweb_url: str,
-    study_uid: str,
     series_uid: str,
     output_path: str | Path,
     *,
+    study_uid: str | None = None,
     tags: bool = True,
     overwrite: bool = False,
 ) -> Path:
@@ -841,17 +858,17 @@ def build_dicomweb_zmp(
 
     Fetches instance metadata via WADO-RS (one request for all instances),
     builds duckn spatial metadata from DICOM geometry fields, and creates
-    a ZMP with WADO-RS frame retrieval URLs as chunk URIs.
+    a ZMP with per-frame DICOMweb resolve entries.
 
-    No pixel data is fetched. The ZMP uses relative URIs off the
-    DICOMweb series base URL stored in the manifest's base_uri.
+    No pixel data is fetched. The ZMP stores DICOM UIDs in a ``dicomweb``
+    resolve scheme; the DICOMweb endpoint URL is provided at load time.
 
     Parameters
     ----------
     dicomweb_url : DICOMweb base URL (e.g. "https://server/dicomWeb")
-    study_uid : StudyInstanceUID
     series_uid : SeriesInstanceUID
     output_path : path for the output .zmp file
+    study_uid : StudyInstanceUID (auto-discovered via QIDO-RS if omitted)
     tags : if True, include DICOM tags in metadata
     overwrite : if True, overwrite existing file
 
@@ -866,11 +883,15 @@ def build_dicomweb_zmp(
     if output_path.exists() and not overwrite:
         raise FileExistsError(f"{output_path} already exists")
 
-    # Base URL for this series
-    series_base = f"{dicomweb_url}/studies/{study_uid}/series/{series_uid}"
-
     client = httpx.Client(timeout=60, follow_redirects=True)
     try:
+        # Auto-discover study UID if not provided
+        if study_uid is None:
+            study_uid = _qido_find_study(client, dicomweb_url, series_uid)
+
+        # Base URL for this series
+        series_base = f"{dicomweb_url}/studies/{study_uid}/series/{series_uid}"
+
         # Fetch all instance metadata in one request
         meta_url = f"{series_base}/metadata"
         resp = client.get(meta_url, headers={"Accept": "application/dicom+json"})
@@ -894,6 +915,8 @@ def build_dicomweb_zmp(
     iop = _dicom_json_value(inst0, T["ImageOrientationPatient"])
     slice_thickness = _dicom_json_value(inst0, T["SliceThickness"])
     modality = _dicom_json_value(inst0, T["Modality"])
+    rescale_slope = _dicom_json_value(inst0, T["RescaleSlope"])
+    rescale_intercept = _dicom_json_value(inst0, T["RescaleIntercept"])
 
     if not iop or len(iop) != 6:
         raise ValueError("ImageOrientationPatient missing or invalid")
@@ -1008,7 +1031,8 @@ def build_dicomweb_zmp(
     # DICOM extension tags (series-level — from first instance, skip geometry)
     extensions = None
     if tags:
-        from .dicom_convert import DicomExtension
+        from pydicom.datadict import keyword_for_tag
+
         skip_tags = {
             T["Rows"], T["Columns"], T["BitsAllocated"],
             T["PixelRepresentation"], T["ImagePositionPatient"],
@@ -1019,14 +1043,11 @@ def build_dicomweb_zmp(
         for tag_code, entry in inst0.items():
             if tag_code in skip_tags:
                 continue
-            # Use hex code as key (we don't have keyword lookup here)
             values = entry.get("Value")
             if values is None:
                 continue
-            if len(values) == 1:
-                dicom_tags[tag_code] = values[0]
-            else:
-                dicom_tags[tag_code] = values
+            keyword = keyword_for_tag(int(tag_code, 16)) or tag_code
+            dicom_tags[keyword] = values[0] if len(values) == 1 else values
 
         dicom_ext = {"version": "1.0"}
         if dicom_tags:
@@ -1035,11 +1056,23 @@ def build_dicomweb_zmp(
 
     space = SpaceName.LEFT_POSTERIOR_SUPERIOR
 
+    # Value transforms (rescale slope/intercept)
+    value_transforms = None
+    slope = float(rescale_slope) if rescale_slope is not None else None
+    intercept = float(rescale_intercept) if rescale_intercept is not None else None
+    if slope is not None or intercept is not None:
+        from .models import ValueTransform
+        value_transforms = [ValueTransform(
+            name="linear",
+            parameters={"slope": slope or 1.0, "intercept": intercept or 0.0},
+        )]
+
     duckn_meta = DucknMetadata(
         version="1.0",
         space=space,
         space_origin=space_origin,
         axes=axes,
+        value_transforms=value_transforms,
         extensions=extensions,
     )
 
@@ -1073,17 +1106,18 @@ def build_dicomweb_zmp(
         "dimension_names": ["k", "j", "i"],
     }
 
-    # Build ZMP with relative URIs off series_base
+    # Build ZMP with dicomweb resolve scheme
+    # study/series go in base_resolve; instance/frame per chunk
     builder = ZMPBuilder()
     builder.add("zarr.json", text=json.dumps(zarr_meta))
 
+    dicomweb_base = {"dicomweb": {"study": study_uid, "series": series_uid}}
+
     for k, si in enumerate(sorted_instances):
-        # Relative URI: instances/{sop_uid}/frames/1
-        rel_uri = f"instances/{si['sop_uid']}/frames/1"
         builder.add(
             f"c/{k}/0/0",
-            resolve={"http": {"url": rel_uri}},
-            base_resolve={"http": {"url": series_base + "/"}},
+            resolve={"dicomweb": {"instance": si["sop_uid"], "frame": 1}},
+            base_resolve=dicomweb_base,
         )
 
     if output_path.exists() and overwrite:
