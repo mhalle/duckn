@@ -18,6 +18,36 @@ from .convert import nrrd_to_zarr, nrrd_to_zarr_zerocopy, zarr_to_nrrd, zarr_to_
 from .models import DucknMetadata
 
 
+def _open_store(input_path: str) -> Any:
+    """Open any supported input as a Zarr store.
+
+    Supports:
+    - .zmp files (via ZMPStore)
+    - .zarr.zip files (via ZipStore)
+    - Zarr directory stores
+    - Returns None for non-Zarr inputs (NRRD, DICOM, etc.)
+    """
+    path = Path(input_path)
+
+    if path.suffix == ".zmp":
+        from zarr_zmp import ZMPStore
+        return ZMPStore.from_file(str(path))
+
+    if str(path).endswith(".zarr.zip"):
+        import zarr
+        return zarr.storage.ZipStore(str(path), mode="r")
+
+    if path.is_dir() and (path / "zarr.json").exists():
+        import zarr
+        return zarr.storage.LocalStore(str(path))
+
+    if path.suffix == ".zarr" and path.is_dir():
+        import zarr
+        return zarr.storage.LocalStore(str(path))
+
+    return None
+
+
 @click.group()
 def cli() -> None:
     """duckn: imaging format converters and ZMP manifest builders."""
@@ -612,14 +642,16 @@ def to_dicom(
 @cli.command("info")
 @click.argument("input_path", type=click.Path(exists=True))
 def info(input_path: str) -> None:
-    """Print duckn metadata as JSON."""
+    """Print duckn metadata as JSON.
+
+    Accepts NRRD files, Zarr stores, or ZMP manifests.
+    """
     path = Path(input_path)
 
-    if path.suffix == ".nrrd" or path.suffix == ".nhdr":
+    if path.suffix in (".nrrd", ".nhdr"):
         import nrrd as nrrd_lib
 
         _data, header = nrrd_lib.read(str(path), index_order="C")
-        # Print raw header as JSON-serializable dict
         out: dict = {}
         for k, v in header.items():
             try:
@@ -634,11 +666,15 @@ def info(input_path: str) -> None:
                     out[k] = str(v)
         click.echo(json.dumps(out, indent=2))
     else:
-        # Assume Zarr store
-        from .zarr_io import get_zarr_attrs
-
-        attrs = get_zarr_attrs(input_path)
-        click.echo(json.dumps(attrs, indent=2))
+        store = _open_store(input_path)
+        if store is not None:
+            import zarr
+            arr = zarr.open_array(store=store, mode="r")
+            click.echo(json.dumps(dict(arr.attrs), indent=2))
+        else:
+            from .zarr_io import get_zarr_attrs
+            attrs = get_zarr_attrs(input_path)
+            click.echo(json.dumps(attrs, indent=2))
 
 
 @cli.command("header")
@@ -646,9 +682,7 @@ def info(input_path: str) -> None:
 def header(input_path: str) -> None:
     """Print the validated duckn metadata as JSON.
 
-    Accepts either an NRRD file or a duckn Zarr store. For NRRD files the
-    header is converted to duckn metadata first. Output is the model
-    serialized with exclude_none (absent-means-unknown convention).
+    Accepts NRRD files, Zarr stores, or ZMP manifests.
     """
     path = Path(input_path)
 
@@ -663,7 +697,8 @@ def header(input_path: str) -> None:
     else:
         from .zarr_io import read_duckn_metadata
 
-        meta = read_duckn_metadata(input_path)
+        store = _open_store(input_path)
+        meta = read_duckn_metadata(store if store is not None else input_path)
 
     click.echo(json.dumps(meta.model_dump(exclude_none=True), indent=2))
 
@@ -672,21 +707,17 @@ def header(input_path: str) -> None:
 @click.argument("input_path", type=click.Path(exists=True))
 @click.argument("output_path", type=click.Path(), required=False)
 def to_bids(input_path: str, output_path: str | None) -> None:
-    """Generate a BIDS JSON sidecar from a duckn store or DICOM series.
+    """Generate a BIDS JSON sidecar from a duckn store, ZMP, or DICOM series.
 
     If OUTPUT_PATH is omitted, prints to stdout.
     """
     path = Path(input_path)
 
-    is_zarr = (
-        path.suffix in (".zarr", ".zip")
-        or (path.is_dir() and (path / "zarr.json").exists())
-    )
-
-    if is_zarr:
+    store = _open_store(input_path)
+    if store is not None:
         from .zarr_io import read_duckn_metadata
 
-        meta = read_duckn_metadata(input_path)
+        meta = read_duckn_metadata(store)
     elif path.is_dir() or path.suffix == ".dcm":
         # DICOM input — convert to duckn first (in memory)
         from .dicom_convert import dicom_to_zarr
