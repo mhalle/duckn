@@ -67,10 +67,10 @@ class DicomGeometry:
     space_origin: list[float]
     space_directions: list[list[float]]  # C order: [slice, row, col]
     slice_thickness: float | None
-    samples: list[dict[str, Any]] | None  # per-slice sample metadata
     rescale_slope: float | None
     rescale_intercept: float | None
     rescale_type: str | None
+    samples: list[dict[str, Any]] | None = None
 
 
 # ---------------------------------------------------------------------------

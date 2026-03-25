@@ -693,7 +693,7 @@ class TestDicomSegExtraction:
         ds = _make_seg_dataset()
         ext = _extract_seg_extension(ds)
         assert ext is not None
-        assert ext.version == "1.0"
+        assert ext.version == "0.5"
         assert ext.source_representation == "binary-labelmap"
         assert len(ext.segments) == 2
 
@@ -705,18 +705,20 @@ class TestDicomSegExtraction:
         assert seg1.color is not None
         assert len(seg1.color) == 3
 
-        # DICOM classification
-        assert seg1.dicom is not None
-        assert seg1.dicom.category.scheme == "SCT"
-        assert seg1.dicom.category.code == "123037004"
-        assert seg1.dicom.type.code == "10200004"
-        assert seg1.dicom.anatomic_region.code == "10200004"
+        # DICOM classification (now in metadata.dicom)
+        assert seg1.metadata is not None
+        assert "dicom" in seg1.metadata
+        dicom = seg1.metadata["dicom"]
+        assert dicom["category"]["scheme"] == "SCT"
+        assert dicom["category"]["code"] == "123037004"
+        assert dicom["type"]["code"] == "10200004"
+        assert dicom["anatomic_region"]["code"] == "10200004"
 
         seg2 = ext.segments[1]
         assert seg2.id == "Tumor"
         assert seg2.label_value == 1  # BINARY: all segments have label_value=1
         assert seg2.layer == 1  # 0-based layer index
-        assert seg2.dicom is None  # no coded entries
+        assert seg2.metadata is None  # no coded entries
 
     def test_fractional_seg(self):
         ds = _make_seg_dataset()
@@ -747,8 +749,8 @@ class TestDicomSegExtraction:
         )
         meta = build_duckn_metadata(geom, [ds], anonymized=None, include_tags=False)
         assert meta.extensions is not None
-        assert "slicerseg" in meta.extensions
-        seg_ext = SegmentationExtension(**meta.extensions["slicerseg"])
+        assert "seg" in meta.extensions
+        seg_ext = SegmentationExtension(**meta.extensions["seg"])
         assert len(seg_ext.segments) == 2
 
 
@@ -864,20 +866,21 @@ class TestPerSampleMetadata:
         # Varying tags should be in per-sample extensions
         slice_axis = meta.axes[0]
         assert slice_axis.samples is not None
-        s0_ext = slice_axis.samples[0].extensions
+        s0_ext = slice_axis.samples[0].metadata
         assert s0_ext is not None
         assert "dicom" in s0_ext
-        assert s0_ext["dicom"]["InstanceNumber"] == 1
+        assert s0_ext["dicom"]["AcquisitionTime"] == "143025.000"
 
-        s2_ext = slice_axis.samples[2].extensions
-        assert s2_ext["dicom"]["InstanceNumber"] == 3
+        s2_ext = slice_axis.samples[2].metadata
         assert s2_ext["dicom"]["AcquisitionTime"] == "143025.500"
+
+        # InstanceNumber is excluded as redundant (it's the array index)
+        assert "InstanceNumber" not in s0_ext.get("dicom", {})
 
         # Constant tags (Modality) should be in series-level dicom extension
         dicom_ext = meta.extensions["dicom"]
         assert dicom_ext["tags"]["Modality"] == "CT"
         # Varying tags should NOT be in series-level tags
-        assert "InstanceNumber" not in dicom_ext["tags"]
         assert "AcquisitionTime" not in dicom_ext["tags"]
 
     def test_image_position_excluded_from_tags(self):
@@ -904,5 +907,5 @@ class TestPerSampleMetadata:
         slice_axis = meta.axes[0]
         if slice_axis.samples:
             for s in slice_axis.samples:
-                if s.extensions and "dicom" in s.extensions:
-                    assert "ImagePositionPatient" not in s.extensions["dicom"]
+                if s.metadata and "dicom" in s.metadata:
+                    assert "ImagePositionPatient" not in s.metadata["dicom"]
