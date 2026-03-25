@@ -52,29 +52,52 @@ def open_store(path: str | Path, *, mode: str = "r", overwrite: bool = False):
         yield zarr.storage.LocalStore(str(path))
 
 
-def read_duckn(path: str | Path) -> tuple[np.ndarray, DucknMetadata]:
+def read_duckn(source: str | Path | Any) -> tuple[np.ndarray, DucknMetadata]:
     """Read a duckn Zarr v3 array and return (data, metadata).
+
+    Parameters
+    ----------
+    source : path to a Zarr store (directory or .zarr.zip), or any
+        object implementing the Zarr Store interface (e.g. ZMPStore).
 
     Returns
     -------
     data : numpy array
     meta : parsed DucknMetadata from the "duckn" attribute
     """
-    with open_store(path, mode="r") as store:
-        arr = zarr.open_array(store, mode="r")
+    if isinstance(source, (str, Path)):
+        with open_store(source, mode="r") as store:
+            arr = zarr.open_array(store, mode="r")
+            data = arr[:]
+            duckn_attrs = arr.attrs.get("duckn", {})
+            meta = DucknMetadata(**duckn_attrs)
+        return data, meta
+    else:
+        # Assume it's a Zarr Store object (e.g. ZMPStore)
+        arr = zarr.open_array(store=source, mode="r")
         data = arr[:]
         duckn_attrs = arr.attrs.get("duckn", {})
         meta = DucknMetadata(**duckn_attrs)
-    return data, meta
+        return data, meta
 
 
-def read_duckn_metadata(path: str | Path) -> DucknMetadata:
-    """Read only the duckn metadata from a Zarr store (no data loaded)."""
-    with open_store(path, mode="r") as store:
-        arr = zarr.open_array(store, mode="r")
+def read_duckn_metadata(source: str | Path | Any) -> DucknMetadata:
+    """Read only the duckn metadata from a Zarr store (no data loaded).
+
+    Parameters
+    ----------
+    source : path to a Zarr store, or a Zarr Store object (e.g. ZMPStore).
+    """
+    if isinstance(source, (str, Path)):
+        with open_store(source, mode="r") as store:
+            arr = zarr.open_array(store, mode="r")
+            duckn_attrs = arr.attrs.get("duckn", {})
+            meta = DucknMetadata(**duckn_attrs)
+        return meta
+    else:
+        arr = zarr.open_array(store=source, mode="r")
         duckn_attrs = arr.attrs.get("duckn", {})
-        meta = DucknMetadata(**duckn_attrs)
-    return meta
+        return DucknMetadata(**duckn_attrs)
 
 
 def get_zarr_attrs(path: str | Path) -> dict[str, Any]:

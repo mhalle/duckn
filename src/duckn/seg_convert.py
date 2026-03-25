@@ -25,7 +25,7 @@ from .convert import _auto_chunks, _build_compressors
 
 
 def seg_4d_to_labelmap(
-    input_path: str | Path,
+    input_source: str | Path | Any,
     output_path: str | Path,
     *,
     compressor: str = "zstd",
@@ -43,16 +43,16 @@ def seg_4d_to_labelmap(
 
     Parameters
     ----------
-    input_path : path to the input 4D duckn Zarr store
+    input_source : path to a duckn Zarr store, or a Zarr Store object
+        (e.g. ZMPStore)
     output_path : path for the output 3D labelmap Zarr store
     compressor : "zstd", "gzip", or "none"
     level : compression level
     overwrite : if True, overwrite existing output
     """
-    input_path = Path(input_path)
     output_path = Path(output_path)
 
-    data_4d, meta = read_duckn(input_path)
+    data_4d, meta = read_duckn(input_source)
 
     if data_4d.ndim != 4:
         raise ValueError(f"Expected 4D input, got {data_4d.ndim}D")
@@ -113,7 +113,7 @@ def seg_4d_to_labelmap(
 
 
 def labelmap_to_seg_4d(
-    input_path: str | Path,
+    input_source: str | Path | Any,
     output_path: str | Path,
     *,
     compressor: str = "zstd",
@@ -133,10 +133,9 @@ def labelmap_to_seg_4d(
     level : compression level
     overwrite : if True, overwrite existing output
     """
-    input_path = Path(input_path)
     output_path = Path(output_path)
 
-    data_3d, meta = read_duckn(input_path)
+    data_3d, meta = read_duckn(input_source)
 
     if data_3d.ndim != 3:
         raise ValueError(f"Expected 3D input, got {data_3d.ndim}D")
