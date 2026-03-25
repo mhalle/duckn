@@ -1,0 +1,16 @@
+{
+  "name": "@duckn/cornerstone-loader",
+  "version": "0.1.0",
+  "description": "Cornerstone3D image loader for duckn Zarr/ZMP stores",
+  "type": "module",
+  "main": "src/index.ts",
+  "dependencies": {
+    "zarrita": "^0.6",
+    "@zarrita/storage": "^0.1.4",
+    "zarr-zmp-ts": "github:mhalle/zarr-zmp-ts"
+  },
+  "peerDependencies": {
+    "@cornerstonejs/core": ">=2.0.0"
+  },
+  "license": "MIT"
+}
