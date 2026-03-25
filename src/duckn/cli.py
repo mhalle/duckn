@@ -448,8 +448,10 @@ def from_dicom(
 ) -> None:
     """Convert DICOM file(s) to a duckn Zarr v3 store or ZMP manifest.
 
-    INPUT_PATH is a directory of single-frame .dcm files (one series)
-    or a single enhanced multi-frame DICOM file.
+    INPUT_PATH is a directory of single-frame .dcm files (one series),
+    a single enhanced multi-frame DICOM file, or a DICOM Segmentation
+    object (BINARY or LABELMAP). DICOM SEG files are automatically
+    detected and converted to 4D binary channels or 3D labelmaps.
 
     Output format is determined by OUTPUT_PATH extension:
     .zarr → Zarr v3 store, .zmp → ZMP Parquet manifest.
@@ -628,14 +630,97 @@ def to_dicom(
     output_path: str,
     overwrite: bool,
 ) -> None:
-    """Convert a duckn Zarr v3 store to an Enhanced Multi-frame DICOM file.
+    """Convert a duckn 3D Zarr store to an Enhanced Multi-frame DICOM file.
 
-    Supports 3D and 4D volumes. Per-sample metadata and geometry are
-    restored from duckn metadata when available.
+    For imaging data (CT, MR, PET). Use to-dicom-seg for segmentations.
     """
     from .dicom_convert import zarr_to_dicom
 
     zarr_to_dicom(input_path, output_path, overwrite=overwrite)
+    click.echo(f"Wrote {output_path}")
+
+
+@cli.command("to-dicom-seg")
+@click.argument("input_path", type=click.Path(exists=True))
+@click.argument("output_path", type=click.Path())
+@click.option("--overwrite", is_flag=True, help="Overwrite existing output")
+def to_dicom_seg(
+    input_path: str,
+    output_path: str,
+    overwrite: bool,
+) -> None:
+    """Convert a duckn 3D labelmap to a DICOM LABELMAP Segmentation (Sup 243).
+
+    Input must be a 3D integer labelmap. Use seg-to-labelmap first if
+    your data is a 4D binary segmentation.
+    """
+    from .dicom_convert import zarr_to_dicom_seg
+
+    zarr_to_dicom_seg(input_path, output_path, overwrite=overwrite)
+    click.echo(f"Wrote {output_path}")
+
+
+@cli.command("seg-to-labelmap")
+@click.argument("input_path", type=click.Path(exists=True))
+@click.argument("output_path", type=click.Path())
+@click.option("--compressor", type=click.Choice(["zstd", "gzip", "none"]), default="zstd")
+@click.option("--level", type=int, default=3)
+@click.option("--overwrite", is_flag=True)
+def seg_to_labelmap_cmd(
+    input_path: str,
+    output_path: str,
+    compressor: str,
+    level: int,
+    overwrite: bool,
+) -> None:
+    """Convert a 4D binary segmentation to a 3D integer labelmap.
+
+    Input is a 4D duckn store (one binary channel per segment).
+    Output is a 3D store where each voxel value is a segment number.
+    Accepts Zarr stores and ZMP manifests.
+    """
+    from .seg_convert import seg_4d_to_labelmap
+
+    store = _open_store(input_path)
+    seg_4d_to_labelmap(
+        store if store is not None else input_path,
+        output_path,
+        compressor=compressor,
+        level=level,
+        overwrite=overwrite,
+    )
+    click.echo(f"Wrote {output_path}")
+
+
+@cli.command("labelmap-to-seg")
+@click.argument("input_path", type=click.Path(exists=True))
+@click.argument("output_path", type=click.Path())
+@click.option("--compressor", type=click.Choice(["zstd", "gzip", "none"]), default="zstd")
+@click.option("--level", type=int, default=3)
+@click.option("--overwrite", is_flag=True)
+def labelmap_to_seg_cmd(
+    input_path: str,
+    output_path: str,
+    compressor: str,
+    level: int,
+    overwrite: bool,
+) -> None:
+    """Convert a 3D integer labelmap to a 4D binary segmentation.
+
+    Each non-zero label becomes a binary channel. Output has one
+    layer per segment with chunk shape (1, nz, rows, cols).
+    Accepts Zarr stores and ZMP manifests.
+    """
+    from .seg_convert import labelmap_to_seg_4d
+
+    store = _open_store(input_path)
+    labelmap_to_seg_4d(
+        store if store is not None else input_path,
+        output_path,
+        compressor=compressor,
+        level=level,
+        overwrite=overwrite,
+    )
     click.echo(f"Wrote {output_path}")
 
 
