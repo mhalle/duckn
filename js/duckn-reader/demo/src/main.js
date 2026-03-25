@@ -200,13 +200,13 @@ function updateSidebarVtk(imageData, source) {
   `;
 }
 
-function updateSidebarDuckn(nrrd, shape, imageData) {
+function updateSidebarDuckn(ducknMeta, shape, imageData) {
   sidebar.innerHTML = `
     <h2>duckn metadata</h2>
-    <span class="label">space:</span> <span class="val">${duckn.space || 'not specified'}</span><br>
-    <span class="label">space_origin:</span> <span class="val">${fmt(duckn.space_origin || [])}</span><br>
+    <span class="label">space:</span> <span class="val">${ducknMeta.space || 'not specified'}</span><br>
+    <span class="label">space_origin:</span> <span class="val">${fmt(ducknMeta.space_origin || [])}</span><br>
     <span class="label">axes:</span><br>
-    ${nrrd.axes.map((a, i) =>
+    ${ducknMeta.axes.map((a, i) =>
       `&nbsp;&nbsp;[${i}] <span class="val">${fmt(a.space_direction)}</span>` +
       (a.kind ? ` <span class="label">(${a.kind})</span>` : '')
     ).join('<br>')}
@@ -218,7 +218,7 @@ function updateSidebarDuckn(nrrd, shape, imageData) {
     ${updateSidebarVtk(imageData, 'duckn')}
 
     <h2>coordinate conversion</h2>
-    <span class="label">from:</span> <span class="val">${duckn.space || 'unknown'}</span><br>
+    <span class="label">from:</span> <span class="val">${ducknMeta.space || 'unknown'}</span><br>
     <span class="label">to:</span> <span class="val">LPS (VTK convention)</span>
   `;
 }
