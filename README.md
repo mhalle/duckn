@@ -90,14 +90,17 @@ duckn.zarr_to_dicom("ct.zarr", "ct_enhanced.dcm")
 ### CLI
 
 ```bash
-duckn to-zarr scan.nrrd scan.zarr
-duckn to-nrrd scan.zarr scan_out.nrrd
+duckn from-nrrd scan.nrrd scan.zarr
 duckn from-nifti brain.nii.gz brain.zarr
-duckn to-nifti brain.zarr brain_out.nii.gz
 duckn from-dicom dicom_series/ ct.zarr
+duckn from-idc 2d1e2084-4fc9-4399-b748-479a8799788c ct.zmp
 duckn from-zarr-zip data.zarr.zip data.zmp
-duckn info scan.zarr
-duckn header scan.zarr
+duckn to-nrrd scan.zarr scan_out.nrrd
+duckn to-nifti brain.zarr brain_out.nii.gz
+duckn to-dicom ct.zarr ct_enhanced.dcm
+duckn to-bids ct.zarr ct.json
+duckn info scan.zarr                    # also accepts .zmp
+duckn header scan.zarr                  # also accepts .zmp
 duckn roundtrip scan.nrrd
 ```
 

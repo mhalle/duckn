@@ -53,7 +53,7 @@ def cli() -> None:
     """duckn: imaging format converters and ZMP manifest builders."""
 
 
-@cli.command("to-zarr")
+@cli.command("from-nrrd")
 @click.argument("input_path", type=click.Path(exists=True))
 @click.argument("output_path", type=click.Path())
 @click.option("--chunks", default=None, help="Chunk shape, e.g. 64,64,32")
