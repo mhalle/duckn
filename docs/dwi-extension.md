@@ -9,7 +9,7 @@
 
 ## 1. Purpose
 
-This document defines the `dwmri` extension for the duckn convention. It replaces the NRRD key/value pair convention for diffusion-weighted MRI data — where acquisition parameters were encoded as `DWMRI_gradient_NNNN:=x y z` strings and `DWMRI_b-value:=b` — with a structured JSON representation.
+This document defines the `dwmri` extension for the duckn specification. It replaces the NRRD key/value pair convention for diffusion-weighted MRI data — where acquisition parameters were encoded as `DWMRI_gradient_NNNN:=x y z` strings and `DWMRI_b-value:=b` — with a structured JSON representation.
 
 The data model is the same. What changes is the encoding: JSON arrays and objects replace space-delimited strings and zero-padded index keys.
 
@@ -19,19 +19,19 @@ The purpose of a DWI file format is to record all the information necessary to u
 - Per-volume gradient directions or full B-matrices
 - The measurement frame: the relationship between the coordinate frame in which gradient coefficients are expressed and the world space in which image orientation is defined
 - The order in which DWI values were acquired (encoded by the position of the diffusion axis among the spatial axes)
-- Anatomical location of all images (handled by the duckn convention's spatial embedding)
+- Anatomical location of all images (handled by the duckn specification's spatial embedding)
 
 ### What this extension does not cover
 
-Diffusion *tensor* volumes — where the voxel values are the six independent components of the estimated symmetric tensor — do not use this extension. Those are fully described by the convention's `kind: "3D-symmetric-matrix"` axis, `measurement_frame`, `sample_units: "mm²/s"`, and `intent: "diffusion-tensor"`. See convention §6.3 for an example.
+Diffusion *tensor* volumes — where the voxel values are the six independent components of the estimated symmetric tensor — do not use this extension. Those are fully described by the specification's `kind: "3D-symmetric-matrix"` axis, `measurement_frame`, `sample_units: "mm²/s"`, and `intent: "diffusion-tensor"`. See specification §6.3 for an example.
 
 This extension is for the *raw acquisition*: the 4D volume of signal intensities measured under different diffusion-sensitizing gradient configurations, from which tensors or other models are subsequently estimated.
 
 ---
 
-## 2. Relationship to duckn Convention Fields
+## 2. Relationship to duckn Specification Fields
 
-The following aspects of a DWI dataset are already captured by Zarr or the duckn convention and are not duplicated in this extension:
+The following aspects of a DWI dataset are already captured by Zarr or the duckn specification and are not duplicated in this extension:
 
 | DWI information | Captured by |
 |---|---|
@@ -43,7 +43,7 @@ The following aspects of a DWI dataset are already captured by Zarr or the duckn
 | Measurement frame | `measurement_frame` |
 | Axis semantics (spatial vs. DWI) | `axes[i].kind` (`"space"` vs. `"list"`) |
 
-The convention's `measurement_frame` field is critical for DWI data. By default (when `gradient_frame` is absent or `"measurement"`), this extension's gradient vectors (or B-matrices) are expressed in the measurement frame — a reader must apply `measurement_frame` to rotate them into world space before computing tensor components in world coordinates. See the `gradient_frame` field (§4.1) for alternative coordinate frame conventions.
+The specification's `measurement_frame` field is critical for DWI data. By default (when `gradient_frame` is absent or `"measurement"`), this extension's gradient vectors (or B-matrices) are expressed in the measurement frame — a reader must apply `measurement_frame` to rotate them into world space before computing tensor components in world coordinates. See the `gradient_frame` field (§4.1) for alternative coordinate frame conventions.
 
 ---
 
@@ -142,7 +142,7 @@ A string identifying the coordinate frame in which `gradients` or `b_matrices` a
 
 When absent, the default is `"measurement"`, matching NRRD convention behavior. This field exists to support lossless round-trip conversion from formats that use different coordinate conventions. In particular, data converted from FSL bvec/bval files has gradients in image space, and data converted from MRtrix `.b` files or DICOM has gradients in scanner/world space. Recording the original frame avoids silent reinterpretation errors.
 
-When `gradient_frame` is `"image"`, the `measurement_frame` convention field is not used for gradient interpretation (it may be absent or identity).
+When `gradient_frame` is `"image"`, the `measurement_frame` specification field is not used for gradient interpretation (it may be absent or identity).
 
 #### `acquisition`
 
@@ -343,7 +343,7 @@ The length of `b_values` must equal the size of the DWI axis and the length of `
 
 ## 6. Dependencies on Convention Fields
 
-This extension depends on the following duckn convention fields. These dependencies should be checked by a reader.
+This extension depends on the following duckn specification fields. These dependencies should be checked by a reader.
 
 | Convention field | Role | Required? |
 |---|---|---|
@@ -368,8 +368,8 @@ The measurement frame is the critical link between gradient coordinates and worl
 | `DWMRI_gradient_NNNN:=x y z` | `gradients[NNNN]` (per-axis) |
 | `DWMRI_B-matrix_NNNN:=xx xy xz yy yz zz` | `b_matrices[NNNN]` (per-axis) |
 | `DWMRI_NEX_NNNN:=M` | `nex["NNNN"]` (per-axis) |
-| `measurement frame:` | `measurement_frame` (convention field, not extension) |
-| `kinds: ... list ...` | `axes[i].kind: "list"` (convention field) |
+| `measurement frame:` | `measurement_frame` (specification field, not extension) |
+| `kinds: ... list ...` | `axes[i].kind: "list"` (specification field) |
 
 The NRRD `modality:=DWMRI` key is not mapped to a field in the extension. The presence of the `dwmri` extension in the `extensions` object serves the same purpose: it declares that this array is a diffusion-weighted MRI acquisition.
 
@@ -408,7 +408,7 @@ DICOM defines DWI-related tags in the MR Diffusion Macro (Supplement 49, §C.8.1
 
 Important caveats for DICOM conversion:
 
-**Measurement frame is identity.** The DICOM specification for Diffusion Gradient Orientation (0018,9089) defines the gradient direction in the patient coordinate system (LPS), which implies the measurement frame is the identity matrix. When converting from DICOM, if the duckn `space` is `"left-posterior-superior"`, the measurement frame should be set to the identity. If the convention uses RAS, the gradient components need the standard LPS↔RAS sign flips (negate first two components).
+**Measurement frame is identity.** The DICOM specification for Diffusion Gradient Orientation (0018,9089) defines the gradient direction in the patient coordinate system (LPS), which implies the measurement frame is the identity matrix. When converting from DICOM, if the duckn `space` is `"left-posterior-superior"`, the measurement frame should be set to the identity. If the specification uses RAS, the gradient components need the standard LPS↔RAS sign flips (negate first two components).
 
 **DICOM B-matrix tags are b-weighted.** The per-component tags (0018,9602–9607) store the elements of $b \cdot \mathbf{g}\mathbf{g}^T$, not the normalized B-matrix. To convert to this extension's `b_matrices` (which use the implicit normalization convention), divide each component by `b_value`. Alternatively, store the DICOM per-volume b-values in the `b_values` array and the gradient direction in `gradients`, bypassing `b_matrices` entirely.
 
@@ -434,7 +434,7 @@ FSL represents DWI encoding as a pair of sidecar files alongside the NIfTI image
 - `.bval`: a single row of space-delimited b-values (one per volume, in s/mm²)
 - `.bvec`: three rows of space-delimited floats — x, y, z components of unit gradient vectors (one column per volume)
 
-The FSL format has several properties that differ from the NRRD/duckn convention:
+The FSL format has several properties that differ from the NRRD/duckn specification:
 
 **Explicit per-volume b-values.** FSL uses explicit b-values for every volume (like the `b_values` per-axis field in this extension) rather than encoding b-value in gradient magnitude. When converting, populate both the per-axis `b_values` array and the `gradients` array (with unit-norm directions).
 
@@ -518,7 +518,7 @@ ParaVision distinguishes *input* parameters (user-specified) from *output* param
 `PVM_DwGradVec` contains gradient vectors for all volumes (including b=0). These vectors are **not unit-normalized** — their magnitudes are proportional to the applied gradient amplitude relative to the maximum.
 
 - **With explicit `b_values`:** Normalize `PVM_DwGradVec` to unit length and store in `gradients`. Use `PVM_DwEffBval` for the per-axis `b_values` array. The gradient vectors serve as pure directions.
-- **With implicit normalization:** Store `PVM_DwGradVec` magnitudes as-is in `gradients`. The magnitude ratios encode relative b-value weighting per the convention in §5. Use `max(PVM_DwBvalEach)` as the top-level `b_value`.
+- **With implicit normalization:** Store `PVM_DwGradVec` magnitudes as-is in `gradients`. The magnitude ratios encode relative b-value weighting per the implicit normalization convention in §5. Use `max(PVM_DwBvalEach)` as the top-level `b_value`.
 
 #### Coordinate frame
 
@@ -538,7 +538,7 @@ When converting to duckn, there are two options:
 
 1. **Apply the transform at conversion time** and set `gradient_frame: "world"`. Store the resulting subject-space gradient directions in `gradients`. This is the preferred approach.
 
-2. **Store the raw gradient amplitudes** and set the convention's `measurement_frame` to the transpose of `PVM_SPackArrGradOrient`, with `gradient_frame: "measurement"` (or omit it, since `"measurement"` is the default). This preserves the original Bruker representation for lossless round-trip.
+2. **Store the raw gradient amplitudes** and set the specification's `measurement_frame` to the transpose of `PVM_SPackArrGradOrient`, with `gradient_frame: "measurement"` (or omit it, since `"measurement"` is the default). This preserves the original Bruker representation for lossless round-trip.
 
 #### Effective vs. nominal b-values
 
@@ -583,7 +583,7 @@ A mouse brain DTI acquisition on a Bruker 9.4T with 30 directions, b=1000, δ=3.
 - If `nex` is present, for each entry `"N": M`, indices N through N+M-1 must be valid DWI axis positions, and the gradient/B-matrix values at those positions should be identical.
 - `measurement_frame`, if present, must be a square matrix with side length equal to the space dimension (typically 3×3).
 - If `gradient_frame` is present, it must be one of `"measurement"`, `"world"`, or `"image"`.
-- If `gradient_frame` is `"measurement"` (or absent), `measurement_frame` should be present in the convention fields. If `gradient_frame` is `"image"`, the spatial axes must have `space_direction` values sufficient to construct the IJK-to-world rotation.
+- If `gradient_frame` is `"measurement"` (or absent), `measurement_frame` should be present in the specification fields. If `gradient_frame` is `"image"`, the spatial axes must have `space_direction` values sufficient to construct the IJK-to-world rotation.
 - If `acquisition` is present, all time values (`total_readout_time`, `effective_echo_spacing`, `echo_time`, `repetition_time`, `gradient_pulse_duration`, `gradient_pulse_separation`, and entries in `slice_timing`) must be in seconds. `phase_encoding_direction` must be one of `"i"`, `"j"`, `"k"`, `"i-"`, `"j-"`, `"k-"`.
 - If `gradient_pulse_duration` is present, it must be a positive number in seconds.
 - If `gradient_pulse_separation` is present, it must be a positive number in seconds, and must be greater than or equal to `gradient_pulse_duration` (since Δ ≥ δ for a physically realizable PGSE sequence).
@@ -1022,15 +1022,15 @@ Here `gradient_frame: "world"` indicates the gradient directions have been trans
 
 **Why `nex` is a hint, not a compact encoding.** In the NRRD convention, `DWMRI_NEX_0000:=2` elides the next gradient key — you skip `DWMRI_gradient_0001` because it's implied to be the same as `0000`. This is a compact encoding trick that saves key/value pairs but makes parsing stateful and error-prone. In this extension, every DWI axis position has an explicit entry in `gradients` or `b_matrices`. The `nex` field is metadata *about* the acquisition (how many repeats were taken), not a mechanism for omitting data. This makes the extension simpler to read and harder to get wrong.
 
-**Why `measurement_frame` is a convention field, not an extension field.** The measurement frame applies to any array with vector or tensor content — not just DWI. Diffusion tensors, velocity fields, and other vector quantities all need it. Making it a convention-level field (which the NRRD format already does) avoids duplicating the concept in every extension that deals with non-scalar data. This extension documents the dependency but does not redefine the field.
+**Why `measurement_frame` is a specification field, not an extension field.** The measurement frame applies to any array with vector or tensor content — not just DWI. Diffusion tensors, velocity fields, and other vector quantities all need it. Making it a specification-level field (which the NRRD format already does) avoids duplicating the concept in every extension that deals with non-scalar data. This extension documents the dependency but does not redefine the field.
 
 **Why `"list"` and `"vector"` are both accepted.** The NRRD convention uses `kind: "list"` for the DWI axis. However, ITK's NRRD writer historically emits `kind: "vector"` for non-scalar data. Both identify a non-spatial, non-resamplable axis. Requiring only `"list"` would reject ITK-generated files that are otherwise valid. Accepting both follows the NA-MIC convention's pragmatic compatibility stance.
 
-**Relationship to the convention's diffusion tensor example.** The convention (§6.3) shows a diffusion tensor volume with `kind: "3D-symmetric-matrix"`, `intent: "diffusion-tensor"`, `sample_units: "mm²/s"`, and `measurement_frame`. That is the *output* of tensor estimation. This extension describes the *input*: the raw DWI signal volumes from which tensors are computed. The two are complementary and may coexist in the same Zarr group (one array for the DWI, another for the estimated tensors).
+**Relationship to the convention's diffusion tensor example.** The specification (§6.3) shows a diffusion tensor volume with `kind: "3D-symmetric-matrix"`, `intent: "diffusion-tensor"`, `sample_units: "mm²/s"`, and `measurement_frame`. That is the *output* of tensor estimation. This extension describes the *input*: the raw DWI signal volumes from which tensors are computed. The two are complementary and may coexist in the same Zarr group (one array for the DWI, another for the estimated tensors).
 
 **Why `gradient_frame` exists.** The gradient coordinate frame is the single largest source of errors in DWI processing. NRRD uses an explicit measurement frame (gradients in a named frame, transformed to world space by a matrix). FSL bvecs are in image-voxel space and must be rotated with the image. MRtrix stores gradients in scanner/world space directly. DICOM standard tags use patient (LPS) space, but vendor-specific tags may use image space (GE) or scanner space (Siemens). When data is converted between formats, the coordinate frame of the gradients can be silently reinterpreted, causing incorrect tensor orientations. The `gradient_frame` field makes this explicit. The default `"measurement"` matches the NRRD convention. Writers converting from other formats can set it to `"image"` or `"world"` to preserve the original representation without risk of incorrect transformation.
 
-**Why `acquisition` metadata is in the extension, not the convention.** Parameters like `phase_encoding_direction` and `total_readout_time` are MRI acquisition details, not general raster data properties. They are essential for DWI preprocessing (susceptibility distortion correction via FSL `topup`, eddy current correction via `eddy`) but are meaningless for non-MRI data. Placing them in the `dwmri` extension keeps the convention clean while providing a structured home for these values. This is analogous to how BIDS provides a JSON sidecar for parameters that NIfTI cannot represent.
+**Why `acquisition` metadata is in the extension, not the convention.** Parameters like `phase_encoding_direction` and `total_readout_time` are MRI acquisition details, not general raster data properties. They are essential for DWI preprocessing (susceptibility distortion correction via FSL `topup`, eddy current correction via `eddy`) but are meaningless for non-MRI data. Placing them in the `dwmri` extension keeps the specification clean while providing a structured home for these values. This is analogous to how BIDS provides a JSON sidecar for parameters that NIfTI cannot represent.
 
 **Why DICOM B-matrix component tags are mapped to `b_matrices`.** DICOM Supplement 49 defines per-component B-value tags (0018,9602–9607) that together form the upper triangle of $b \cdot \mathbf{B}$. These map directly to the `b_matrices` field. However, as noted in the NA-MIC documentation, the B-matrix representation loses the sign of the gradient direction (since $\mathbf{B} = \mathbf{g}\mathbf{g}^T$ is positive semi-definite). When both gradient direction and B-matrix are available from DICOM, preserving both in `gradients` and the per-volume `b_values` is preferred over using `b_matrices` alone, unless the full B-matrix (including imaging gradient contributions) is specifically needed.
 
