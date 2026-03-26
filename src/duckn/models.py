@@ -22,20 +22,30 @@ _SPACE_ABBREVS: dict[str, str] = {
     "LPST": "left-posterior-superior-time",
 }
 
-_SPACE_DIMENSIONS: dict[str, int] = {
-    "right-anterior-superior": 3,
-    "left-anterior-superior": 3,
-    "left-posterior-superior": 3,
-    "right-anterior-superior-time": 4,
-    "left-anterior-superior-time": 4,
-    "left-posterior-superior-time": 4,
-    "scanner-xyz": 3,
-    "scanner-xyz-time": 4,
-    "3D-right-handed": 3,
-    "3D-left-handed": 3,
-    "3D-right-handed-time": 4,
-    "3D-left-handed-time": 4,
-}
+# 3D spaces and their time variants
+_3D_SPACES = [
+    # Medical / patient-based
+    "right-anterior-superior",
+    "left-anterior-superior",
+    "left-posterior-superior",
+    # Scanner / instrument
+    "scanner-xyz",
+    # General 3D (viewer-relative)
+    "right-up-back",          # Three.js, OpenGL
+    "right-up-forward",       # Babylon.js, DirectX, Unity
+    "right-forward-up",       # Blender, CAD
+    "right-down-forward",     # Vulkan, screen space
+    "forward-right-up",       # Unreal Engine
+    "east-north-up",          # Geospatial, surveying
+    # Generic (no axis semantics)
+    "3D-right-handed",
+    "3D-left-handed",
+]
+
+_SPACE_DIMENSIONS: dict[str, int] = {}
+for _s in _3D_SPACES:
+    _SPACE_DIMENSIONS[_s] = 3
+    _SPACE_DIMENSIONS[f"{_s}-time"] = 4
 
 
 def _normalize_space(v: Any) -> Any:
@@ -45,14 +55,30 @@ def _normalize_space(v: Any) -> Any:
 
 
 class SpaceName(StrEnum):
+    # Medical / patient-based
     RIGHT_ANTERIOR_SUPERIOR = "right-anterior-superior"
     LEFT_ANTERIOR_SUPERIOR = "left-anterior-superior"
     LEFT_POSTERIOR_SUPERIOR = "left-posterior-superior"
     RIGHT_ANTERIOR_SUPERIOR_TIME = "right-anterior-superior-time"
     LEFT_ANTERIOR_SUPERIOR_TIME = "left-anterior-superior-time"
     LEFT_POSTERIOR_SUPERIOR_TIME = "left-posterior-superior-time"
+    # Scanner / instrument
     SCANNER_XYZ = "scanner-xyz"
     SCANNER_XYZ_TIME = "scanner-xyz-time"
+    # General 3D (viewer-relative)
+    RIGHT_UP_BACK = "right-up-back"                      # Three.js, OpenGL
+    RIGHT_UP_FORWARD = "right-up-forward"                # Babylon.js, DirectX, Unity
+    RIGHT_FORWARD_UP = "right-forward-up"                # Blender, CAD
+    RIGHT_DOWN_FORWARD = "right-down-forward"            # Vulkan, screen space
+    FORWARD_RIGHT_UP = "forward-right-up"                # Unreal Engine
+    EAST_NORTH_UP = "east-north-up"                      # Geospatial, surveying
+    RIGHT_UP_BACK_TIME = "right-up-back-time"
+    RIGHT_UP_FORWARD_TIME = "right-up-forward-time"
+    RIGHT_FORWARD_UP_TIME = "right-forward-up-time"
+    RIGHT_DOWN_FORWARD_TIME = "right-down-forward-time"
+    FORWARD_RIGHT_UP_TIME = "forward-right-up-time"
+    EAST_NORTH_UP_TIME = "east-north-up-time"
+    # Generic (no axis semantics)
     THREE_D_RIGHT_HANDED = "3D-right-handed"
     THREE_D_LEFT_HANDED = "3D-left-handed"
     THREE_D_RIGHT_HANDED_TIME = "3D-right-handed-time"

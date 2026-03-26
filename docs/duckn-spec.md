@@ -89,22 +89,47 @@ This field should always be present.
 
 #### `space`
 
-Names the world coordinate system in which the array is spatially embedded.
+Names the world coordinate system in which the array is spatially embedded. Each space name encodes the positive direction of each axis, fully specifying the coordinate frame.
 
-| Value | Dimension | Description |
-|-------|-----------|-------------|
-| `"right-anterior-superior"` or `"RAS"` | 3 | Patient-based, right-handed (NIfTI-1) |
-| `"left-anterior-superior"` or `"LAS"` | 3 | Patient-based, left-handed (Analyze 7.5) |
-| `"left-posterior-superior"` or `"LPS"` | 3 | Patient-based, right-handed (DICOM 3) |
-| `"right-anterior-superior-time"` or `"RAST"` | 4 | RAS + time |
-| `"left-anterior-superior-time"` or `"LAST"` | 4 | LAS + time |
-| `"left-posterior-superior-time"` or `"LPST"` | 4 | LPS + time |
+**Naming convention:** space names follow the pattern `{+X}-{+Y}-{+Z}`, describing the positive direction of each axis. For medical spaces, directions are relative to the patient; for general spaces, directions are relative to the default camera/viewer orientation.
+
+Abbreviations (e.g., `"RAS"`, `"LPS"`) are accepted on read and normalized to the full name. Writers should always use the full name.
+
+**Medical / patient-based spaces:**
+
+| Value | Abbrev | Dim | +X | +Y | +Z | Handedness | Used by |
+|-------|--------|-----|----|----|-----|-----------|---------|
+| `"right-anterior-superior"` | RAS | 3 | Right | Anterior | Superior | Right | NIfTI, 3D Slicer, FreeSurfer |
+| `"left-anterior-superior"` | LAS | 3 | Left | Anterior | Superior | Left | Analyze 7.5 |
+| `"left-posterior-superior"` | LPS | 3 | Left | Posterior | Superior | Right | DICOM, ITK, VTK |
+
+**Scanner and instrument spaces:**
+
+| Value | Dim | Description |
+|-------|-----|-------------|
 | `"scanner-xyz"` | 3 | Scanner-based, right-handed (ACR/NEMA 2.0) |
-| `"scanner-xyz-time"` | 4 | scanner-xyz + time |
-| `"3D-right-handed"` | 3 | Generic right-handed 3D space |
-| `"3D-left-handed"` | 3 | Generic left-handed 3D space |
-| `"3D-right-handed-time"` | 4 | 3D-right-handed + time |
-| `"3D-left-handed-time"` | 4 | 3D-left-handed + time |
+
+**General 3D spaces:**
+
+Each describes the positive direction of +X, +Y, +Z relative to the default viewer orientation (viewer facing the screen, head up).
+
+| Value | Dim | +X | +Y | +Z | Handedness | Used by |
+|-------|-----|----|----|-----|-----------|---------|
+| `"right-up-back"` | 3 | Right | Up | Toward viewer | Right | Three.js, OpenGL |
+| `"right-up-forward"` | 3 | Right | Up | Into screen | Left | Babylon.js, DirectX, Unity |
+| `"right-forward-up"` | 3 | Right | Forward (into screen) | Up | Right | Blender, CAD, engineering |
+| `"right-down-forward"` | 3 | Right | Down | Into screen | Right | Vulkan, screen space |
+| `"forward-right-up"` | 3 | Forward | Right | Up | Left | Unreal Engine |
+| `"east-north-up"` | 3 | East | North | Up | Right | Geospatial, surveying |
+
+**Generic (no axis semantics):**
+
+| Value | Dim | Description |
+|-------|-----|-------------|
+| `"3D-right-handed"` | 3 | Generic right-handed 3D space, axis directions unspecified |
+| `"3D-left-handed"` | 3 | Generic left-handed 3D space, axis directions unspecified |
+
+**Time variants:** Any 3D space name may be suffixed with `"-time"` to produce a 4D space (e.g., `"right-anterior-superior-time"`, `"right-up-back-time"`). The fourth dimension is always time.
 
 The space identifier names the coordinate system and its basis vectors. It does **not** imply anything about axis ordering. Axes can be reordered independently of the spatial embedding.
 
