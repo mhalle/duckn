@@ -8,9 +8,9 @@
 
 ## 1. Purpose
 
-This document defines the `nifti` extension for the duckn convention. It preserves NIfTI-1 and NIfTI-2 header fields that cannot be losslessly derived from duckn convention fields or Zarr array parameters, enabling round-trip conversion between NIfTI and duckn without metadata loss.
+This document defines the `nifti` extension for the duckn specification. It preserves NIfTI-1 and NIfTI-2 header fields that cannot be losslessly derived from duckn specification fields or Zarr array parameters, enabling round-trip conversion between NIfTI and duckn without metadata loss.
 
-The extension carries only what would otherwise be lost. NIfTI's spatial information — the sform affine, its coordinate space code, voxel sizes, and spatial units — decomposes losslessly into the convention's `space`, `space_origin`, per-axis `space_direction`, and per-axis `unit` fields. NIfTI's data type and dimensions map to Zarr's `data_type` and `shape`. The value rescaling slope and intercept map to the convention's `value_transforms`. None of these appear here.
+The extension carries only what would otherwise be lost. NIfTI's spatial information — the sform affine, its coordinate space code, voxel sizes, and spatial units — decomposes losslessly into the specification's `space`, `space_origin`, per-axis `space_direction`, and per-axis `unit` fields. NIfTI's data type and dimensions map to Zarr's `data_type` and `shape`. The value rescaling slope and intercept map to the specification's `value_transforms`. None of these appear here.
 
 What remains is acquisition metadata (slice timing, phase/frequency encoding), statistical intent parameters, display calibration, the secondary qform affine when it differs from the sform, and a handful of descriptive strings.
 
@@ -18,7 +18,7 @@ What remains is acquisition metadata (slice timing, phase/frequency encoding), s
 
 ## 2. Relationship to duckn Convention Fields
 
-The following table shows which NIfTI header fields are already captured by Zarr or the duckn convention and are therefore excluded from this extension.
+The following table shows which NIfTI header fields are already captured by Zarr or the duckn specification and are therefore excluded from this extension.
 
 | NIfTI field | Captured by | Notes |
 |---|---|---|
@@ -28,7 +28,7 @@ The following table shows which NIfTI header fields are already captured by Zarr
 | `pixdim[4]` (temporal) | Time axis `space_direction` or `unit` | Temporal spacing |
 | `sform44` | `space_origin` + `axes[i].space_direction` | Primary affine decomposition (see §3) |
 | `sform_code` | `space` | Coordinate space identity |
-| `qform44` | `space_origin` + `axes[i].space_direction` | Reconstructed from convention fields; only `qform_code` preserved in extension |
+| `qform44` | `space_origin` + `axes[i].space_direction` | Reconstructed from specification fields; only `qform_code` preserved in extension |
 | `scl_slope`, `scl_inter` | `value_transforms` `linear` | Value rescaling |
 | `xyzt_units` (spatial bits) | `axes[i].unit` on spatial axes | e.g., `"mm"` |
 | `xyzt_units` (temporal bits) | `axes[t].unit` on time axis | e.g., `"s"`, `"ms"` |
@@ -42,13 +42,13 @@ Fields not in this table and not in §4 (e.g., `glmin`, `glmax`, `data_type` as 
 
 ## 3. Sform Decomposition
 
-The NIfTI sform is a 4×4 affine matrix. The duckn convention decomposes it completely:
+The NIfTI sform is a 4×4 affine matrix. The duckn specification decomposes it completely:
 
 - **Translation column** (elements `[0:3, 3]`) → `space_origin`
 - **Rotation-scaling columns** (columns 0–2 of the 3×3 submatrix) → `axes[i].space_direction` for each spatial axis
 - **Bottom row** is always `[0, 0, 0, 1]` — carries no information
 
-The `sform_code` maps to the convention's `space` field:
+The `sform_code` maps to the specification's `space` field:
 
 | `sform_code` | `space` value |
 |---|---|
@@ -57,7 +57,7 @@ The `sform_code` maps to the convention's `space` field:
 | 3 (NIFTI_XFORM_TALAIRACH) | `"right-anterior-superior"` |
 | 4 (NIFTI_XFORM_MNI_152) | `"right-anterior-superior"` |
 
-All NIfTI sform coordinate systems are RAS-oriented (the NIfTI-1 spec defines the sform output as left-right / posterior-anterior / inferior-superior with the positive direction being right, anterior, superior). Codes 2–4 differ in what the space *means* (alignment target, atlas), not in the axis directions. The convention's `"right-anterior-superior"` captures the geometric orientation; this extension's `sform_code` field (§4.2) preserves the specific interpretation when round-trip fidelity is needed.
+All NIfTI sform coordinate systems are RAS-oriented (the NIfTI-1 spec defines the sform output as left-right / posterior-anterior / inferior-superior with the positive direction being right, anterior, superior). Codes 2–4 differ in what the space *means* (alignment target, atlas), not in the axis directions. The specification's `"right-anterior-superior"` captures the geometric orientation; this extension's `sform_code` field (§4.2) preserves the specific interpretation when round-trip fidelity is needed.
 
 This decomposition is exact. No information is lost, and the sform can be reconstructed by assembling the columns back into a matrix.
 
@@ -119,7 +119,7 @@ The `tags` object contains NIfTI header fields. All fields within `tags` are opt
 
 #### `sform_code`
 
-The original `sform_code` integer from the NIfTI header. Preserves the distinction between scanner-based, aligned, Talairach, and MNI coordinates that the convention's `space` field collapses.
+The original `sform_code` integer from the NIfTI header. Preserves the distinction between scanner-based, aligned, Talairach, and MNI coordinates that the specification's `space` field collapses.
 
 ```json
 "sform_code": 2
@@ -135,13 +135,13 @@ The original `qform_code` integer from the NIfTI header. Preserved so that a con
 "qform_code": 1
 ```
 
-On write-back, the qform *matrix* is reconstructed from the convention's `space_origin` and `axes[i].space_direction` fields — the same source as the sform. Only the code may differ: for example, `sform_code=4` (MNI) with `qform_code=1` (scanner) is a common pattern from dcm2niix.
+On write-back, the qform *matrix* is reconstructed from the specification's `space_origin` and `axes[i].space_direction` fields — the same source as the sform. Only the code may differ: for example, `sform_code=4` (MNI) with `qform_code=1` (scanner) is a common pattern from dcm2niix.
 
 Omit when the qform was not present (`qform_code` = 0) or when it equals the `sform_code` (the common case). When omitted, a converter should set the qform code equal to the sform code.
 
 ### 4.3 `legacy`
 
-The `legacy` object stores original NIfTI data for provenance. Its contents are informational — the convention fields are always the authoritative source for spatial information.
+The `legacy` object stores original NIfTI data for provenance. Its contents are informational — the specification fields are always the authoritative source for spatial information.
 
 #### `legacy.tags`
 
@@ -171,7 +171,7 @@ Contains the original NIfTI affine matrices as 4×4 arrays (row-major).
 | `sform` | 4×4 array of numbers | Original sform affine. Present when `sform_code` > 0. |
 | `qform` | 4×4 array of numbers | Original qform affine. Present when `qform_code` > 0. |
 
-A converter writing back to NIfTI should reconstruct both affines from convention fields, not from these legacy copies. When the qform and sform were identical (the common case from dcm2niix), both matrices will be equal. When they differed — for example, sform in MNI space and qform in scanner space — both originals are available for inspection.
+A converter writing back to NIfTI should reconstruct both affines from specification fields, not from these legacy copies. When the qform and sform were identical (the common case from dcm2niix), both matrices will be equal. When they differed — for example, sform in MNI space and qform in scanner space — both originals are available for inspection.
 
 #### `dim_info`
 
@@ -223,7 +223,7 @@ The NIfTI intent, preserving the raw code and its associated parameters.
 | `p2` | number | `intent_p2`. Omit if zero and unused by the intent code. |
 | `p3` | number | `intent_p3`. Omit if zero and unused by the intent code. |
 
-The convention's top-level `intent` field captures the broad purpose (e.g., `"statistical-map"`, `"displacement-field"`). This extension field preserves the specific NIfTI intent code and its parameters, which carry additional information — for example, degrees of freedom for a t-statistic, or the specific statistical test type.
+The specification's top-level `intent` field captures the broad purpose (e.g., `"statistical-map"`, `"displacement-field"`). This extension field preserves the specific NIfTI intent code and its parameters, which carry additional information — for example, degrees of freedom for a t-statistic, or the specific statistical test type.
 
 Omit the entire field when `intent_code` is 0 (NIFTI_INTENT_NONE).
 
@@ -244,7 +244,7 @@ Omit the entire field when `intent_code` is 0 (NIFTI_INTENT_NONE).
 | 0 (NONE) | None | — | — |
 | All others | — | — | Raw code preserved here |
 
-This mapping is a guideline for converters. The NIfTI extension always preserves the exact code; the convention's `intent` provides a coarser human-readable classification.
+This mapping is a guideline for converters. The NIfTI extension always preserves the exact code; the specification's `intent` provides a coarser human-readable classification.
 
 #### `slice_timing`
 
@@ -305,7 +305,7 @@ Display calibration range — the suggested minimum and maximum values for displ
 
 These are display hints, not data extremes. `cal_min` = `cal_max` = 0 means "no calibration specified" — omit the field in that case. Omit individual sub-fields that are zero when the other is non-zero.
 
-The duckn convention deliberately excludes display hints. This field exists solely for NIfTI round-trip fidelity.
+The duckn specification deliberately excludes display hints. This field exists solely for NIfTI round-trip fidelity.
 
 #### `descrip`
 
@@ -339,8 +339,8 @@ Omit when empty.
 | `regular` (NIfTI-2) | Always `'r'` |
 | `dim[0..7]` | Zarr `shape` |
 | `datatype`, `bitpix` | Zarr `data_type` |
-| `pixdim[1..7]` | Spatial: recoverable from `space_direction` magnitudes. Temporal: convention axis metadata. |
-| `sform44` | Decomposed into convention fields (§3) |
+| `pixdim[1..7]` | Spatial: recoverable from `space_direction` magnitudes. Temporal: specification axis metadata. |
+| `sform44` | Decomposed into specification fields (§3) |
 | `qform44` (when = sform) | Redundant |
 | `scl_slope`, `scl_inter` | Convention `value_transforms` |
 | `xyzt_units` | Convention per-axis `unit` |
@@ -357,7 +357,7 @@ Omit when empty.
 - When `qform_code` is present, it must be > 0.
 - When `dim_info` is present, dimension indices must be in the range 0–3 and, if non-zero, must refer to valid spatial dimensions in the array.
 - When `slice_timing` is present, `start` and `end` must be valid indices along the slice dimension identified by `dim_info.slice_dim`. If `dim_info.slice_dim` is unknown (0 or absent), `slice_timing` is still permitted but its axis association is ambiguous.
-- `intent.code` and the convention-level `intent` field should be consistent when both are present. The extension preserves the NIfTI code exactly; the convention provides a coarser label.
+- `intent.code` and the specification-level `intent` field should be consistent when both are present. The extension preserves the NIfTI code exactly; the specification provides a coarser label.
 
 ---
 
@@ -494,7 +494,7 @@ An fMRI t-statistic map with degrees of freedom:
 }
 ```
 
-The convention's `intent` says `"statistical-map"`. The extension's `intent` says specifically "t-test with 42 degrees of freedom." The `sform_code` of 4 (MNI space) is preserved because the convention maps it to the same `"right-anterior-superior"` as codes 2 and 3.
+The specification's `intent` says `"statistical-map"`. The extension's `intent` says specifically "t-test with 42 degrees of freedom." The `sform_code` of 4 (MNI space) is preserved because the specification maps it to the same `"right-anterior-superior"` as codes 2 and 3.
 
 ### 7.3 fMRI Time Series with Full Acquisition Metadata
 
@@ -596,7 +596,7 @@ A 4D fMRI dataset with slice timing information and dual affines:
 }
 ```
 
-This example shows the full scope of the extension: dual affine codes (sform as primary spatial embedding, qform code preserved for round-tripping), MRI acquisition parameters (frequency/phase/slice encoding, slice timing), value rescaling, temporal metadata, display calibration, and legacy matrices for provenance. On write-back, both affines are reconstructed from the convention fields, not from the legacy copies.
+This example shows the full scope of the extension: dual affine codes (sform as primary spatial embedding, qform code preserved for round-tripping), MRI acquisition parameters (frequency/phase/slice encoding, slice timing), value rescaling, temporal metadata, display calibration, and legacy matrices for provenance. On write-back, both affines are reconstructed from the specification fields, not from the legacy copies.
 
 ### 7.4 Diffusion Tensor from NIfTI
 
@@ -666,7 +666,7 @@ A symmetric tensor volume with NIfTI intent code 1005:
 }
 ```
 
-The spatial embedding and tensor semantics are fully captured by the convention. The extension preserves only the NIfTI intent code for exact round-tripping.
+The spatial embedding and tensor semantics are fully captured by the specification. The extension preserves only the NIfTI intent code for exact round-tripping.
 
 ### 7.5 Minimal
 
@@ -743,11 +743,11 @@ The "absent means unknown" principle applies: omit keys whose values are at thei
 
 **Why `tags` is a separate namespace.** Without the `tags` object, NIfTI header field names like `intent`, `cal`, and `descrip` share the same JSON namespace as extension metadata like `version` and `nifti_version`. As the extension evolves, the collision risk grows. The `tags` object makes the boundary explicit: everything inside is a NIfTI header field, everything outside is about the extension. This follows the same pattern as the DICOM extension's `tags` namespace.
 
-**Why preserve `sform_code` separately.** The duckn convention's `space` field captures the geometric orientation (RAS) but not the semantic distinction between "aligned to scanner," "aligned to atlas," and "in MNI coordinates." For neuroimaging workflows where the distinction between native space and standard space matters, the raw code is needed.
+**Why preserve `sform_code` separately.** The duckn specification's `space` field captures the geometric orientation (RAS) but not the semantic distinction between "aligned to scanner," "aligned to atlas," and "in MNI coordinates." For neuroimaging workflows where the distinction between native space and standard space matters, the raw code is needed.
 
-**Why the convention fields are authoritative and the original matrices are legacy.** The convention's `space_origin` and `space_direction` fields are the single source of truth for spatial information. On write-back, both the sform and qform are reconstructed from these fields. The original 4×4 matrices are stored as `legacy_sform` and `legacy_qform` for provenance — they let a human or tool inspect what the source NIfTI file contained, but they do not participate in the spatial mapping. This avoids the classic NIfTI problem of two conflicting affines: once the data enters the convention, there is one spatial mapping, period. The legacy matrices and the two code integers are enough to understand the original file's intent without perpetuating the ambiguity.
+**Why the specification fields are authoritative and the original matrices are legacy.** The specification's `space_origin` and `space_direction` fields are the single source of truth for spatial information. On write-back, both the sform and qform are reconstructed from these fields. The original 4×4 matrices are stored as `legacy_sform` and `legacy_qform` for provenance — they let a human or tool inspect what the source NIfTI file contained, but they do not participate in the spatial mapping. This avoids the classic NIfTI problem of two conflicting affines: once the data enters the specification, there is one spatial mapping, period. The legacy matrices and the two code integers are enough to understand the original file's intent without perpetuating the ambiguity.
 
-**Why `cal_min`/`cal_max` are included despite being display hints.** The duckn convention excludes display preferences by design. However, this extension's purpose is round-trip fidelity, not convention purity. Display calibration values are part of the NIfTI header and are used by viewers (FSLeyes, MRIcron, FreeSurfer) to set initial window/level. Dropping them changes the user experience on round-trip.
+**Why `cal_min`/`cal_max` are included despite being display hints.** The duckn specification excludes display preferences by design. However, this extension's purpose is round-trip fidelity, not specification purity. Display calibration values are part of the NIfTI header and are used by viewers (FSLeyes, MRIcron, FreeSurfer) to set initial window/level. Dropping them changes the user experience on round-trip.
 
 **Why `dim_info` uses 1-based indexing.** This matches NIfTI's own convention, where dimension indices in `dim_info` are 1-based (1 = first spatial dimension). A converter must account for the axis ordering difference between NIfTI and Zarr when mapping these indices.
 
