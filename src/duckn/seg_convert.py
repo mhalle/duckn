@@ -58,9 +58,11 @@ def seg_binary_to_labelmap(
     spatial_shape = data.shape[1:]
 
     # Merge to labelmap — last writer wins
-    if n_segments < 256:
+    # n_segments + 1 values needed (0 = background, 1..n = segments)
+    n_labels = n_segments + 1
+    if n_labels <= 256:
         dtype = np.uint8
-    elif n_segments < 65536:
+    elif n_labels <= 65536:
         dtype = np.uint16
     else:
         dtype = np.uint32
