@@ -50,6 +50,7 @@ def build_seg_zmp_bytes(crdc_series_uuid: str) -> bytes:
         build_duckn_metadata,
     )
     from duckn.idc_utils import fetch_series_dicom
+    from duckn.seg_convert import seg_binary_to_labelmap
 
     # Download and parse
     files = fetch_series_dicom(crdc_series_uuid)
@@ -57,7 +58,7 @@ def build_seg_zmp_bytes(crdc_series_uuid: str) -> bytes:
         raise ValueError(f"No DICOM files found for {crdc_series_uuid}")
     ds = pydicom.dcmread(io.BytesIO(files[0]))
 
-    # Decode
+    # Decode DICOM SEG (4D binary)
     data, geometry, sorted_datasets = _load_seg(ds)
     duckn_meta = build_duckn_metadata(
         geometry, sorted_datasets or [ds], anonymized=None, include_tags=True,
@@ -70,16 +71,14 @@ def build_seg_zmp_bytes(crdc_series_uuid: str) -> bytes:
             duckn_meta.extensions = {}
         duckn_meta.extensions["seg"] = seg_ext.model_dump(exclude_none=True)
 
+    # Convert 4D binary → 3D labelmap (non-overlapping segments)
+    if data.ndim == 4:
+        data, duckn_meta = seg_binary_to_labelmap(data, duckn_meta)
+
     # Build ZMP
     shape = list(data.shape)
-    ndim = len(shape)
-
-    if ndim == 4:
-        chunk_shape = [1, 1, shape[2], shape[3]]
-        dim_names = ["segment", "k", "j", "i"]
-    else:
-        chunk_shape = [1, shape[1], shape[2]]
-        dim_names = ["k", "j", "i"]
+    chunk_shape = [1, shape[1], shape[2]]
+    dim_names = ["k", "j", "i"]
 
     zarr_meta = {
         "zarr_format": 3, "node_type": "array",
@@ -99,13 +98,8 @@ def build_seg_zmp_bytes(crdc_series_uuid: str) -> bytes:
     builder = Builder()
     builder.add("zarr.json", text=json.dumps(zarr_meta))
 
-    if ndim == 4:
-        for s in range(shape[0]):
-            for z in range(shape[1]):
-                builder.add(f"c/{s}/{z}/0/0", data=cctx.compress(data[s, z].tobytes()))
-    else:
-        for z in range(shape[0]):
-            builder.add(f"c/{z}/0/0", data=cctx.compress(data[z].tobytes()))
+    for z in range(shape[0]):
+        builder.add(f"c/{z}/0/0", data=cctx.compress(data[z].tobytes()))
 
     buf = io.BytesIO()
     builder.write(buf)
