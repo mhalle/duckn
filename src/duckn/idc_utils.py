@@ -407,7 +407,12 @@ def add_mount(
         resolve={"http": {"url": zmp_path}},
         is_mount=True,
         is_folder=True,
+        content_type=ZMP_MIME,
     )
+
+
+PARQUET_MIME = "application/vnd.apache.parquet"
+ZMP_MIME = "application/vnd.apache.parquet+zmp"
 
 
 def add_parquet(
@@ -426,7 +431,7 @@ def add_parquet(
     import io
     buf = io.BytesIO()
     df.to_parquet(buf, index=False)
-    builder.add(path, data=buf.getvalue())
+    builder.add(path, data=buf.getvalue(), content_type=PARQUET_MIME)
 
 
 # ---------------------------------------------------------------------------

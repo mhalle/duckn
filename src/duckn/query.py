@@ -40,6 +40,9 @@ from typing import Any, Iterator
 
 from zarr_zmp import Manifest
 
+PARQUET_MIME = "application/vnd.apache.parquet"
+ZMP_MIME = "application/vnd.apache.parquet+zmp"
+
 
 class Entry:
     """A single entry from a ZMP manifest."""
@@ -117,6 +120,20 @@ class Entry:
     @property
     def has_resolve(self) -> bool:
         return "R" in (self._entry.addressing or "")
+
+    @property
+    def is_parquet(self) -> bool:
+        ct = self._entry.content_type or ""
+        if ct == PARQUET_MIME:
+            return True
+        return self._path.endswith(".parquet") and self.has_data
+
+    @property
+    def is_zmp(self) -> bool:
+        ct = self._entry.content_type or ""
+        if ct == ZMP_MIME:
+            return True
+        return self._path.endswith(".zmp") and self.is_mount
 
     def as_json(self) -> dict:
         """Parse text content as JSON."""
