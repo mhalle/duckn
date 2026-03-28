@@ -883,7 +883,7 @@ def build_dicomweb_zmp(
     if output_path.exists() and not overwrite:
         raise FileExistsError(f"{output_path} already exists")
 
-    client = httpx.Client(timeout=60, follow_redirects=True)
+    client = httpx.Client(timeout=120, follow_redirects=True)
     try:
         # Auto-discover study UID if not provided
         if study_uid is None:
@@ -897,202 +897,346 @@ def build_dicomweb_zmp(
         resp = client.get(meta_url, headers={"Accept": "application/dicom+json"})
         resp.raise_for_status()
         instances = resp.json()
+
+        if not instances:
+            raise ValueError(f"No instances found for series {series_uid}")
+
+        # Detect SEG by SOPClassUID
+        _SEG_SOP_CLASS = "1.2.840.10008.5.1.4.1.1.66.4"
+        inst0 = instances[0]
+        sop_class = _dicom_json_value(inst0, "00080016")
+        if sop_class == _SEG_SOP_CLASS:
+            return _build_dicomweb_seg_zmp(
+                client, series_base, study_uid, series_uid,
+                instances, output_path, tags=tags,
+            )
+
+        # Extract geometry and sort by slice position
+        T = _DICOM_TAG
+
+        rows = _dicom_json_value(inst0, T["Rows"])
+        cols = _dicom_json_value(inst0, T["Columns"])
+        bits = _dicom_json_value(inst0, T["BitsAllocated"])
+        pixel_rep = _dicom_json_value(inst0, T["PixelRepresentation"]) or 0
+        ps = _dicom_json_value(inst0, T["PixelSpacing"])
+        iop = _dicom_json_value(inst0, T["ImageOrientationPatient"])
+        slice_thickness = _dicom_json_value(inst0, T["SliceThickness"])
+        modality = _dicom_json_value(inst0, T["Modality"])
+        rescale_slope = _dicom_json_value(inst0, T["RescaleSlope"])
+        rescale_intercept = _dicom_json_value(inst0, T["RescaleIntercept"])
+
+        if not iop or len(iop) != 6:
+            raise ValueError("ImageOrientationPatient missing or invalid")
+        if not ps or len(ps) != 2:
+            raise ValueError("PixelSpacing missing or invalid")
+
+        row_cos = np.array(iop[:3])
+        col_cos = np.array(iop[3:])
+        slice_normal = np.cross(row_cos, col_cos)
+        nrm = np.linalg.norm(slice_normal)
+        if nrm > 0:
+            slice_normal = slice_normal / nrm
+
+        row_spacing = float(ps[0])
+        col_spacing = float(ps[1])
+
+        # Sort instances by slice position
+        sorted_instances = []
+        for inst in instances:
+            ipp = _dicom_json_value(inst, T["ImagePositionPatient"])
+            if ipp is None or len(ipp) != 3:
+                continue
+            pos = np.array([float(x) for x in ipp])
+            projection = float(np.dot(pos, slice_normal))
+            sop_uid = _dicom_json_value(inst, T["SOPInstanceUID"])
+            sorted_instances.append({
+                "sop_uid": sop_uid,
+                "position": [float(x) for x in ipp],
+                "projection": projection,
+                "instance": inst,
+            })
+
+        sorted_instances.sort(key=lambda x: x["projection"])
+        n_slices = len(sorted_instances)
+
+        if n_slices == 0:
+            raise ValueError("No instances with ImagePositionPatient found")
+
+        # Compute slice spacing
+        if n_slices > 1:
+            projections = [s["projection"] for s in sorted_instances]
+            diffs = np.diff(projections)
+            slice_spacing = float(np.median(diffs))
+        elif slice_thickness:
+            slice_spacing = float(slice_thickness)
+        else:
+            slice_spacing = 1.0
+
+        # Space directions in C order: [slice, row, col]
+        space_origin = sorted_instances[0]["position"]
+        space_directions = [
+            (slice_normal * slice_spacing).tolist(),
+            (col_cos * row_spacing).tolist(),
+            (row_cos * col_spacing).tolist(),
+        ]
+
+        # Build duckn metadata
+        from .models import (
+            AxisKind, AxisMetadata, Centering, DucknMetadata,
+            SampleMetadata, SpaceName,
+        )
+
+        # Per-sample positions
+        samples = None
+        if n_slices > 1:
+            dir_3d = np.array(space_directions[0])
+            origin_3d = np.array(space_origin)
+            is_uniform = True
+            for i, si in enumerate(sorted_instances):
+                expected = origin_3d + i * dir_3d
+                if not np.allclose(si["position"], expected, atol=1e-3):
+                    is_uniform = False
+                    break
+            if not is_uniform:
+                residuals = []
+                for si in sorted_instances:
+                    p = np.array(si["position"])
+                    along = float(np.dot(p, slice_normal)) * slice_normal
+                    residuals.append(p - along)
+                use_position = all(
+                    np.allclose(r, residuals[0], atol=1e-4) for r in residuals[1:]
+                )
+                if use_position:
+                    samples = [
+                        SampleMetadata(position=si["projection"])
+                        for si in sorted_instances
+                    ]
+                else:
+                    samples = [
+                        SampleMetadata(origin=si["position"])
+                        for si in sorted_instances
+                    ]
+
+        axes = [
+            AxisMetadata(
+                kind=AxisKind.SPACE, centering=Centering.CELL,
+                space_direction=space_directions[0],
+                thickness=float(slice_thickness) if slice_thickness else None,
+                unit="mm", samples=samples,
+            ),
+            AxisMetadata(
+                kind=AxisKind.SPACE, centering=Centering.CELL,
+                space_direction=space_directions[1], unit="mm",
+            ),
+            AxisMetadata(
+                kind=AxisKind.SPACE, centering=Centering.CELL,
+                space_direction=space_directions[2], unit="mm",
+            ),
+        ]
+
+        # DICOM extension tags
+        extensions = None
+        if tags:
+            from pydicom.datadict import keyword_for_tag
+
+            skip_tags = {
+                T["Rows"], T["Columns"], T["BitsAllocated"],
+                T["PixelRepresentation"], T["ImagePositionPatient"],
+                T["ImageOrientationPatient"], T["PixelSpacing"],
+                T["SOPInstanceUID"], T["NumberOfFrames"],
+            }
+            dicom_tags = {}
+            for tag_code, entry in inst0.items():
+                if tag_code in skip_tags:
+                    continue
+                values = entry.get("Value")
+                if values is None:
+                    continue
+                keyword = keyword_for_tag(int(tag_code, 16)) or tag_code
+                dicom_tags[keyword] = values[0] if len(values) == 1 else values
+
+            dicom_ext = {"version": "1.0"}
+            if dicom_tags:
+                dicom_ext["tags"] = dicom_tags
+            extensions = {"dicom": dicom_ext}
+
+        space = SpaceName.LEFT_POSTERIOR_SUPERIOR
+
+        # Value transforms (rescale slope/intercept)
+        value_transforms = None
+        slope = float(rescale_slope) if rescale_slope is not None else None
+        intercept = float(rescale_intercept) if rescale_intercept is not None else None
+        if slope is not None or intercept is not None:
+            from .models import ValueTransform
+            value_transforms = [ValueTransform(
+                name="linear",
+                parameters={"slope": slope or 1.0, "intercept": intercept or 0.0},
+            )]
+
+        duckn_meta = DucknMetadata(
+            version="1.0",
+            space=space,
+            space_origin=space_origin,
+            axes=axes,
+            value_transforms=value_transforms,
+            extensions=extensions,
+        )
+
+        # Dtype
+        _dtype_map = {
+            (8, 0): "uint8", (8, 1): "int8",
+            (16, 0): "uint16", (16, 1): "int16",
+            (32, 0): "uint32", (32, 1): "int32",
+        }
+        dtype_str = _dtype_map.get((bits, pixel_rep), "uint16")
+
+        # Build zarr.json
+        zarr_meta = {
+            "zarr_format": 3,
+            "node_type": "array",
+            "shape": [n_slices, rows, cols],
+            "data_type": dtype_str,
+            "chunk_grid": {
+                "name": "regular",
+                "configuration": {"chunk_shape": [1, rows, cols]},
+            },
+            "chunk_key_encoding": {
+                "name": "default",
+                "configuration": {"separator": "/"},
+            },
+            "fill_value": 0,
+            "codecs": [
+                {"name": "bytes", "configuration": {"endian": "little"}},
+            ],
+            "attributes": {"duckn": duckn_meta.model_dump(exclude_none=True)},
+            "dimension_names": ["k", "j", "i"],
+        }
+
+        # Build ZMP with dicomweb resolve scheme
+        builder = ZMPBuilder()
+        builder.add("zarr.json", text=json.dumps(zarr_meta))
+
+        dicomweb_base = {"dicomweb": {"study": study_uid, "series": series_uid}}
+
+        for k, si in enumerate(sorted_instances):
+            builder.add(
+                f"c/{k}/0/0",
+                resolve={"dicomweb": {"instance": si["sop_uid"], "frame": 1}},
+                base_resolve=dicomweb_base,
+            )
+
+        if output_path.exists() and overwrite:
+            output_path.unlink()
+
+        builder.write(output_path)
+        return output_path
     finally:
         client.close()
 
-    if not instances:
-        raise ValueError(f"No instances found for series {series_uid}")
 
-    # Extract geometry and sort by slice position
-    T = _DICOM_TAG
-    inst0 = instances[0]
+def _build_dicomweb_seg_zmp(
+    client: Any,
+    series_base: str,
+    study_uid: str,
+    series_uid: str,
+    instances: list[dict],
+    output_path: Path,
+    *,
+    tags: bool = True,
+) -> Path:
+    """Build a ZMP from a DICOM SEG series via DICOMweb.
 
-    rows = _dicom_json_value(inst0, T["Rows"])
-    cols = _dicom_json_value(inst0, T["Columns"])
-    bits = _dicom_json_value(inst0, T["BitsAllocated"])
-    pixel_rep = _dicom_json_value(inst0, T["PixelRepresentation"]) or 0
-    ps = _dicom_json_value(inst0, T["PixelSpacing"])
-    iop = _dicom_json_value(inst0, T["ImageOrientationPatient"])
-    slice_thickness = _dicom_json_value(inst0, T["SliceThickness"])
-    modality = _dicom_json_value(inst0, T["Modality"])
-    rescale_slope = _dicom_json_value(inst0, T["RescaleSlope"])
-    rescale_intercept = _dicom_json_value(inst0, T["RescaleIntercept"])
+    Fetches the full DICOM instance (pixel data required for bitpacked SEG),
+    decodes to a labelmap, and stores chunks inline in the ZMP.
+    """
+    import io
+    import zstandard
 
-    if not iop or len(iop) != 6:
-        raise ValueError("ImageOrientationPatient missing or invalid")
-    if not ps or len(ps) != 2:
-        raise ValueError("PixelSpacing missing or invalid")
+    from zarr_zmp import Builder as ZMPBuilder
 
-    row_cos = np.array(iop[:3])
-    col_cos = np.array(iop[3:])
-    slice_normal = np.cross(row_cos, col_cos)
-    nrm = np.linalg.norm(slice_normal)
-    if nrm > 0:
-        slice_normal = slice_normal / nrm
+    from .dicom_convert import (
+        _extract_seg_extension,
+        _is_dicom_seg,
+        _load_seg,
+        build_duckn_metadata,
+    )
 
-    row_spacing = float(ps[0])
-    col_spacing = float(ps[1])
+    # SEG is typically a single multiframe instance
+    sop_uid = _dicom_json_value(instances[0], "00080018")
 
-    # Sort instances by slice position
-    sorted_instances = []
-    for inst in instances:
-        ipp = _dicom_json_value(inst, T["ImagePositionPatient"])
-        if ipp is None or len(ipp) != 3:
-            continue
-        pos = np.array([float(x) for x in ipp])
-        projection = float(np.dot(pos, slice_normal))
-        sop_uid = _dicom_json_value(inst, T["SOPInstanceUID"])
-        sorted_instances.append({
-            "sop_uid": sop_uid,
-            "position": [float(x) for x in ipp],
-            "projection": projection,
-            "instance": inst,
-        })
+    # Fetch full DICOM instance via WADO-RS.
+    # SEG pixel data is bitpacked and requires the per-frame functional
+    # groups for reliable frame-to-segment mapping, so we need the full
+    # instance — individual frame retrieval is insufficient.
+    instance_url = f"{series_base}/instances/{sop_uid}"
+    try:
+        resp = client.get(
+            instance_url,
+            headers={"Accept": "multipart/related; type=application/dicom"},
+            timeout=300,
+        )
+        resp.raise_for_status()
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to fetch DICOM SEG instance. Some DICOMweb servers "
+            f"(e.g., IDC proxy) cannot serve large multiframe objects. "
+            f"Try downloading the DICOM file directly and using "
+            f"dicom_to_zarr() instead. Error: {e}"
+        ) from e
 
-    sorted_instances.sort(key=lambda x: x["projection"])
-    n_slices = len(sorted_instances)
+    # Extract DICOM part from multipart response
+    dcm_bytes = _extract_dicom_from_multipart(resp)
 
-    if n_slices == 0:
-        raise ValueError("No instances with ImagePositionPatient found")
+    # Parse with pydicom
+    import pydicom
 
-    # Compute slice spacing
-    if n_slices > 1:
-        projections = [s["projection"] for s in sorted_instances]
-        diffs = np.diff(projections)
-        slice_spacing = float(np.median(diffs))
-    elif slice_thickness:
-        slice_spacing = float(slice_thickness)
-    else:
-        slice_spacing = 1.0
+    ds = pydicom.dcmread(io.BytesIO(dcm_bytes))
 
-    # Space directions in C order: [slice, row, col]
-    space_origin = sorted_instances[0]["position"]
-    space_directions = [
-        (slice_normal * slice_spacing).tolist(),
-        (col_cos * row_spacing).tolist(),
-        (row_cos * col_spacing).tolist(),
-    ]
+    if not _is_dicom_seg(ds):
+        raise ValueError(f"Instance {sop_uid} is not a DICOM SEG")
+
+    # Load and decode pixel data
+    data, geometry, sorted_datasets = _load_seg(ds)
 
     # Build duckn metadata
-    from .models import (
-        AxisKind, AxisMetadata, Centering, DucknMetadata,
-        SampleMetadata, SpaceName,
+    duckn_meta = build_duckn_metadata(
+        sorted_datasets or [ds],
+        geometry,
+        data.shape,
+        tags=tags,
     )
 
-    # Per-sample positions
-    samples = None
-    if n_slices > 1:
-        dir_3d = np.array(space_directions[0])
-        origin_3d = np.array(space_origin)
-        is_uniform = True
-        for i, si in enumerate(sorted_instances):
-            expected = origin_3d + i * dir_3d
-            if not np.allclose(si["position"], expected, atol=1e-3):
-                is_uniform = False
-                break
-        if not is_uniform:
-            # Check position vs origin
-            residuals = []
-            for si in sorted_instances:
-                p = np.array(si["position"])
-                along = float(np.dot(p, slice_normal)) * slice_normal
-                residuals.append(p - along)
-            use_position = all(
-                np.allclose(r, residuals[0], atol=1e-4) for r in residuals[1:]
-            )
-            if use_position:
-                samples = [
-                    SampleMetadata(position=si["projection"])
-                    for si in sorted_instances
-                ]
-            else:
-                samples = [
-                    SampleMetadata(origin=si["position"])
-                    for si in sorted_instances
-                ]
+    # Extract seg extension
+    seg_ext = _extract_seg_extension(ds)
+    if seg_ext is not None:
+        if duckn_meta.extensions is None:
+            duckn_meta.extensions = {}
+        duckn_meta.extensions["seg"] = seg_ext.model_dump(exclude_none=True)
 
-    axes = [
-        AxisMetadata(
-            kind=AxisKind.SPACE, centering=Centering.CELL,
-            space_direction=space_directions[0],
-            thickness=float(slice_thickness) if slice_thickness else None,
-            unit="mm", samples=samples,
-        ),
-        AxisMetadata(
-            kind=AxisKind.SPACE, centering=Centering.CELL,
-            space_direction=space_directions[1], unit="mm",
-        ),
-        AxisMetadata(
-            kind=AxisKind.SPACE, centering=Centering.CELL,
-            space_direction=space_directions[2], unit="mm",
-        ),
-    ]
+    # Determine shape and chunking
+    shape = list(data.shape)
+    ndim = len(shape)
+    dtype_str = str(data.dtype)
 
-    # DICOM extension tags (series-level — from first instance, skip geometry)
-    extensions = None
-    if tags:
-        from pydicom.datadict import keyword_for_tag
-
-        skip_tags = {
-            T["Rows"], T["Columns"], T["BitsAllocated"],
-            T["PixelRepresentation"], T["ImagePositionPatient"],
-            T["ImageOrientationPatient"], T["PixelSpacing"],
-            T["SOPInstanceUID"], T["NumberOfFrames"],
-        }
-        dicom_tags = {}
-        for tag_code, entry in inst0.items():
-            if tag_code in skip_tags:
-                continue
-            values = entry.get("Value")
-            if values is None:
-                continue
-            keyword = keyword_for_tag(int(tag_code, 16)) or tag_code
-            dicom_tags[keyword] = values[0] if len(values) == 1 else values
-
-        dicom_ext = {"version": "1.0"}
-        if dicom_tags:
-            dicom_ext["tags"] = dicom_tags
-        extensions = {"dicom": dicom_ext}
-
-    space = SpaceName.LEFT_POSTERIOR_SUPERIOR
-
-    # Value transforms (rescale slope/intercept)
-    value_transforms = None
-    slope = float(rescale_slope) if rescale_slope is not None else None
-    intercept = float(rescale_intercept) if rescale_intercept is not None else None
-    if slope is not None or intercept is not None:
-        from .models import ValueTransform
-        value_transforms = [ValueTransform(
-            name="linear",
-            parameters={"slope": slope or 1.0, "intercept": intercept or 0.0},
-        )]
-
-    duckn_meta = DucknMetadata(
-        version="1.0",
-        space=space,
-        space_origin=space_origin,
-        axes=axes,
-        value_transforms=value_transforms,
-        extensions=extensions,
-    )
-
-    # Dtype
-    _dtype_map = {
-        (8, 0): "uint8", (8, 1): "int8",
-        (16, 0): "uint16", (16, 1): "int16",
-        (32, 0): "uint32", (32, 1): "int32",
-    }
-    dtype_str = _dtype_map.get((bits, pixel_rep), "uint16")
+    # Chunk: one slice (or one segment-slice for 4D)
+    if ndim == 4:
+        # 4D binary: (n_segments, n_z, rows, cols)
+        chunk_shape = [1, 1, shape[2], shape[3]]
+        dim_names = ["segment", "k", "j", "i"]
+    else:
+        # 3D labelmap: (n_z, rows, cols)
+        chunk_shape = [1, shape[1], shape[2]]
+        dim_names = ["k", "j", "i"]
 
     # Build zarr.json
     zarr_meta = {
         "zarr_format": 3,
         "node_type": "array",
-        "shape": [n_slices, rows, cols],
+        "shape": shape,
         "data_type": dtype_str,
         "chunk_grid": {
             "name": "regular",
-            "configuration": {"chunk_shape": [1, rows, cols]},
+            "configuration": {"chunk_shape": chunk_shape},
         },
         "chunk_key_encoding": {
             "name": "default",
@@ -1101,27 +1245,79 @@ def build_dicomweb_zmp(
         "fill_value": 0,
         "codecs": [
             {"name": "bytes", "configuration": {"endian": "little"}},
+            {"name": "zstd", "configuration": {"level": 3, "checksum": False}},
         ],
         "attributes": {"duckn": duckn_meta.model_dump(exclude_none=True)},
-        "dimension_names": ["k", "j", "i"],
+        "dimension_names": dim_names,
     }
 
-    # Build ZMP with dicomweb resolve scheme
-    # study/series go in base_resolve; instance/frame per chunk
+    # Build ZMP with inline compressed chunks
+    cctx = zstandard.ZstdCompressor(level=3)
     builder = ZMPBuilder()
     builder.add("zarr.json", text=json.dumps(zarr_meta))
 
-    dicomweb_base = {"dicomweb": {"study": study_uid, "series": series_uid}}
+    if ndim == 4:
+        n_seg, n_z, rows, cols = shape
+        for s in range(n_seg):
+            for z in range(n_z):
+                chunk_data = data[s, z, :, :].tobytes()
+                compressed = cctx.compress(chunk_data)
+                builder.add(f"c/{s}/{z}/0/0", data=compressed)
+    else:
+        n_z = shape[0]
+        for z in range(n_z):
+            chunk_data = data[z, :, :].tobytes()
+            compressed = cctx.compress(chunk_data)
+            builder.add(f"c/{z}/0/0", data=compressed)
 
-    for k, si in enumerate(sorted_instances):
-        builder.add(
-            f"c/{k}/0/0",
-            resolve={"dicomweb": {"instance": si["sop_uid"], "frame": 1}},
-            base_resolve=dicomweb_base,
-        )
-
-    if output_path.exists() and overwrite:
+    if output_path.exists():
         output_path.unlink()
 
     builder.write(output_path)
     return output_path
+
+
+def _extract_dicom_from_multipart(resp: Any) -> bytes:
+    """Extract DICOM binary from a WADO-RS multipart/related response."""
+    content_type = resp.headers.get("content-type", "")
+
+    # Find boundary
+    boundary = None
+    for part in content_type.split(";"):
+        part = part.strip()
+        if part.startswith("boundary="):
+            boundary = part[len("boundary="):].strip('"')
+            break
+
+    if boundary is None:
+        return resp.content
+
+    sep = f"--{boundary}".encode()
+    parts = resp.content.split(sep)
+
+    for part in parts:
+        if not part.strip() or part.strip() == b"--":
+            continue
+        # Find blank line separating headers from body
+        for marker in (b"\r\n\r\n", b"\n\n"):
+            idx = part.find(marker)
+            if idx != -1:
+                body = part[idx + len(marker):]
+                # Check for DICOM magic
+                if len(body) > 132 and body[128:132] == b"DICM":
+                    return body
+                # Check for DICOM tag pattern
+                if len(body) > 4:
+                    import struct
+                    group = struct.unpack("<H", body[:2])[0]
+                    if group in (0x0002, 0x0008):
+                        return body
+                break
+
+    # Fallback: largest part
+    largest = max(parts, key=len)
+    for marker in (b"\r\n\r\n", b"\n\n"):
+        idx = largest.find(marker)
+        if idx != -1:
+            return largest[idx + len(marker):]
+    return largest
