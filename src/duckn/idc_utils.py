@@ -394,7 +394,7 @@ def add_mount(
     path: str,
     zmp_path: str,
 ) -> None:
-    """Add a mount entry pointing to another ZMP file.
+    """Add a mount entry pointing to an external ZMP file.
 
     Parameters
     ----------
@@ -407,6 +407,40 @@ def add_mount(
     builder.mount(
         path,
         resolve={"http": {"url": zmp_path}},
+        content_type=ContentType.ZMP,
+    )
+
+
+def add_inline_mount(
+    builder: Any,
+    mount_path: str,
+    child_zmp_bytes: bytes,
+    entry_name: str | None = None,
+) -> None:
+    """Add an inline ZMP as a mount within the parent manifest.
+
+    The child ZMP bytes are stored as inline data, and a mount entry
+    references them by internal path.
+
+    Parameters
+    ----------
+    builder : zarr_zmp.Builder
+    mount_path : mount path in the parent (e.g., "2001/standard/ct")
+    child_zmp_bytes : serialized ZMP file bytes
+    entry_name : name for the inline data entry (default: mount_path + ".zmp")
+    """
+    from zmanifest import ContentType
+
+    if entry_name is None:
+        entry_name = mount_path.strip("/").replace("/", "_") + ".zmp"
+
+    # Store child ZMP as inline data
+    builder.add(entry_name, data=child_zmp_bytes, content_type=ContentType.ZMP)
+
+    # Mount referencing the inline entry
+    builder.mount(
+        mount_path,
+        resolve={"_path": {"entry": f"/{entry_name}"}},
         content_type=ContentType.ZMP,
     )
 
