@@ -133,6 +133,20 @@ class Entry:
             raise ValueError(f"Entry {self._path} has no inline data")
         return pq.read_table(io.BytesIO(data))
 
+    def sql(self, query: str) -> Any:
+        """Run a DuckDB SQL query on inline parquet data.
+
+        The data is available as the table ``entry``.
+        Requires duckdb and pyarrow.
+
+        Returns a DuckDB result (call ``.fetchdf()`` or ``.fetchall()``).
+        """
+        import duckdb
+
+        entry = self.as_parquet()  # noqa: F841 — referenced in SQL
+        conn = duckdb.connect()
+        return conn.execute(query)
+
     def __repr__(self) -> str:
         return f"Entry({self._path!r}, addressing={self.addressing!r})"
 
