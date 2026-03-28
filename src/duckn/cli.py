@@ -682,10 +682,10 @@ def seg_to_labelmap_cmd(
     Output is a 3D store where each voxel value is a segment number.
     Accepts Zarr stores and ZMP manifests.
     """
-    from .seg_convert import seg_4d_to_labelmap
+    from .seg_convert import write_seg_binary_to_labelmap
 
     store = _open_store(input_path)
-    seg_4d_to_labelmap(
+    write_seg_binary_to_labelmap(
         store if store is not None else input_path,
         output_path,
         compressor=compressor,
@@ -714,10 +714,10 @@ def labelmap_to_seg_cmd(
     layer per segment with chunk shape (1, nz, rows, cols).
     Accepts Zarr stores and ZMP manifests.
     """
-    from .seg_convert import labelmap_to_seg_4d
+    from .seg_convert import write_seg_labelmap_to_binary
 
     store = _open_store(input_path)
-    labelmap_to_seg_4d(
+    write_seg_labelmap_to_binary(
         store if store is not None else input_path,
         output_path,
         compressor=compressor,

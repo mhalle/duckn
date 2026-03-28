@@ -159,7 +159,7 @@ def seg_labelmap_to_binary(
 # ---------------------------------------------------------------------------
 
 
-def seg_4d_to_labelmap(
+def write_seg_binary_to_labelmap(
     input_source: str | Path | Any,
     output_path: str | Path,
     *,
@@ -199,7 +199,7 @@ def seg_4d_to_labelmap(
         )
 
 
-def labelmap_to_seg_4d(
+def write_seg_labelmap_to_binary(
     input_source: str | Path | Any,
     output_path: str | Path,
     *,
