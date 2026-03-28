@@ -39,19 +39,18 @@ from pathlib import PurePosixPath
 from typing import Any, Iterator
 
 from zarr_zmp import Manifest
-
-PARQUET_MIME = "application/vnd.apache.parquet"
-ZMP_MIME = "application/vnd.apache.parquet+zmp"
+from zmanifest import ContentType
 
 
 class Entry:
     """A single entry from a ZMP manifest."""
 
-    __slots__ = ("_entry", "_path")
+    __slots__ = ("_entry", "_path", "_manifest")
 
-    def __init__(self, manifest_entry: Any, path: str):
+    def __init__(self, manifest_entry: Any, path: str, manifest: Manifest):
         self._entry = manifest_entry
         self._path = path
+        self._manifest = manifest
 
     @property
     def path(self) -> str:
@@ -67,7 +66,7 @@ class Entry:
 
     @property
     def data(self) -> bytes | None:
-        return self._entry.data if hasattr(self._entry, "data") else None
+        return self._manifest.get_data(self._path)
 
     @property
     def resolve(self) -> dict | None:
@@ -124,14 +123,14 @@ class Entry:
     @property
     def is_parquet(self) -> bool:
         ct = self._entry.content_type or ""
-        if ct == PARQUET_MIME:
+        if ct == ContentType.PARQUET:
             return True
         return self._path.endswith(".parquet") and self.has_data
 
     @property
     def is_zmp(self) -> bool:
         ct = self._entry.content_type or ""
-        if ct == ZMP_MIME:
+        if ct == ContentType.ZMP:
             return True
         return self._path.endswith(".zmp") and self.is_mount
 
@@ -252,7 +251,7 @@ class ZMP:
                 # Create a synthetic folder entry
                 entries.append(_SyntheticEntry(p))
                 continue
-            entry = Entry(e, p)
+            entry = Entry(e, p, self._manifest)
             if not self._matches_filters(entry, kwargs):
                 continue
             entries.append(entry)
@@ -264,7 +263,7 @@ class ZMP:
         e = self._manifest.get_entry(path)
         if e is None:
             raise KeyError(f"Entry not found: {path}")
-        return Entry(e, path)
+        return Entry(e, path, self._manifest)
 
     def exists(self, path: str) -> bool:
         """Check if an entry exists at the given path."""

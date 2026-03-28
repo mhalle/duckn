@@ -402,17 +402,13 @@ def add_mount(
     path : mount path in the parent (e.g., "2001/standard/ct")
     zmp_path : filesystem path or URL to the child ZMP
     """
-    builder.add(
+    from zmanifest import ContentType
+
+    builder.mount(
         path,
         resolve={"http": {"url": zmp_path}},
-        is_mount=True,
-        is_folder=True,
-        content_type=ZMP_MIME,
+        content_type=ContentType.ZMP,
     )
-
-
-PARQUET_MIME = "application/vnd.apache.parquet"
-ZMP_MIME = "application/vnd.apache.parquet+zmp"
 
 
 def add_parquet(
@@ -429,9 +425,12 @@ def add_parquet(
     df : pandas DataFrame to serialize
     """
     import io
+
+    from zmanifest import ContentType
+
     buf = io.BytesIO()
     df.to_parquet(buf, index=False)
-    builder.add(path, data=buf.getvalue(), content_type=PARQUET_MIME)
+    builder.add(path, data=buf.getvalue(), content_type=ContentType.PARQUET)
 
 
 # ---------------------------------------------------------------------------
