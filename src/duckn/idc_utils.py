@@ -172,16 +172,15 @@ def resolve_seg_sr_references(
 # DICOM SR parsing
 # ---------------------------------------------------------------------------
 
-def sr_to_dataframe(dicom_bytes: bytes) -> "pd.DataFrame":
-    """Parse a DICOM TID 1500 Measurement Report into a DataFrame.
+def sr_to_records(dicom_bytes: bytes) -> list[dict[str, Any]]:
+    """Parse a DICOM TID 1500 Measurement Report into a list of dicts.
 
     Extracts per-organ measurements from TotalSegmentator-style
     structured reports.
 
-    Returns a DataFrame with columns:
+    Returns a list of dicts with keys:
         organ, measurement, value, unit
     """
-    import pandas as pd
     import pydicom
 
     ds = pydicom.dcmread(pydicom.filebase.DicomBytesIO(dicom_bytes))
@@ -189,10 +188,44 @@ def sr_to_dataframe(dicom_bytes: bytes) -> "pd.DataFrame":
     rows: list[dict[str, Any]] = []
     content_seq = getattr(ds, "ContentSequence", None)
     if content_seq is None:
-        return pd.DataFrame(columns=["organ", "measurement", "value", "unit"])
+        return rows
 
     _walk_sr_content(content_seq, rows, context={})
-    return pd.DataFrame(rows)
+    return rows
+
+
+def sr_to_dataframe(
+    dicom_bytes: bytes,
+    engine: str = "pandas",
+) -> Any:
+    """Parse a DICOM TID 1500 Measurement Report into a DataFrame.
+
+    Extracts per-organ measurements from TotalSegmentator-style
+    structured reports.
+
+    Parameters
+    ----------
+    dicom_bytes : raw DICOM file bytes
+    engine : "pandas" or "polars"
+
+    Returns a DataFrame with columns:
+        organ, measurement, value, unit
+    """
+    rows = sr_to_records(dicom_bytes)
+
+    if engine == "polars":
+        import polars as pl
+        if not rows:
+            return pl.DataFrame(
+                schema={"organ": pl.Utf8, "measurement": pl.Utf8,
+                        "value": pl.Float64, "unit": pl.Utf8}
+            )
+        return pl.DataFrame(rows)
+    else:
+        import pandas as pd
+        if not rows:
+            return pd.DataFrame(columns=["organ", "measurement", "value", "unit"])
+        return pd.DataFrame(rows)
 
 
 def _walk_sr_content(
