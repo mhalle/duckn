@@ -117,14 +117,14 @@ class SegAccessor:
         return seg.name if seg else None
 
     @property
-    def names(self) -> list[str]:
+    def names(self) -> list[str | None]:
         """List all segment names."""
-        return [s.name or "" for s in self.segments]
+        return [s.name for s in self.segments]
 
     @property
-    def labels(self) -> list[int]:
-        """List all label values."""
-        return [s.label_value or 0 for s in self.segments]
+    def label_values(self) -> list:
+        """List all label values (int or list[int])."""
+        return [s.label_value for s in self.segments]
 
     @property
     def raw(self) -> dict:
