@@ -292,6 +292,16 @@ class VolumeGeometry:
         return np.allclose(self.R, np.eye(self.ndim), atol=1e-6)
 
     @property
+    def has_uniform_spacing(self) -> bool:
+        """True if spacing is constant along each axis (no per-sample positions).
+
+        Currently always True since VolumeGeometry only supports
+        uniform sampling. Will be False when per-sample positions
+        are supported.
+        """
+        return True
+
+    @property
     def is_isotropic(self) -> bool:
         """True if all voxel spacings are equal."""
         return np.allclose(self.spacing, self.spacing[0], rtol=1e-6)
