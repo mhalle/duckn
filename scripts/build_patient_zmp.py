@@ -8,6 +8,8 @@ and builds a single self-contained ZMP with:
   - SEG arrays as inline-mounted ZMPs with decoded pixel data
   - SR measurements as inline parquet tables
 
+All sub-ZMP builds run in parallel for speed.
+
 Usage:
     python scripts/build_patient_zmp.py 119269 /tmp/patient_119269.zmp
     python scripts/build_patient_zmp.py 119269 /tmp/patient_119269.zmp --overwrite
@@ -16,31 +18,39 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import io
 import json
 import sys
-import tempfile
+import time
 from pathlib import Path
 
 
-def build_ct_zmp_bytes(crdc_series_uuid: str) -> bytes:
-    """Build a CT ZMP in memory, return bytes."""
-    from duckn.idc_zmp import build_idc_zmp
+# ---------------------------------------------------------------------------
+# Sub-ZMP builders (each returns bytes)
+# ---------------------------------------------------------------------------
 
-    with tempfile.NamedTemporaryFile(suffix=".zmp", delete=False) as f:
-        tmp = f.name
+
+async def build_ct_zmp_bytes(crdc_series_uuid: str, base_url: str) -> bytes:
+    """Build a CT ZMP using the async IDC builder, return bytes."""
+    import tempfile
+
+    from duckn.idc_zmp import async_build_idc_zmp
+
+    tmp = tempfile.mktemp(suffix=".zmp")
     try:
-        build_idc_zmp(crdc_series_uuid, tmp, overwrite=True)
+        await async_build_idc_zmp(
+            crdc_series_uuid, tmp, base_url=base_url, overwrite=True,
+        )
         return Path(tmp).read_bytes()
     finally:
         Path(tmp).unlink(missing_ok=True)
 
 
-def build_seg_zmp_bytes(crdc_series_uuid: str) -> bytes:
-    """Download DICOM SEG from S3, decode, build ZMP in memory, return bytes."""
-    import numpy as np
+def _build_seg_zmp_bytes_sync(crdc_series_uuid: str) -> bytes:
+    """Download DICOM SEG from S3, decode to labelmap, build ZMP. (sync)"""
     import pydicom
-    import asyncio
+    import zarr
 
     from zarr_zmp import ZMPWritableStore
 
@@ -52,35 +62,29 @@ def build_seg_zmp_bytes(crdc_series_uuid: str) -> bytes:
     from duckn.idc_utils import fetch_series_dicom
     from duckn.seg_convert import seg_binary_to_labelmap
 
-    # Download and parse
     files = fetch_series_dicom(crdc_series_uuid)
     if not files:
         raise ValueError(f"No DICOM files found for {crdc_series_uuid}")
     ds = pydicom.dcmread(io.BytesIO(files[0]))
 
-    # Decode DICOM SEG (4D binary)
     data, geometry, sorted_datasets = _load_seg(ds)
     duckn_meta = build_duckn_metadata(
         geometry, sorted_datasets or [ds], anonymized=None, include_tags=True,
     )
 
-    # Seg extension
     seg_ext = _extract_seg_extension(ds)
     if seg_ext is not None:
         if duckn_meta.extensions is None:
             duckn_meta.extensions = {}
         duckn_meta.extensions["seg"] = seg_ext.model_dump(exclude_none=True)
 
-    # Convert 4D binary → 3D labelmap (non-overlapping segments)
     if data.ndim == 4:
         data, duckn_meta = seg_binary_to_labelmap(data, duckn_meta)
 
-    # Write through zarr into a ZMPWritableStore
     buf = io.BytesIO()
     store = ZMPWritableStore(buf)
     attrs = {"duckn": duckn_meta.model_dump(exclude_none=True)}
 
-    import zarr
     arr = zarr.open_array(
         store, mode="w",
         shape=data.shape, dtype=data.dtype,
@@ -88,31 +92,63 @@ def build_seg_zmp_bytes(crdc_series_uuid: str) -> bytes:
         attributes=attrs,
     )
     arr[:] = data
-    asyncio.run(store.close())
+    # Can't use asyncio.run() inside a thread spawned by an event loop,
+    # but store.close() is the coroutine we need. Use a new event loop
+    # since this runs in a separate thread via to_thread().
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(store.close())
+    finally:
+        loop.close()
     return buf.getvalue()
 
 
-def build_patient(
+async def build_seg_zmp_bytes(crdc_series_uuid: str) -> bytes:
+    """Async wrapper — runs sync SEG builder in a thread."""
+    return await asyncio.to_thread(_build_seg_zmp_bytes_sync, crdc_series_uuid)
+
+
+def _build_features_sync(sr_infos: dict) -> "pd.DataFrame":
+    """Download and parse SR files, return combined DataFrame. (sync)"""
+    import pandas as pd
+
+    from duckn.idc_utils import fetch_series_dicom, sr_to_dataframe
+
+    dfs = []
+    for label, info in sr_infos.items():
+        files = fetch_series_dicom(info["crdc_series_uuid"])
+        df = sr_to_dataframe(files[0])
+        df["feature_type"] = label
+        dfs.append(df)
+
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+
+async def build_features(sr_infos: dict) -> "pd.DataFrame":
+    """Async wrapper — runs sync SR parsing in a thread."""
+    return await asyncio.to_thread(_build_features_sync, sr_infos)
+
+
+# ---------------------------------------------------------------------------
+# Task types
+# ---------------------------------------------------------------------------
+
+
+async def build_patient(
     patient_id: str,
     output_path: Path,
     *,
     overwrite: bool = False,
 ) -> Path:
-    """Build a single self-contained patient ZMP.
-
-    All sub-ZMPs (CT, SEG) are stored inline as mounted entries.
-    Features parquet tables are stored inline.
-    """
+    """Build a single self-contained patient ZMP with parallel fetching."""
     from zarr_zmp import Builder
 
     from duckn.idc_utils import (
         add_group,
         add_inline_mount,
         add_parquet,
-        fetch_series_dicom,
         group_patient_data,
         query_patient_series,
-        sr_to_dataframe,
     )
 
     if output_path.exists() and not overwrite:
@@ -133,64 +169,88 @@ def build_patient(
         kernels = hierarchy[year]
         print(f"  {year}: {', '.join(sorted(kernels.keys()))}")
 
-    # Build everything into one ZMP
+    # Build all sub-ZMPs and features in parallel
     print()
+    print("Building all series in parallel...")
+    t0 = time.time()
+
+    tasks: list[tuple[str, str, str, asyncio.Task]] = []  # (type, year, kernel, task)
+
+    for year in sorted(hierarchy):
+        for kernel in sorted(hierarchy[year]):
+            data = hierarchy[year][kernel]
+            prefix = f"{year}/{kernel}"
+
+            if data["ct"]:
+                ct_info = data["ct"][0]
+                task = asyncio.create_task(
+                    build_ct_zmp_bytes(ct_info["crdc_series_uuid"], base_url="https://idc-open-data.s3.amazonaws.com"),
+                    name=f"{prefix}/ct",
+                )
+                tasks.append(("ct", year, kernel, task))
+                print(f"  {prefix}/ct: started")
+
+            if data["seg"]:
+                seg_info = data["seg"][0]
+                task = asyncio.create_task(
+                    build_seg_zmp_bytes(seg_info["crdc_series_uuid"]),
+                    name=f"{prefix}/seg",
+                )
+                tasks.append(("seg", year, kernel, task))
+                print(f"  {prefix}/seg: started")
+
+            sr_infos = {}
+            if data["sr_shape"]:
+                sr_infos["shape"] = data["sr_shape"][0]
+            if data["sr_firstorder"]:
+                sr_infos["firstorder"] = data["sr_firstorder"][0]
+            if sr_infos:
+                task = asyncio.create_task(
+                    build_features(sr_infos),
+                    name=f"{prefix}/features",
+                )
+                tasks.append(("features", year, kernel, task))
+                print(f"  {prefix}/features: started")
+
+    # Wait for all tasks
+    all_tasks = [t[3] for t in tasks]
+    results = await asyncio.gather(*all_tasks, return_exceptions=True)
+
+    elapsed = time.time() - t0
+    print(f"\nAll tasks completed in {elapsed:.1f}s")
+
+    # Assemble patient ZMP
+    print("\nAssembling patient ZMP...")
     builder = Builder()
     builder.add("zarr.json", text=json.dumps({
         "zarr_format": 3, "node_type": "group",
         "attributes": {"patient_id": patient_id, "source": "IDC"},
     }))
 
+    # Ensure all groups exist
     for year in sorted(hierarchy):
         add_group(builder, year)
-
         for kernel in sorted(hierarchy[year]):
-            data = hierarchy[year][kernel]
-            prefix = f"{year}/{kernel}"
-            add_group(builder, prefix)
+            add_group(builder, f"{year}/{kernel}")
 
-            # --- CT ---
-            if data["ct"]:
-                ct_info = data["ct"][0]
-                print(f"  {prefix}/ct: building from {ct_info['crdc_series_uuid']}...")
-                try:
-                    ct_bytes = build_ct_zmp_bytes(ct_info["crdc_series_uuid"])
-                    add_inline_mount(builder, f"{prefix}/ct", ct_bytes)
-                    print(f"    → {len(ct_bytes) / 1024:.0f} KB")
-                except Exception as e:
-                    print(f"    ERROR: {e}", file=sys.stderr)
+    # Add results
+    for (task_type, year, kernel, _), result in zip(tasks, results):
+        prefix = f"{year}/{kernel}"
 
-            # --- SEG ---
-            if data["seg"]:
-                seg_info = data["seg"][0]
-                print(f"  {prefix}/seg: downloading and decoding...")
-                try:
-                    seg_bytes = build_seg_zmp_bytes(seg_info["crdc_series_uuid"])
-                    add_inline_mount(builder, f"{prefix}/seg", seg_bytes)
-                    print(f"    → {len(seg_bytes) / 1024:.0f} KB")
-                except Exception as e:
-                    print(f"    ERROR: {e}", file=sys.stderr)
+        if isinstance(result, Exception):
+            print(f"  ERROR {prefix}/{task_type}: {result}", file=sys.stderr)
+            continue
 
-            # --- SR (features) ---
-            sr_dfs = []
-            for sr_type in ("sr_shape", "sr_firstorder"):
-                if data[sr_type]:
-                    sr_info = data[sr_type][0]
-                    label = sr_type.replace("sr_", "")
-                    print(f"  {prefix}/{label}: parsing SR...")
-                    try:
-                        files = fetch_series_dicom(sr_info["crdc_series_uuid"])
-                        df = sr_to_dataframe(files[0])
-                        df["feature_type"] = label
-                        sr_dfs.append(df)
-                        print(f"    → {len(df)} measurements")
-                    except Exception as e:
-                        print(f"    ERROR: {e}", file=sys.stderr)
-
-            if sr_dfs:
-                import pandas as pd
-                combined = pd.concat(sr_dfs, ignore_index=True)
-                add_parquet(builder, f"{prefix}/features.parquet", combined)
+        if task_type == "ct":
+            add_inline_mount(builder, f"{prefix}/ct", result)
+            print(f"  {prefix}/ct: {len(result) / 1024:.0f} KB")
+        elif task_type == "seg":
+            add_inline_mount(builder, f"{prefix}/seg", result)
+            print(f"  {prefix}/seg: {len(result) / 1024:.0f} KB")
+        elif task_type == "features":
+            if not result.empty:
+                add_parquet(builder, f"{prefix}/features.parquet", result)
+                print(f"  {prefix}/features: {len(result)} rows")
 
     # Write
     if output_path.exists() and overwrite:
@@ -212,7 +272,7 @@ def main():
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing")
 
     args = parser.parse_args()
-    build_patient(args.patient_id, args.output, overwrite=args.overwrite)
+    asyncio.run(build_patient(args.patient_id, args.output, overwrite=args.overwrite))
 
 
 if __name__ == "__main__":
