@@ -7,6 +7,7 @@ axes are pre-blurred with a Gaussian to prevent aliasing.
 from __future__ import annotations
 
 from copy import deepcopy
+from enum import IntEnum
 from typing import Any
 
 import numpy as np
@@ -15,6 +16,14 @@ from scipy import ndimage
 from .models import DucknMetadata
 from .spatial import VolumeGeometry
 from .volume import Volume
+
+
+class Interpolation(IntEnum):
+    """Interpolation method for resampling."""
+
+    NEAREST = 0
+    LINEAR = 1
+    CUBIC = 3
 
 
 def _resolve_target_spacing(
@@ -55,7 +64,7 @@ def resample(
     vol: Volume,
     target: Any = None,
     *,
-    order: int = 1,
+    order: int | Interpolation = Interpolation.LINEAR,
     fill: float = 0,
 ) -> Volume:
     """Resample a volume to a target spacing.
@@ -69,10 +78,10 @@ def resample(
         [a, b, c]      → per-axis spacing (None = keep current)
         Volume         → match that volume's spacing
         VolumeGeometry → match that geometry's spacing
-    order : interpolation order
-        0 = nearest-neighbor (for labelmaps/segmentations)
-        1 = linear (default, for images)
-        3 = cubic B-spline
+    order : interpolation method
+        Interpolation.NEAREST (0) — for labelmaps/segmentations
+        Interpolation.LINEAR (1)  — default, for images
+        Interpolation.CUBIC (3)   — high-quality images
     fill : value for out-of-bounds voxels (default 0)
 
     Returns
