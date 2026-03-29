@@ -122,17 +122,19 @@ def normalize_kernel(series_description: str) -> str:
 
 def resolve_seg_sr_references(
     patient_series: "pd.DataFrame",
+    dicomweb_url: str | None = None,
 ) -> dict[str, str]:
     """Map SEG/SR SeriesInstanceUIDs to their referenced CT SeriesInstanceUIDs.
 
-    Uses the series description to match: TotalSegmentator descriptions
-    contain "of Series N" which corresponds to the Nth CT series
-    (sorted by series number) within the same study.
+    First attempts to resolve via DICOMweb metadata
+    (ReferencedSeriesSequence), which is authoritative. Falls back to
+    parsing "of Series N" from the description if DICOMweb is unavailable.
 
     Parameters
     ----------
     patient_series : DataFrame with columns:
         StudyInstanceUID, SeriesInstanceUID, Modality, SeriesDescription
+    dicomweb_url : optional DICOMweb base URL for metadata lookups
 
     Returns
     -------
@@ -140,28 +142,101 @@ def resolve_seg_sr_references(
     """
     refs: dict[str, str] = {}
 
-    for study_uid in patient_series["StudyInstanceUID"].unique():
+    # Collect SEG/SR series that need resolution
+    seg_sr_series = patient_series[
+        patient_series["Modality"].isin(["SEG", "SR"])
+    ]
+
+    if dicomweb_url and not seg_sr_series.empty:
+        refs = _resolve_via_dicomweb(patient_series, seg_sr_series, dicomweb_url)
+
+    # Fall back to description parsing for any unresolved
+    unresolved = seg_sr_series[
+        ~seg_sr_series["SeriesInstanceUID"].isin(refs)
+    ]
+    if not unresolved.empty:
+        fallback = _resolve_via_description(patient_series, unresolved)
+        refs.update(fallback)
+
+    return refs
+
+
+def _resolve_via_dicomweb(
+    patient_series: "pd.DataFrame",
+    seg_sr_series: "pd.DataFrame",
+    dicomweb_url: str,
+) -> dict[str, str]:
+    """Resolve SEG/SR → CT via DICOMweb ReferencedSeriesSequence."""
+    import httpx
+
+    refs: dict[str, str] = {}
+    ct_uids = set(
+        patient_series[patient_series["Modality"] == "CT"]["SeriesInstanceUID"]
+    )
+
+    client = httpx.Client(timeout=30, follow_redirects=True)
+    try:
+        for _, row in seg_sr_series.iterrows():
+            study_uid = row["StudyInstanceUID"]
+            series_uid = row["SeriesInstanceUID"]
+
+            try:
+                meta_url = (
+                    f"{dicomweb_url}/studies/{study_uid}"
+                    f"/series/{series_uid}/metadata"
+                )
+                resp = client.get(
+                    meta_url,
+                    headers={"Accept": "application/dicom+json"},
+                )
+                resp.raise_for_status()
+                instances = resp.json()
+
+                if not instances:
+                    continue
+
+                inst = instances[0]
+                # ReferencedSeriesSequence (0008,1115)
+                ref_seq = inst.get("00081115", {}).get("Value", [])
+                for ref in ref_seq:
+                    ref_series_uid = ref.get("0020000E", {}).get("Value", [""])[0]
+                    if ref_series_uid in ct_uids:
+                        refs[series_uid] = ref_series_uid
+                        break
+            except Exception:
+                continue
+    finally:
+        client.close()
+
+    return refs
+
+
+def _resolve_via_description(
+    patient_series: "pd.DataFrame",
+    seg_sr_series: "pd.DataFrame",
+) -> dict[str, str]:
+    """Fallback: resolve SEG/SR → CT by parsing 'of Series N' from description."""
+    refs: dict[str, str] = {}
+
+    for study_uid in seg_sr_series["StudyInstanceUID"].unique():
         study_data = patient_series[
             patient_series["StudyInstanceUID"] == study_uid
         ]
 
-        # Get CT series sorted by series number or description
         ct_series = study_data[study_data["Modality"] == "CT"].sort_values(
             "SeriesDescription"
         )
         ct_list = ct_series["SeriesInstanceUID"].tolist()
 
-        # Match SEG/SR to CT
-        for _, row in study_data.iterrows():
-            if row["Modality"] not in ("SEG", "SR"):
-                continue
+        study_seg_sr = seg_sr_series[
+            seg_sr_series["StudyInstanceUID"] == study_uid
+        ]
+
+        for _, row in study_seg_sr.iterrows():
             desc = row["SeriesDescription"]
-            # Extract "of Series N" pattern
             match = re.search(r"of [Ss]eries\s+(\d+)", desc)
             if match:
                 series_num = int(match.group(1))
-                # Series numbers are 1-based in the description,
-                # referring to the Nth CT series
                 if 0 < series_num <= len(ct_list):
                     refs[row["SeriesInstanceUID"]] = ct_list[series_num - 1]
 
@@ -490,8 +565,15 @@ def query_patient_series(
     return result
 
 
+IDC_DICOMWEB_URL = (
+    "https://proxy.imaging.datacommons.cancer.gov/current/"
+    "viewer-only-no-downloads-see-tinyurl-dot-com-slash-3j3d9jyp/dicomWeb"
+)
+
+
 def group_patient_data(
     series_df: "pd.DataFrame",
+    dicomweb_url: str | None = IDC_DICOMWEB_URL,
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """Organize patient series into a year → kernel → {ct, seg, sr} hierarchy.
 
@@ -501,7 +583,7 @@ def group_patient_data(
     Each list contains series info dicts with keys:
         SeriesInstanceUID, crdc_series_uuid, SeriesDescription, series_size_MB
     """
-    refs = resolve_seg_sr_references(series_df)
+    refs = resolve_seg_sr_references(series_df, dicomweb_url=dicomweb_url)
 
     # Build CT lookup: SeriesInstanceUID → kernel name
     ct_kernels: dict[str, str] = {}
