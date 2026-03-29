@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 
+from .extensions import Extensions
 from .models import DucknMetadata
 from .spatial import VolumeGeometry
 
@@ -73,6 +74,11 @@ class Volume:
         # Invalidate cached geometry so it picks up the new transform
         if "geometry" in self.__dict__:
             del self.__dict__["geometry"]
+
+    @property
+    def extensions(self) -> Extensions:
+        """Typed access to extensions."""
+        return Extensions(self.meta.extensions)
 
     def get_extension(self, name: str) -> Any | None:
         """Get a top-level extension by name, or None if not present."""
