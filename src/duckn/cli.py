@@ -859,6 +859,10 @@ def from_idc_patient(
       duckn from-idc-patient 119269 patient_119269.zmp --clinical-dir ~/idc_clinical/
     """
     import asyncio
+    import logging
+
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     from .build_patient_zmp import build_patient
 

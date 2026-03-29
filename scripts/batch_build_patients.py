@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import sys
 import time
 from pathlib import Path
@@ -131,8 +132,16 @@ def main():
         "--clinical-dir", type=Path, default=None,
         help="Path to IDC clinical data directory",
     )
+    parser.add_argument(
+        "--verbose", action="store_true",
+        help="Show HTTP request logging",
+    )
 
     args = parser.parse_args()
+
+    if not args.verbose:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     output_dir = args.output_dir or args.batch_file.parent
     asyncio.run(run_batch(args.batch_file, output_dir, args.workers, args.clinical_dir))

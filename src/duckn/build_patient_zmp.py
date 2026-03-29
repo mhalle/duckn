@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import io
 import json
+import logging
 import sys
 import time
 from pathlib import Path
@@ -363,7 +364,14 @@ def main():
         help="Path to IDC clinical data directory (contains nlst_prsn/, nlst_canc/, etc.)",
     )
 
+    parser.add_argument("--verbose", action="store_true", help="Show HTTP request logging")
+
     args = parser.parse_args()
+
+    if not args.verbose:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     asyncio.run(build_patient(
         args.patient_id, args.output,
         overwrite=args.overwrite, clinical_dir=args.clinical_dir,
