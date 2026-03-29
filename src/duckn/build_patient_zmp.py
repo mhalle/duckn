@@ -134,11 +134,77 @@ async def build_features(sr_infos: dict) -> "pd.DataFrame":
 # ---------------------------------------------------------------------------
 
 
+def _load_clinical_data(
+    patient_id: str,
+    clinical_dir: Path,
+    years: list[str],
+) -> dict[str, Any]:
+    """Load clinical parquet tables for a patient.
+
+    Returns dict with keys: subject, diagnosis, screening (per year),
+    abnormalities (per year). Each value is a pandas DataFrame or None.
+    """
+    import pandas as pd
+
+    result: dict[str, Any] = {
+        "subject": None,
+        "diagnosis": None,
+        "screening": {},
+        "abnormalities": {},
+    }
+
+    # nlst_prsn → subject.parquet (1 row)
+    prsn_path = clinical_dir / "nlst_prsn" / "000000000000.parquet"
+    if prsn_path.exists():
+        df = pd.read_parquet(prsn_path)
+        match = df[df["pid"].astype(str) == patient_id]
+        if not match.empty:
+            result["subject"] = match
+
+    # nlst_canc → diagnosis.parquet (0-1 rows)
+    canc_path = clinical_dir / "nlst_canc" / "000000000000.parquet"
+    if canc_path.exists():
+        df = pd.read_parquet(canc_path)
+        match = df[df["pid"].astype(str) == patient_id]
+        if not match.empty:
+            result["diagnosis"] = match
+
+    # nlst_screen → screening.parquet per year
+    screen_path = clinical_dir / "nlst_screen" / "000000000000.parquet"
+    if screen_path.exists():
+        df = pd.read_parquet(screen_path)
+        patient_rows = df[df["pid"].astype(str) == patient_id]
+        for _, row in patient_rows.iterrows():
+            study_yr = int(row["study_yr"])
+            # study_yr 0,1,2 maps to years[0], years[1], years[2]
+            if study_yr < len(years):
+                year = years[study_yr]
+                result["screening"][year] = patient_rows[
+                    patient_rows["study_yr"] == row["study_yr"]
+                ]
+
+    # nlst_ctab → abnormalities.parquet per year
+    ctab_path = clinical_dir / "nlst_ctab" / "000000000000.parquet"
+    if ctab_path.exists():
+        df = pd.read_parquet(ctab_path)
+        patient_rows = df[df["pid"].astype(str) == patient_id]
+        for study_yr in patient_rows["study_yr"].unique():
+            yr_int = int(study_yr)
+            if yr_int < len(years):
+                year = years[yr_int]
+                result["abnormalities"][year] = patient_rows[
+                    patient_rows["study_yr"] == study_yr
+                ]
+
+    return result
+
+
 async def build_patient(
     patient_id: str,
     output_path: Path,
     *,
     overwrite: bool = False,
+    clinical_dir: Path | None = None,
 ) -> Path:
     """Build a single self-contained patient ZMP with parallel fetching."""
     from zarr_zmp import Builder
@@ -252,6 +318,28 @@ async def build_patient(
                 add_parquet(builder, f"{prefix}/features.parquet", result)
                 print(f"  {prefix}/features: {len(result)} rows")
 
+    # Embed clinical data if available
+    if clinical_dir:
+        years = sorted(hierarchy.keys())
+        clinical = _load_clinical_data(patient_id, clinical_dir, years)
+
+        if clinical["subject"] is not None:
+            add_parquet(builder, "subject.parquet", clinical["subject"])
+            print(f"  subject.parquet: {len(clinical['subject'])} rows")
+
+        if clinical["diagnosis"] is not None:
+            add_parquet(builder, "diagnosis.parquet", clinical["diagnosis"])
+            print(f"  diagnosis.parquet: {len(clinical['diagnosis'])} rows")
+
+        for year in years:
+            if year in clinical["screening"]:
+                add_parquet(builder, f"{year}/screening.parquet", clinical["screening"][year])
+                print(f"  {year}/screening.parquet: {len(clinical['screening'][year])} rows")
+
+            if year in clinical["abnormalities"]:
+                add_parquet(builder, f"{year}/abnormalities.parquet", clinical["abnormalities"][year])
+                print(f"  {year}/abnormalities.parquet: {len(clinical['abnormalities'][year])} rows")
+
     # Write
     if output_path.exists() and overwrite:
         output_path.unlink()
@@ -270,9 +358,16 @@ def main():
     parser.add_argument("patient_id", help="IDC patient ID")
     parser.add_argument("output", type=Path, help="Output .zmp file")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing")
+    parser.add_argument(
+        "--clinical-dir", type=Path, default=None,
+        help="Path to IDC clinical data directory (contains nlst_prsn/, nlst_canc/, etc.)",
+    )
 
     args = parser.parse_args()
-    asyncio.run(build_patient(args.patient_id, args.output, overwrite=args.overwrite))
+    asyncio.run(build_patient(
+        args.patient_id, args.output,
+        overwrite=args.overwrite, clinical_dir=args.clinical_dir,
+    ))
 
 
 if __name__ == "__main__":

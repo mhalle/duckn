@@ -836,27 +836,36 @@ def to_bids(input_path: str, output_path: str | None) -> None:
 @click.argument("patient_id", type=str)
 @click.argument("output_path", type=click.Path())
 @click.option("--overwrite", is_flag=True, help="Overwrite existing output")
+@click.option(
+    "--clinical-dir", type=click.Path(exists=True, path_type=Path), default=None,
+    help="Path to IDC clinical data directory (contains nlst_prsn/, nlst_canc/, etc.)",
+)
 def from_idc_patient(
     patient_id: str,
     output_path: str,
     overwrite: bool,
+    clinical_dir: Path | None,
 ) -> None:
     """Build a patient-level ZMP from IDC data.
 
     Queries the IDC index for all series for the given patient,
     organizes them into a year/kernel hierarchy, and builds a single
     self-contained ZMP with CT (virtual S3 refs), SEG (inline labelmaps),
-    and radiomics features (inline parquet).
+    radiomics features (inline parquet), and optionally clinical data.
 
     \b
     Example:
       duckn from-idc-patient 119269 patient_119269.zmp
+      duckn from-idc-patient 119269 patient_119269.zmp --clinical-dir ~/idc_clinical/
     """
     import asyncio
 
     from .build_patient_zmp import build_patient
 
-    asyncio.run(build_patient(patient_id, Path(output_path), overwrite=overwrite))
+    asyncio.run(build_patient(
+        patient_id, Path(output_path),
+        overwrite=overwrite, clinical_dir=clinical_dir,
+    ))
 
 
 @cli.command("from-zarr-zip")
