@@ -40,9 +40,9 @@ def build_seg_zmp_bytes(crdc_series_uuid: str) -> bytes:
     """Download DICOM SEG from S3, decode, build ZMP in memory, return bytes."""
     import numpy as np
     import pydicom
-    import zstandard
+    import asyncio
 
-    from zarr_zmp import Builder
+    from zarr_zmp import ZMPWritableStore
 
     from duckn.dicom_convert import (
         _extract_seg_extension,
@@ -75,34 +75,20 @@ def build_seg_zmp_bytes(crdc_series_uuid: str) -> bytes:
     if data.ndim == 4:
         data, duckn_meta = seg_binary_to_labelmap(data, duckn_meta)
 
-    # Build ZMP
-    shape = list(data.shape)
-    chunk_shape = [1, shape[1], shape[2]]
-    dim_names = ["k", "j", "i"]
-
-    zarr_meta = {
-        "zarr_format": 3, "node_type": "array",
-        "shape": shape, "data_type": str(data.dtype),
-        "chunk_grid": {"name": "regular", "configuration": {"chunk_shape": chunk_shape}},
-        "chunk_key_encoding": {"name": "default", "configuration": {"separator": "/"}},
-        "fill_value": 0,
-        "codecs": [
-            {"name": "bytes", "configuration": {"endian": "little"}},
-            {"name": "zstd", "configuration": {"level": 3, "checksum": False}},
-        ],
-        "attributes": {"duckn": duckn_meta.model_dump(exclude_none=True)},
-        "dimension_names": dim_names,
-    }
-
-    cctx = zstandard.ZstdCompressor(level=3)
-    builder = Builder()
-    builder.add("zarr.json", text=json.dumps(zarr_meta))
-
-    for z in range(shape[0]):
-        builder.add(f"c/{z}/0/0", data=cctx.compress(data[z].tobytes()))
-
+    # Write through zarr into a ZMPWritableStore
     buf = io.BytesIO()
-    builder.write(buf)
+    store = ZMPWritableStore(buf)
+    attrs = {"duckn": duckn_meta.model_dump(exclude_none=True)}
+
+    import zarr
+    arr = zarr.open_array(
+        store, mode="w",
+        shape=data.shape, dtype=data.dtype,
+        chunks=(data.shape[0], data.shape[1], data.shape[2]),
+        attributes=attrs,
+    )
+    arr[:] = data
+    asyncio.run(store.close())
     return buf.getvalue()
 
 
