@@ -7,3 +7,7 @@ build/
 
 # Large real-world test data (not checked in)
 tests/data/real-world/
+output/idc/patient_*.zmp
+js/duckn-cornerstone/demo/public/*.zmp
+js/duckn-cornerstone/demo/package-lock.json
+js/duckn-reader/demo/public/*.zmp
