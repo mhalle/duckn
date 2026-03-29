@@ -23,6 +23,57 @@ class Volume:
     data: np.ndarray
     meta: DucknMetadata
 
+    def add_transform(
+        self,
+        to_space: str,
+        *,
+        affine: "np.ndarray | list[list[float]] | None" = None,
+        identity: bool = False,
+        metadata: dict | None = None,
+    ) -> None:
+        """Add a space transform from world to a named space.
+
+        Parameters
+        ----------
+        to_space : target space name (e.g., "nifti:mni152")
+        affine : N×(N+1) affine matrix (world → target), mutually
+                 exclusive with identity
+        identity : if True, declares world space IS the target space
+        metadata : optional provenance dict (software, method, date, etc.)
+        """
+        import numpy as np
+
+        from .models import (
+            SpaceReference,
+            SpaceTransformEntry,
+            TransformObject,
+        )
+
+        if affine is not None and identity:
+            raise ValueError("Cannot specify both affine and identity")
+        if affine is None and not identity:
+            raise ValueError("Must specify either affine or identity=True")
+
+        if identity:
+            transform = TransformObject(identity=True)
+        else:
+            matrix = np.asarray(affine, dtype=float).tolist()
+            transform = TransformObject(affine=matrix)
+
+        entry = SpaceTransformEntry(
+            to=SpaceReference(name=to_space),
+            forward=transform,
+            metadata=metadata,
+        )
+
+        if self.meta.space_transforms is None:
+            self.meta.space_transforms = []
+        self.meta.space_transforms.append(entry)
+
+        # Invalidate cached geometry so it picks up the new transform
+        if "geometry" in self.__dict__:
+            del self.__dict__["geometry"]
+
     @cached_property
     def geometry(self) -> VolumeGeometry:
         """Spatial geometry, computed lazily from metadata + shape."""
