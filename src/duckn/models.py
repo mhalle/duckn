@@ -247,6 +247,77 @@ class AxisMetadata(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Space transforms
+# ---------------------------------------------------------------------------
+
+
+class SpaceReference(BaseModel):
+    """Reference to a coordinate space (§4 of transform spec).
+
+    Either a built-in space (via ``space``) or a named space (via ``name``).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    space: str | None = None  # built-in: "world", "axis-aligned", etc.
+    name: str | None = None   # named: "nifti:mni152", "surgical_plan", etc.
+    axes: list[AxisMetadata] | None = None  # optional axis descriptions
+
+    @model_validator(mode="after")
+    def _check_exactly_one(self) -> SpaceReference:
+        if self.space is not None and self.name is not None:
+            raise ValueError("SpaceReference must have either 'space' or 'name', not both")
+        if self.space is None and self.name is None:
+            raise ValueError("SpaceReference must have either 'space' or 'name'")
+        if self.space is not None and self.axes is not None:
+            raise ValueError("'axes' is only valid with named space references")
+        return self
+
+
+class TransformObject(BaseModel):
+    """A mathematical transform mapping (§6 of transform spec).
+
+    Contains exactly one key: ``identity`` or ``affine``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    identity: bool | None = None
+    affine: list[list[float]] | None = None
+
+    @model_validator(mode="after")
+    def _check_exactly_one(self) -> TransformObject:
+        has_identity = self.identity is not None
+        has_affine = self.affine is not None
+        if has_identity == has_affine:
+            raise ValueError("TransformObject must have exactly one of 'identity' or 'affine'")
+        return self
+
+
+class SpaceTransformEntry(BaseModel):
+    """A single entry in the ``space_transforms`` array (§5 of transform spec).
+
+    Describes a transform between two coordinate spaces.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    to: SpaceReference
+    from_: SpaceReference | None = Field(None, alias="from")
+    forward: TransformObject | None = None
+    inverse: TransformObject | None = None
+    metadata: dict[str, Any] | None = None
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    @model_validator(mode="after")
+    def _check_has_transform(self) -> SpaceTransformEntry:
+        if self.forward is None and self.inverse is None:
+            raise ValueError("At least one of 'forward' or 'inverse' must be present")
+        return self
+
+
+# ---------------------------------------------------------------------------
 # Top-level duckn metadata object
 # ---------------------------------------------------------------------------
 
@@ -265,6 +336,7 @@ class DucknMetadata(BaseModel):
     value_transforms: list[ValueTransform] | None = None
     intent: str | None = None
     axes: list[AxisMetadata] | None = None
+    space_transforms: list[SpaceTransformEntry] | None = None
     extensions: dict[str, Any] | None = None
     unit_systems: dict[str, UnitSystemEntry] | None = None
 
