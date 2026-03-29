@@ -4,5 +4,10 @@
   "description": "Spatial coordinate transforms for duckn volumes",
   "type": "module",
   "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./vtk-adapter": "./src/vtk-adapter.js",
+    "./cornerstone-adapter": "./src/cornerstone-adapter.js"
+  },
   "license": "MIT"
 }
