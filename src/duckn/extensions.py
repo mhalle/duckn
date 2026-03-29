@@ -92,8 +92,10 @@ class SegAccessor:
         for seg in self.segments:
             if name is not None and seg.name == name:
                 return seg
-            if label_value is not None and seg.label_value == label_value:
-                return seg
+            if label_value is not None:
+                lv = seg.label_value
+                if lv == label_value or lv == [label_value]:
+                    return seg
             if snomed is not None:
                 sct = seg.identifiers.get("snomedct", {})
                 if sct.get("id") == snomed:
