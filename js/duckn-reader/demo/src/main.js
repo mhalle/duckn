@@ -15,8 +15,68 @@ import vtkColorMaps from '@kitware/vtk.js/Rendering/Core/ColorTransferFunction/C
 import * as zarr from 'zarrita';
 import FetchStore from '@zarrita/storage/fetch';
 import ZipFileStore from '@zarrita/storage/zip';
+import { ZMPStore } from 'zarr-zmp-ts';
 import * as nifti from 'nifti-reader-js';
 import { niftiToImageData } from './niftiToImageData.js';
+
+// ---- CORS proxy resolver for ZMPStore ----
+
+const PROXY_PREFIX = window.location.origin + '/cors-proxy/';
+
+function proxyUrl(url) {
+  if (url.startsWith('http://') || url.startsWith('https://')) {
+    return PROXY_PREFIX + encodeURIComponent(url);
+  }
+  return url;
+}
+
+/** HttpResolver that routes external URLs through the Vite CORS proxy. */
+class ProxiedHttpResolver {
+  async resolve(params, bases) {
+    let url = params.url ?? '';
+
+    // Compose base chain (same logic as zarr-zmp-ts HttpResolver)
+    if (bases?.length) {
+      let effectiveBase;
+      for (const base of bases) {
+        const baseUrl = base.url;
+        if (baseUrl == null) continue;
+        if (effectiveBase == null || baseUrl.includes('://') || baseUrl.startsWith('/')) {
+          effectiveBase = baseUrl;
+        } else if (effectiveBase.startsWith('http://') || effectiveBase.startsWith('https://')) {
+          effectiveBase = new URL(baseUrl, effectiveBase).href;
+        }
+      }
+      if (effectiveBase && url) {
+        if (!url.includes('://') && !url.startsWith('/')) {
+          if (effectiveBase.startsWith('http://') || effectiveBase.startsWith('https://')) {
+            url = new URL(url, effectiveBase).href;
+          }
+        }
+      } else if (effectiveBase && !url) {
+        url = effectiveBase;
+      }
+    }
+
+    const headers = {};
+    const offset = params.offset;
+    const length = params.length;
+    if (offset != null && length != null) {
+      headers['Range'] = `bytes=${offset}-${offset + length - 1}`;
+    }
+
+    const resp = await fetch(proxyUrl(url), { headers });
+    if (resp.status === 200 || resp.status === 206) {
+      return new Uint8Array(await resp.arrayBuffer());
+    }
+    return undefined;
+  }
+}
+
+// ---- value transform state ----
+
+let currentSlope = 1;
+let currentIntercept = 0;
 
 // ---- ducknToImageData ----
 
@@ -64,6 +124,19 @@ function ducknToImageData(data, shape, attrs) {
   ];
 
   const dimensions = [shape[2], shape[1], shape[0]];
+
+  // Extract value_transforms for windowing
+  currentSlope = 1;
+  currentIntercept = 0;
+  if (duckn.value_transforms) {
+    for (const vt of duckn.value_transforms) {
+      if (vt.name === 'linear' && vt.parameters) {
+        currentSlope = vt.parameters.slope ?? 1;
+        currentIntercept = vt.parameters.intercept ?? 0;
+        break;
+      }
+    }
+  }
 
   const imageData = vtkImageData.newInstance({ origin, spacing });
   imageData.setDimensions(dimensions);
@@ -136,23 +209,58 @@ function applyColormap(ctfun, name, range) {
   }
 }
 
+// ---- CT window/level presets (in Hounsfield Units) ----
+
+const CT_PRESETS = {
+  'auto':       null,  // use full scalar range
+  'ct-bone':    { center: 500,  width: 2000 },
+  'ct-soft':    { center: 40,   width: 400  },
+  'ct-lung':    { center: -600, width: 1500 },
+  'ct-brain':   { center: 40,   width: 80   },
+  'ct-abdomen': { center: 40,   width: 350  },
+};
+
+function getEffectiveRange(presetName, dataRange) {
+  const preset = CT_PRESETS[presetName];
+  if (!preset) return dataRange;
+  // Convert HU to stored pixel values: stored = (HU - intercept) / slope
+  const lo = (preset.center - preset.width / 2 - currentIntercept) / currentSlope;
+  const hi = (preset.center + preset.width / 2 - currentIntercept) / currentSlope;
+  return [lo, hi];
+}
+
 // ---- opacity presets ----
 
-function applyOpacity(ofun, name, range) {
+function applyOpacity(ofun, cmapName, range, presetName) {
   ofun.removeAllPoints();
   const [lo, hi] = range;
   const span = hi - lo || 1;
 
-  if (name === 'ct-bone' || name === 'ct-soft') {
-    // CT-style: transparent air/low density, ramp up for tissue
-    const threshold = name === 'ct-soft' ? 0.25 : 0.35;
+  if (presetName === 'ct-bone') {
+    // Bone: transparent below ~200 HU, ramp through cortical bone
     ofun.addPoint(lo, 0.0);
-    ofun.addPoint(lo + threshold * span, 0.0);
-    ofun.addPoint(lo + (threshold + 0.15) * span, 0.15);
-    ofun.addPoint(lo + 0.7 * span, 0.4);
+    ofun.addPoint(lo + 0.1 * span, 0.0);    // air/soft tissue transparent
+    ofun.addPoint(lo + 0.25 * span, 0.0);
+    ofun.addPoint(lo + 0.35 * span, 0.05);   // start showing cancellous bone
+    ofun.addPoint(lo + 0.55 * span, 0.3);    // cortical bone
     ofun.addPoint(hi, 0.8);
+  } else if (presetName === 'ct-lung') {
+    // Lung: show air-filled structures
+    ofun.addPoint(lo, 0.0);
+    ofun.addPoint(lo + 0.1 * span, 0.0);
+    ofun.addPoint(lo + 0.3 * span, 0.05);
+    ofun.addPoint(lo + 0.5 * span, 0.15);
+    ofun.addPoint(lo + 0.7 * span, 0.3);
+    ofun.addPoint(hi, 0.5);
+  } else if (presetName && presetName.startsWith('ct-')) {
+    // General CT: gentle soft tissue ramp
+    ofun.addPoint(lo, 0.0);
+    ofun.addPoint(lo + 0.15 * span, 0.0);
+    ofun.addPoint(lo + 0.35 * span, 0.1);
+    ofun.addPoint(lo + 0.6 * span, 0.3);
+    ofun.addPoint(hi, 0.6);
   } else {
-    // General purpose: gentle ramp
+    // General purpose
     ofun.addPoint(lo, 0.0);
     ofun.addPoint(lo + 0.15 * span, 0.0);
     ofun.addPoint(lo + 0.4 * span, 0.3);
@@ -166,6 +274,7 @@ const urlInput = document.getElementById('url-input');
 const loadBtn = document.getElementById('load-btn');
 const viewMode = document.getElementById('view-mode');
 const colormapSelect = document.getElementById('colormap');
+const presetSelect = document.getElementById('preset');
 const sidebar = document.getElementById('sidebar');
 const statusEl = document.getElementById('status');
 const viewport = document.getElementById('viewport');
@@ -263,9 +372,11 @@ function render(imageData) {
 
   const renderer = fullScreenRenderer.getRenderer();
   currentRenderWindow = fullScreenRenderer.getRenderWindow();
-  const range = imageData.getPointData().getScalars().getRange();
+  const dataRange = imageData.getPointData().getScalars().getRange();
   const sp = imageData.getSpacing();
   const cmapName = colormapSelect.value;
+  const presetName = presetSelect.value;
+  const range = getEffectiveRange(presetName, dataRange);
 
   if (viewMode.value === 'volume') {
     const mapper = vtkVolumeMapper.newInstance();
@@ -278,13 +389,26 @@ function render(imageData) {
     applyColormap(ctfun, cmapName, range);
 
     const ofun = vtkPiecewiseFunction.newInstance();
-    applyOpacity(ofun, cmapName, range);
+    applyOpacity(ofun, cmapName, range, presetName);
 
     const actor = vtkVolume.newInstance();
     actor.setMapper(mapper);
-    actor.getProperty().setRGBTransferFunction(0, ctfun);
-    actor.getProperty().setScalarOpacity(0, ofun);
-    actor.getProperty().setInterpolationTypeToLinear();
+    const prop = actor.getProperty();
+    prop.setRGBTransferFunction(0, ctfun);
+    prop.setScalarOpacity(0, ofun);
+    prop.setInterpolationTypeToLinear();
+    prop.setShade(true);
+    prop.setAmbient(0.2);
+    prop.setDiffuse(0.7);
+    prop.setSpecular(0.3);
+    prop.setSpecularPower(16);
+    // Gradient opacity — surfaces (high gradient) appear more opaque
+    prop.setUseGradientOpacity(0, true);
+    const gradRange = (range[1] - range[0]) * 0.05;
+    prop.setGradientOpacityMinimumValue(0, 0);
+    prop.setGradientOpacityMinimumOpacity(0, 0.0);
+    prop.setGradientOpacityMaximumValue(0, gradRange);
+    prop.setGradientOpacityMaximumOpacity(0, 1.0);
 
     currentActor = actor;
     renderer.addVolume(actor);
@@ -315,9 +439,17 @@ async function loadStore(url) {
 
   try {
     const fullUrl = new URL(url, window.location.origin).href;
-    const store = fullUrl.endsWith('.zip')
-      ? await ZipFileStore.fromUrl(fullUrl)
-      : new FetchStore(fullUrl);
+    let store;
+    if (fullUrl.endsWith('.zmp')) {
+      const manifestUrl = proxyUrl(fullUrl);
+      store = await ZMPStore.fromUrl(manifestUrl, {
+        resolvers: { http: new ProxiedHttpResolver() },
+      });
+    } else if (fullUrl.endsWith('.zip')) {
+      store = await ZipFileStore.fromUrl(fullUrl);
+    } else {
+      store = new FetchStore(fullUrl);
+    }
     const arr = await zarr.open(store, { kind: 'array' });
     const result = await zarr.get(arr);
 
@@ -349,6 +481,10 @@ colormapSelect.addEventListener('change', () => {
 });
 
 viewMode.addEventListener('change', () => {
+  if (currentImageData) render(currentImageData);
+});
+
+presetSelect.addEventListener('change', () => {
   if (currentImageData) render(currentImageData);
 });
 

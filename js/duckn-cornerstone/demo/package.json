@@ -1,0 +1,19 @@
+{
+  "name": "duckn-cornerstone-demo",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5180",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "@cornerstonejs/core": "^4.20.0",
+    "@cornerstonejs/tools": "^4.20.0",
+    "zarrita": "^0.6",
+    "@zarrita/storage": "^0.1.4",
+    "zarr-zmp-ts": "github:mhalle/zarr-zmp-ts"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  }
+}

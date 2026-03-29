@@ -12,7 +12,7 @@ function corsProxy() {
           res.writeHead(204, {
             'Access-Control-Allow-Origin': '*',
             'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-            'Access-Control-Allow-Headers': 'Range, If-None-Match',
+            'Access-Control-Allow-Headers': 'Range, If-None-Match, Accept',
             'Access-Control-Max-Age': '86400',
           });
           res.end();
@@ -28,6 +28,7 @@ function corsProxy() {
 
         const headers = {};
         if (req.headers.range) headers['Range'] = req.headers.range;
+        if (req.headers.accept) headers['Accept'] = req.headers.accept;
 
         try {
           const upstream = await fetch(target, { headers });

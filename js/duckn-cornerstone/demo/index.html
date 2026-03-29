@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>duckn cornerstone demo</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; background: #1a1a2e; color: #e0e0e0; }
+    #container { width: 100vw; height: 100vh; display: flex; flex-direction: column; }
+    #header {
+      padding: 12px 20px; background: #16213e;
+      display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+      border-bottom: 1px solid #0f3460;
+    }
+    #header h1 { font-size: 18px; font-weight: 600; }
+    #header input[type="text"] { background: #0f3460; border: 1px solid #533483; color: #e0e0e0;
+      padding: 6px 10px; border-radius: 4px; font-size: 14px; width: 400px; }
+    #header button {
+      background: #533483; border: none; color: white; padding: 6px 16px;
+      border-radius: 4px; cursor: pointer; font-size: 14px;
+    }
+    #header button:hover { background: #6a42a0; }
+    #header select { background: #0f3460; border: 1px solid #533483; color: #e0e0e0;
+      padding: 6px 8px; border-radius: 4px; font-size: 14px; }
+    #main { flex: 1; display: flex; overflow: hidden; }
+    #sidebar {
+      width: 300px; min-width: 300px; padding: 16px;
+      background: #16213e; overflow-y: auto; font-size: 13px;
+      font-family: 'SF Mono', 'Fira Code', monospace; line-height: 1.7;
+      border-right: 1px solid #0f3460;
+    }
+    #sidebar h2 { font-size: 14px; margin: 12px 0 6px; color: #a0a0c0; font-weight: 600; }
+    #sidebar .val { color: #7ec8e3; }
+    #sidebar .label { color: #999; }
+    #controls { font-size: 11px; color: #666; margin-top: 12px; line-height: 1.8; }
+    #controls kbd { background: #0f3460; padding: 1px 5px; border-radius: 3px; color: #aaa; font-size: 10px; }
+    #viewports { flex: 1; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 2px; background: #000; }
+    .viewport-container { position: relative; background: #111; overflow: hidden; aspect-ratio: 1; }
+    .viewport-label {
+      position: absolute; top: 4px; left: 8px; z-index: 10;
+      font-size: 12px; color: #888; pointer-events: none;
+    }
+    .viewport-info {
+      position: absolute; bottom: 4px; left: 8px; z-index: 10;
+      font-size: 11px; color: #aaa; pointer-events: none;
+      font-family: 'SF Mono', monospace;
+    }
+    #status {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      font-size: 16px; z-index: 10;
+    }
+    .error { color: #ff6b6b; }
+  </style>
+</head>
+<body>
+<div id="container">
+  <div id="header">
+    <h1>duckn cornerstone</h1>
+    <label for="url-input">Store URL:</label>
+    <input id="url-input" type="text" value="/nlst.zmp" />
+    <button id="load-btn">Load</button>
+    <label for="preset">2D:</label>
+    <select id="preset">
+      <option value="auto">Auto</option>
+      <option value="ct-bone">Bone</option>
+      <option value="ct-soft">Soft Tissue</option>
+      <option value="ct-lung">Lung</option>
+      <option value="ct-brain">Brain</option>
+    </select>
+    <label for="preset3d">3D:</label>
+    <select id="preset3d">
+      <option value="CT-Bone">Bone</option>
+      <option value="CT-Soft-Tissue">Soft Tissue</option>
+      <option value="CT-Lung">Lung</option>
+      <option value="CT-Chest-Contrast-Enhanced">Chest</option>
+      <option value="CT-MIP">MIP</option>
+      <option value="CT-Muscle">Muscle</option>
+      <option value="CT-Fat">Fat</option>
+      <option value="CT-Coronary-Arteries">Coronary</option>
+      <option value="CT-Cardiac">Cardiac</option>
+    </select>
+  </div>
+  <div id="main">
+    <div id="sidebar">
+      <div id="status">Enter a duckn store URL and click Load</div>
+      <div id="controls">
+        <kbd>click</kbd> crosshairs<br>
+        <kbd>scroll</kbd> slice<br>
+        <kbd>&#8984;+drag</kbd> window/level<br>
+        <kbd>&#8679;+drag</kbd> pan<br>
+        <kbd>&#8997;+drag</kbd> zoom
+      </div>
+    </div>
+    <div id="viewports">
+      <div class="viewport-container" id="vp-axial"><span class="viewport-label">Axial</span><span class="viewport-info" id="info-axial"></span></div>
+      <div class="viewport-container" id="vp-sagittal"><span class="viewport-label">Sagittal</span><span class="viewport-info" id="info-sagittal"></span></div>
+      <div class="viewport-container" id="vp-coronal"><span class="viewport-label">Coronal</span><span class="viewport-info" id="info-coronal"></span></div>
+      <div class="viewport-container" id="vp-3d"><span class="viewport-label">3D</span></div>
+    </div>
+  </div>
+</div>
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

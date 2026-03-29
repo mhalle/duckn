@@ -58,6 +58,15 @@
     <label for="nifti-file">NIfTI:</label>
     <input id="nifti-file" type="file" accept=".nii,.nii.gz" style="width:200px" />
     <span style="color:#555">|</span>
+    <label for="preset">Preset:</label>
+    <select id="preset">
+      <option value="auto">Auto</option>
+      <option value="ct-bone">CT Bone</option>
+      <option value="ct-soft">CT Soft Tissue</option>
+      <option value="ct-lung">CT Lung</option>
+      <option value="ct-brain">CT Brain</option>
+      <option value="ct-abdomen">CT Abdomen</option>
+    </select>
     <label for="colormap">Colormap:</label>
     <select id="colormap">
       <option value="grayscale">Grayscale</option>
