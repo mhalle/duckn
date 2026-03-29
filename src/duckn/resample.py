@@ -1,4 +1,9 @@
-"""Resample duckn volumes to a target spacing.
+"""Resample duckn volumes to a target resolution.
+
+Supports three ways to specify the target:
+- ``spacing``: physical resolution (always isotropic)
+- ``shape``: pixel count (scalar=cube, tuple=per-axis)
+- ``factor``: relative zoom (scalar=uniform, list=per-axis)
 
 Handles both upsampling and downsampling per-axis. Downsampled
 axes are pre-blurred with a Gaussian to prevent aliasing.
@@ -26,58 +31,92 @@ class Interpolation(IntEnum):
     CUBIC = 3
 
 
-def _resolve_target_spacing(
-    current_spacing: np.ndarray,
-    target: Any,
+def _compute_zoom_factors(
+    vol: Volume,
+    spacing: float | None,
+    shape: int | tuple[int, ...] | None,
+    factor: float | list[float] | None,
 ) -> np.ndarray:
-    """Resolve a target specification to a concrete spacing vector.
+    """Compute per-spatial-axis zoom factors from the target specification.
 
-    target: None           → isotropic (match finest axis)
-            float          → uniform spacing
-            list/array     → per-axis (None elements = keep current)
-            Volume         → match that volume's spacing
-            VolumeGeometry → match that geometry's spacing
+    Returns array of zoom factors (>1 = upsample, <1 = downsample).
     """
-    if target is None:
-        # Isotropic at finest current spacing
-        return np.full_like(current_spacing, current_spacing.min())
+    geom = vol.geometry
+    current_spacing = geom.voxel_size
+    current_shape = np.array(geom.shape, dtype=float)
+    ndim = geom.ndim
 
-    if isinstance(target, Volume):
-        return target.geometry.voxel_size
+    # Count how many targets are specified
+    n_specified = sum(x is not None for x in (spacing, shape, factor))
+    if n_specified > 1:
+        raise ValueError("Only one of spacing, shape, or factor may be specified")
 
-    if isinstance(target, VolumeGeometry):
-        return target.voxel_size
+    if n_specified == 0:
+        # Default: isotropic at finest spacing
+        target_spacing = np.full(ndim, current_spacing.min())
+        return current_spacing / target_spacing
 
-    if isinstance(target, (int, float)):
-        return np.full_like(current_spacing, float(target))
+    if spacing is not None:
+        # Isotropic at the given spacing
+        target_spacing = np.full(ndim, float(spacing))
+        return current_spacing / target_spacing
 
-    # List/array — None means keep current
-    target = list(target)
-    result = np.array(current_spacing, dtype=float)
-    for i, t in enumerate(target):
-        if t is not None:
-            result[i] = float(t)
-    return result
+    if factor is not None:
+        # Relative zoom
+        if isinstance(factor, (int, float)):
+            return np.full(ndim, float(factor))
+        factors = list(factor)
+        if len(factors) != ndim:
+            raise ValueError(
+                f"factor list length {len(factors)} != spatial ndim {ndim}"
+            )
+        return np.array([float(f) for f in factors])
+
+    if shape is not None:
+        # Target pixel count
+        if isinstance(shape, (int, float)):
+            # Scalar = cube: same size on all axes
+            target = np.full(ndim, float(shape))
+        else:
+            target = list(shape)
+            if len(target) != ndim:
+                raise ValueError(
+                    f"shape tuple length {len(target)} != spatial ndim {ndim}"
+                )
+            target = np.array([float(s) for s in target])
+
+        return target / current_shape
+
+    raise RuntimeError("unreachable")
 
 
 def resample(
     vol: Volume,
-    target: Any = None,
     *,
+    spacing: float | None = None,
+    shape: int | tuple[int, ...] | None = None,
+    factor: float | list[float] | None = None,
     order: int | Interpolation = Interpolation.LINEAR,
     fill: float = 0,
 ) -> Volume:
-    """Resample a volume to a target spacing.
+    """Resample a volume to a target resolution.
+
+    Specify the target with exactly one of ``spacing``, ``shape``, or
+    ``factor``.  When none is given, resamples to isotropic at the
+    finest current spacing.
 
     Parameters
     ----------
     vol : input Volume
-    target : target spacing specification
-        None           → isotropic (match finest current spacing)
-        float          → uniform spacing (e.g., 1.0 for 1mm isotropic)
-        [a, b, c]      → per-axis spacing (None = keep current)
-        Volume         → match that volume's spacing
-        VolumeGeometry → match that geometry's spacing
+    spacing : float, optional
+        Isotropic target spacing in physical units (e.g., 1.0 for 1mm).
+    shape : int or tuple of int, optional
+        Target pixel count.  Scalar = uniform cube (e.g., 128 → 128³).
+        Tuple = per-axis (e.g., (128, 256, 256)).
+    factor : float or list of float, optional
+        Relative zoom factor.  Scalar = uniform (e.g., 2 = double
+        resolution).  List = per-axis (e.g., [2, 1, 1] = double
+        only the slice axis).
     order : interpolation method
         Interpolation.NEAREST (0) — for labelmaps/segmentations
         Interpolation.LINEAR (1)  — default, for images
@@ -87,65 +126,62 @@ def resample(
     Returns
     -------
     Volume with resampled data and updated metadata
+
+    Examples
+    --------
+    >>> resample(vol)                          # isotropic at finest spacing
+    >>> resample(vol, spacing=1.0)             # isotropic at 1mm
+    >>> resample(vol, shape=128)               # 128³ cube
+    >>> resample(vol, shape=(128, 256, 256))   # fully specified
+    >>> resample(vol, factor=2)                # double resolution
+    >>> resample(vol, factor=[2, 1, 1])        # double slice axis only
+    >>> resample(vol, factor=0.5)              # half resolution (pyramid)
+    >>> resample(seg_vol, order=0)             # nearest for labels
     """
     geom = vol.geometry
     current_spacing = geom.voxel_size
-    target_spacing = _resolve_target_spacing(current_spacing, target)
-
-    # Compute zoom factors per spatial axis
-    zoom_factors = current_spacing / target_spacing
+    zoom_factors = _compute_zoom_factors(vol, spacing, shape, factor)
 
     # Check if any resampling is needed
     if np.allclose(zoom_factors, 1.0, rtol=1e-6):
-        return vol  # nothing to do
+        return vol
 
     # For axes being downsampled, pre-blur to prevent aliasing
     data = vol.data.astype(float) if order > 0 else vol.data
-    for axis in range(geom.ndim):
-        if zoom_factors[axis] < 1.0 - 1e-6:
-            # Downsampling this axis — Gaussian blur with sigma proportional
-            # to the downsample ratio
-            sigma = [0.0] * vol.data.ndim
-            # Map spatial axis to data axis
-            spatial_indices = [
-                i for i, ax in enumerate(vol.meta.axes)
-                if ax.space_direction is not None
-            ]
-            data_axis = spatial_indices[axis]
-            sigma[data_axis] = 0.5 / zoom_factors[axis]
-            if order > 0:
-                data = ndimage.gaussian_filter(data, sigma)
-
-    # Build full zoom array (1.0 for non-spatial axes)
-    full_zoom = np.ones(vol.data.ndim)
     spatial_indices = [
         i for i, ax in enumerate(vol.meta.axes)
         if ax.space_direction is not None
     ]
+
+    for axis in range(geom.ndim):
+        if zoom_factors[axis] < 1.0 - 1e-6 and order > 0:
+            sigma = [0.0] * vol.data.ndim
+            data_axis = spatial_indices[axis]
+            sigma[data_axis] = 0.5 / zoom_factors[axis]
+            data = ndimage.gaussian_filter(data, sigma)
+
+    # Build full zoom array (1.0 for non-spatial axes)
+    full_zoom = np.ones(vol.data.ndim)
     for i, si in enumerate(spatial_indices):
         full_zoom[si] = zoom_factors[i]
 
     # Resample
     resampled = ndimage.zoom(
-        data, full_zoom, order=order, mode="constant", cval=fill,
+        data, full_zoom, order=int(order), mode="constant", cval=fill,
     )
 
     # Cast back to original dtype for nearest-neighbor
     if order == 0:
         resampled = resampled.astype(vol.data.dtype)
 
-    # Update metadata
+    # Update metadata — scale space_direction vectors
     new_meta = deepcopy(vol.meta)
     spatial_idx = 0
     for i, ax in enumerate(new_meta.axes):
         if ax.space_direction is not None:
-            # Scale space_direction to new spacing
-            old_mag = current_spacing[spatial_idx]
-            new_mag = target_spacing[spatial_idx]
-            scale = new_mag / old_mag
+            scale = 1.0 / zoom_factors[spatial_idx]
             ax.space_direction = [v * scale for v in ax.space_direction]
-            # Clear per-sample data (no longer valid after resampling)
-            ax.samples = None
+            ax.samples = None  # no longer valid after resampling
             spatial_idx += 1
 
     return Volume(data=resampled, meta=new_meta)
