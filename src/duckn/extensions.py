@@ -14,6 +14,48 @@ from __future__ import annotations
 from typing import Any
 
 
+class SegmentView:
+    """Read-only view of a single segment."""
+
+    def __init__(self, data: dict):
+        self._data = data
+
+    @property
+    def name(self) -> str | None:
+        return self._data.get("name")
+
+    @property
+    def id(self) -> str | None:
+        return self._data.get("id")
+
+    @property
+    def label_value(self) -> int | None:
+        return self._data.get("label_value")
+
+    @property
+    def layer(self) -> int | None:
+        return self._data.get("layer")
+
+    @property
+    def color(self) -> list[float] | None:
+        return self._data.get("color")
+
+    @property
+    def identifiers(self) -> dict:
+        return self._data.get("identifiers", {})
+
+    @property
+    def metadata(self) -> dict:
+        return self._data.get("metadata", {})
+
+    @property
+    def raw(self) -> dict:
+        return self._data
+
+    def __repr__(self) -> str:
+        return f"Segment({self.name!r}, label={self.label_value})"
+
+
 class SegAccessor:
     """Accessor for the segmentation extension."""
 
@@ -25,8 +67,8 @@ class SegAccessor:
         return self._data.get("version")
 
     @property
-    def segments(self) -> list[dict]:
-        return self._data.get("segments", [])
+    def segments(self) -> list[SegmentView]:
+        return [SegmentView(s) for s in self._data.get("segments", [])]
 
     @property
     def source_representation(self) -> str | None:
@@ -42,23 +84,21 @@ class SegAccessor:
         name: str | None = None,
         label: int | None = None,
         snomed: str | None = None,
-    ) -> dict | None:
+    ) -> SegmentView | None:
         """Find a segment by name, label value, or SNOMED code.
 
-        Returns the segment dict, or None if not found.
+        Returns a SegmentView, or None if not found.
         """
         for seg in self.segments:
-            if name is not None and seg.get("name") == name:
+            if name is not None and seg.name == name:
                 return seg
-            if label is not None and seg.get("label_value") == label:
+            if label is not None and seg.label_value == label:
                 return seg
             if snomed is not None:
-                identifiers = seg.get("identifiers", {})
-                sct = identifiers.get("snomedct", {})
+                sct = seg.identifiers.get("snomedct", {})
                 if sct.get("id") == snomed:
                     return seg
-                # Also check in metadata.dicom
-                dicom = seg.get("metadata", {}).get("dicom", {})
+                dicom = seg.metadata.get("dicom", {})
                 type_entry = dicom.get("type", {})
                 if type_entry.get("code") == snomed:
                     return seg
@@ -67,22 +107,22 @@ class SegAccessor:
     def label_for(self, name: str) -> int | None:
         """Get the label value for a segment name."""
         seg = self.segment(name=name)
-        return seg.get("label_value") if seg else None
+        return seg.label_value if seg else None
 
     def name_for(self, label: int) -> str | None:
         """Get the name for a label value."""
         seg = self.segment(label=label)
-        return seg.get("name") if seg else None
+        return seg.name if seg else None
 
     @property
     def names(self) -> list[str]:
         """List all segment names."""
-        return [s.get("name", "") for s in self.segments]
+        return [s.name or "" for s in self.segments]
 
     @property
     def labels(self) -> list[int]:
         """List all label values."""
-        return [s.get("label_value", 0) for s in self.segments]
+        return [s.label_value or 0 for s in self.segments]
 
     @property
     def raw(self) -> dict:
