@@ -74,6 +74,18 @@ class Volume:
         if "geometry" in self.__dict__:
             del self.__dict__["geometry"]
 
+    def get_extension(self, name: str) -> Any | None:
+        """Get a top-level extension by name, or None if not present."""
+        if self.meta.extensions is None:
+            return None
+        return self.meta.extensions.get(name)
+
+    def set_extension(self, name: str, value: Any) -> None:
+        """Set a top-level extension. Overwrites if already present."""
+        if self.meta.extensions is None:
+            self.meta.extensions = {}
+        self.meta.extensions[name] = value
+
     @cached_property
     def geometry(self) -> VolumeGeometry:
         """Spatial geometry, computed lazily from metadata + shape."""
