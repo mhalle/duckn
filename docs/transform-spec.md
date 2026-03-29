@@ -42,39 +42,38 @@ The convention defines implicit coordinate spaces for each array with spatial me
 
 Let:
 - **D** = the N×N direction matrix whose column *i* is `space_direction[i]`
-- **o** = `space_origin` (N-vector)
+- **o** = `space_origin` (N-vector) — the world-space position of the first sample (index 0)
 - **n** = shape of the spatial dimensions
-- **c** = centering offset vector: `c[i] = 0.5` if `centering[i]` is `cell`, `0.0` if `node`
 
 #### Index → World
 
 ```
-world = D × (index + c) + o
+world = D × index + o
 ```
 
 Equivalently, as an N×(N+1) affine matrix **A**:
 
 ```
-      ┌                              ┐
-A  =  │  D₀₀  D₀₁  D₀₂   o₀ + D·c₀ │
-      │  D₁₀  D₁₁  D₁₂   o₁ + D·c₁ │
-      │  D₂₀  D₂₁  D₂₂   o₂ + D·c₂ │
-      └                              ┘
+      ┌                        ┐
+A  =  │  D₀₀  D₀₁  D₀₂   o₀  │
+      │  D₁₀  D₁₁  D₁₂   o₁  │
+      │  D₂₀  D₂₁  D₂₂   o₂  │
+      └                        ┘
 
 world = A × [index; 1]
 ```
 
-where `D·c` is the matrix-vector product `D × c` — the centering adjustment in world coordinates.
+The centering field (`cell` or `node`) does not affect the index-to-world transform. It describes whether each sample represents the center of a cell or a point on a node, which affects extent calculations (see below) and interpolation boundary conditions, but not the spatial mapping. This is consistent with the NRRD convention where `space origin` is the position of the first sample regardless of centering.
 
 #### World → Axis-Aligned
 
 Decompose **D** via polar decomposition: `D = R × S`, where **R** is the orthogonal (rotation) matrix and **S** is symmetric positive definite (the spacing/shear). Then:
 
 ```
-axis_aligned = Rᵀ × (world − p) + p
+axis_aligned = Rᵀ × (world − o) + o
 ```
 
-where `p = o + D × c` is the adjusted origin (world position of the first voxel center). This rotates world coordinates around the adjusted origin, removing the oblique orientation while preserving the origin and voxel scale.
+This rotates world coordinates around the origin **o**, removing the oblique orientation while preserving the origin position and voxel scale.
 
 For arrays whose `space_direction` vectors are already axis-aligned, **R** is the identity and `world` and `axis-aligned` are identical. For acquisitions with shear, the polar decomposition yields the closest rotation matrix in the Frobenius norm sense.
 
@@ -86,20 +85,22 @@ Translate the origin to the center of the volume's bounding box:
 axis_aligned_centered = axis_aligned − center
 ```
 
-where the center is:
+where the center is the midpoint between the first and last samples:
 
 ```
-center[i] = p_aa[i] + extent[i] / 2
+center[i] = o_aa[i] + (n[i] − 1) / 2 × S[i,i]
 ```
 
-and the extent along each axis-aligned axis is:
+Here `S[i,i]` is the spacing along axis *i* (diagonal of **S** when there is no shear), `o_aa` is the origin in axis-aligned coordinates (= `o` since the rotation preserves it), and `n[i]` is the shape along spatial axis *i*.
+
+**Extent.** The physical extent of the volume depends on centering:
 
 ```
 extent[i] = S[i,i] × n[i]          if centering[i] == cell
             S[i,i] × (n[i] − 1)    if centering[i] == node
 ```
 
-Here `S[i,i]` is the spacing along axis *i* (diagonal of **S** when there is no shear), `p_aa` is the adjusted origin in axis-aligned coordinates (= `p` since the rotation preserves it), and `n[i]` is the shape along spatial axis *i*.
+Cell-centered data extends half a voxel beyond the first and last samples. Node-centered data spans exactly from the first to the last sample.
 
 This space places the volume center at the origin — useful as a pivot point for rotation and scaling operations, and for display systems that center the volume.
 

@@ -232,19 +232,20 @@ export class VolumeGeometry {
     this.R = R;
     this.S = S;
 
-    // Affine: world = D @ (index + c) + o
-    const Dc = matVec(this.D, this.centering);
+    // Affine: world = D @ index + o
+    // space_origin is the position of the first sample (index 0).
+    // Centering affects extent calculations, not the transform.
     this.affine = this.D.map((row, i) => [
       ...row,
-      this.origin[i] + Dc[i],
+      this.origin[i],
     ]);
 
-    // Inverse affine
+    // Inverse affine: index = D^{-1} @ (world - o)
     const Dinv = invert3x3(this.D);
     const negDinvO = matVec(Dinv, this.origin).map((v) => -v);
     this.affineInv = Dinv.map((row, i) => [
       ...row,
-      negDinvO[i] - this.centering[i],
+      negDinvO[i],
     ]);
 
     // Space name for flip lookups
@@ -346,23 +347,23 @@ export class VolumeGeometry {
   // --- World ↔ Axis-Aligned ---
 
   worldToAxisAligned(world) {
-    const p = vecAdd(this.origin, matVec(this.D, this.centering));
-    const diff = vecSub(world, p);
-    return vecAdd(matVec(transpose(this.R), diff), p);
+    const o = this.origin;
+    const diff = vecSub(world, o);
+    return vecAdd(matVec(transpose(this.R), diff), o);
   }
 
   axisAlignedToWorld(aa) {
-    const p = vecAdd(this.origin, matVec(this.D, this.centering));
-    const diff = vecSub(aa, p);
-    return vecAdd(matVec(this.R, diff), p);
+    const o = this.origin;
+    const diff = vecSub(aa, o);
+    return vecAdd(matVec(this.R, diff), o);
   }
 
   // --- Axis-Aligned ↔ Centered ---
 
   get _aaCenter() {
-    const p = vecAdd(this.origin, matVec(this.D, this.centering));
-    const extent = this.spacing.map((s, i) => s * this.shape[i]);
-    return vecAdd(p, extent.map((e) => e / 2));
+    // Center of volume = origin + (n-1)/2 * spacing per axis
+    const halfExtent = this.spacing.map((s, i) => (this.shape[i] - 1) / 2.0 * s);
+    return vecAdd(this.origin, halfExtent);
   }
 
   axisAlignedToCentered(aa) {

@@ -64,8 +64,8 @@ def to_lps_params(
         spacing = geom.spacing
 
     elif space == "axis-aligned":
-        # Remove rotation, keep spacing
-        origin = (geom.origin + geom.D @ geom.centering) * flip
+        # Remove rotation, keep spacing. Origin is first sample position.
+        origin = geom.origin * flip
         spacing = np.diag(geom.S)
         direction = np.eye(geom.ndim)
         for i in range(geom.ndim):
@@ -76,11 +76,11 @@ def to_lps_params(
         direction = np.eye(geom.ndim)
         for i in range(geom.ndim):
             direction[i, i] *= flip[i]
-        # Origin at volume center
-        p = geom.origin + geom.D @ geom.centering
-        extent = np.array([geom.S[j, j] * geom.shape[j] for j in range(geom.ndim)])
-        center = p + extent / 2
-        origin = (p - center) * flip  # relative to center
+        # Center = origin + (n-1)/2 * spacing
+        center = geom.origin + np.array([
+            (geom.shape[j] - 1) / 2.0 * geom.S[j, j] for j in range(geom.ndim)
+        ])
+        origin = (geom.origin - center) * flip
 
     elif space in geom._named_transforms:
         # Transform origin to named space

@@ -253,18 +253,19 @@ class VolumeGeometry:
         from scipy.linalg import polar
         R, S = polar(D)
 
-        # Affine: world = D @ (index + c) + o
-        # As (ndim × ndim+1): [D | o + D @ c]
-        Dc = D @ centering
+        # Affine: world = D @ index + o
+        # space_origin is the position of the first sample (index 0),
+        # whether cell-centered or node-centered. Centering affects
+        # extent calculations, not the index→world transform.
         affine = np.zeros((ndim, ndim + 1))
         affine[:, :ndim] = D
-        affine[:, ndim] = origin + Dc
+        affine[:, ndim] = origin
 
-        # Inverse: index = D^{-1} @ (world - o) - c
+        # Inverse: index = D^{-1} @ (world - o)
         D_inv = np.linalg.inv(D)
         affine_inv = np.zeros((ndim, ndim + 1))
         affine_inv[:, :ndim] = D_inv
-        affine_inv[:, ndim] = -D_inv @ origin - centering
+        affine_inv[:, ndim] = -D_inv @ origin
 
         # Check for per-sample positions (non-uniform spacing)
         uniform = all(
@@ -315,11 +316,19 @@ class VolumeGeometry:
 
     @property
     def volume_size(self) -> np.ndarray:
-        """Physical extent of the volume along each axis (axis-aligned)."""
-        # Extent in axis-aligned space
+        """Physical extent of the volume along each axis (axis-aligned).
+
+        For cell-centered data, extent = n × spacing (covers full cells).
+        For node-centered data, extent = (n-1) × spacing (between nodes).
+        """
         extents = np.zeros(self.ndim)
         for j in range(self.ndim):
-            extents[j] = self.S[j, j] * self.shape[j]
+            n = self.shape[j]
+            s = self.S[j, j]
+            if self.centering[j] == 0.5:  # cell
+                extents[j] = n * s
+            else:  # node
+                extents[j] = (n - 1) * s
         return extents
 
     @property
@@ -433,23 +442,23 @@ class VolumeGeometry:
     def world_to_axis_aligned(self, world: np.ndarray) -> np.ndarray:
         """Convert world coordinates to axis-aligned coordinates.
 
-        Removes rotation around the adjusted origin p = o + D @ c.
+        Removes rotation around the origin.
         """
         world = np.asarray(world, dtype=float)
-        p = self.origin + self.D @ self.centering
+        o = self.origin
         if world.ndim == 1:
-            return self.R.T @ (world - p) + p
+            return self.R.T @ (world - o) + o
         else:
-            return ((world - p) @ self.R).T.T + p  # broadcast
+            return ((world - o) @ self.R).T.T + o  # broadcast
 
     def axis_aligned_to_world(self, aa: np.ndarray) -> np.ndarray:
         """Convert axis-aligned coordinates to world coordinates."""
         aa = np.asarray(aa, dtype=float)
-        p = self.origin + self.D @ self.centering
+        o = self.origin
         if aa.ndim == 1:
-            return self.R @ (aa - p) + p
+            return self.R @ (aa - o) + o
         else:
-            return ((aa - p) @ self.R.T).T.T + p
+            return ((aa - o) @ self.R.T).T.T + o
 
     # ------------------------------------------------------------------
     # Axis-Aligned ↔ Axis-Aligned-Centered
@@ -458,12 +467,16 @@ class VolumeGeometry:
     @property
     def _aa_center(self) -> np.ndarray:
         """Center of the volume in axis-aligned coordinates."""
-        p_aa = self.origin + self.D @ self.centering
-        p_aa_in_aa = self.R.T @ (p_aa - p_aa) + p_aa  # = p_aa
-        extent = np.zeros(self.ndim)
+        o = self.origin  # = position of first sample in world
+        # In axis-aligned space, the origin stays the same (rotation around origin)
+        extent = self.volume_size
+        # For cell centering, first sample is at center of first cell,
+        # so the volume extends from origin - 0.5*spacing to origin + (n-0.5)*spacing.
+        # Center = origin + (n-1)/2 * spacing (for both cell and node).
+        half_extent = np.zeros(self.ndim)
         for j in range(self.ndim):
-            extent[j] = self.S[j, j] * self.shape[j]
-        return p_aa + extent / 2
+            half_extent[j] = (self.shape[j] - 1) / 2.0 * self.S[j, j]
+        return o + half_extent
 
     def axis_aligned_to_centered(self, aa: np.ndarray) -> np.ndarray:
         """Convert axis-aligned to axis-aligned-centered coordinates."""

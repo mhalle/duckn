@@ -54,30 +54,24 @@ def to_nifti(vol: Volume, space: str = "world") -> Any:
     ndim = geom.ndim
 
     if space == "world":
-        # Build 4×4 affine: RAS = flip * D @ (index + c) + flip * origin
+        # Build 4×4 affine: RAS = flip * D @ index + flip * origin
         # Axes are reversed: duckn C-order (slowest-first) → NIfTI (fastest-first)
+        # space_origin is the position of the first sample — no centering offset.
         D_ras = np.zeros((ndim, ndim))
         for i in range(ndim):
             for j in range(ndim):
-                # Reverse column order for NIfTI i,j,k convention
                 D_ras[i][j] = geom.D[i][ndim - 1 - j] * flip[i]
 
-        Dc = D_ras @ np.array([
-            geom.centering[ndim - 1 - j] for j in range(ndim)
-        ])
         origin_ras = geom.origin * flip
 
         affine = np.eye(4)
         affine[:3, :3] = D_ras
-        affine[:3, 3] = origin_ras + Dc
+        affine[:3, 3] = origin_ras
 
     elif space == "axis-aligned":
-        # Identity direction, axis-aligned spacing
         spacing = np.array([geom.S[j, j] for j in range(ndim)])
         spacing_rev = spacing[::-1]
-
-        p = geom.origin + geom.D @ geom.centering
-        origin_ras = p * flip
+        origin_ras = geom.origin * flip
 
         affine = np.eye(4)
         for j in range(ndim):
@@ -87,11 +81,10 @@ def to_nifti(vol: Volume, space: str = "world") -> Any:
     elif space == "axis-aligned-centered":
         spacing = np.array([geom.S[j, j] for j in range(ndim)])
         spacing_rev = spacing[::-1]
-
-        p = geom.origin + geom.D @ geom.centering
-        extent = np.array([geom.S[j, j] * geom.shape[j] for j in range(ndim)])
-        center = p + extent / 2
-        origin_centered = (p - center) * flip
+        center = geom.origin + np.array([
+            (geom.shape[j] - 1) / 2.0 * geom.S[j, j] for j in range(ndim)
+        ])
+        origin_centered = (geom.origin - center) * flip
 
         affine = np.eye(4)
         for j in range(ndim):
@@ -173,13 +166,8 @@ def from_nifti(
 
     new_meta.space_origin = origin.tolist()
 
-    # Assume cell centering — adjust origin by half-voxel
-    centering = np.array([0.5, 0.5, 0.5])
-    Dc = np.zeros(3)
-    for i in range(3):
-        for j in range(3):
-            Dc[i] += D_duckn[i][j] * centering[j]
-    new_meta.space_origin = (origin - Dc / flip).tolist()
+    # space_origin = position of first sample (no centering offset)
+    new_meta.space_origin = origin.tolist()
 
     spatial_idx = 0
     for ax in new_meta.axes:
