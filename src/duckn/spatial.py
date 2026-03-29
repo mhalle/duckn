@@ -20,7 +20,120 @@ from typing import Any
 
 import numpy as np
 
-from .models import Centering, DucknMetadata
+from .models import (
+    Centering,
+    DucknMetadata,
+    SpaceTransformEntry,
+    TransformObject,
+)
+
+
+_BUILTIN_SPACES = {"world", "axis-aligned", "axis-aligned-centered", "index"}
+
+
+@dataclass
+class _NamedTransform:
+    """A parsed named space transform."""
+
+    name: str           # target space name
+    from_space: str     # built-in source space
+    forward: np.ndarray | None   # (ndim, ndim+1) affine matrix or None
+    inverse: np.ndarray | None   # (ndim, ndim+1) affine matrix or None
+    is_identity: bool
+    metadata: dict | None
+
+
+def _parse_transform_object(
+    obj: TransformObject, ndim: int,
+) -> tuple[np.ndarray | None, bool]:
+    """Parse a TransformObject into an affine matrix.
+
+    Returns (matrix_or_None, is_identity).
+    """
+    if obj.identity:
+        return np.eye(ndim, ndim + 1), True
+    if obj.affine is not None:
+        m = np.array(obj.affine, dtype=float)
+        if m.shape != (ndim, ndim + 1):
+            raise ValueError(
+                f"Affine matrix must be {ndim}×{ndim + 1}, got {m.shape}"
+            )
+        return m, False
+    return None, False
+
+
+def _invert_affine(m: np.ndarray) -> np.ndarray:
+    """Invert an (N, N+1) affine matrix."""
+    ndim = m.shape[0]
+    A = m[:, :ndim]
+    t = m[:, ndim]
+    A_inv = np.linalg.inv(A)
+    result = np.zeros_like(m)
+    result[:, :ndim] = A_inv
+    result[:, ndim] = -A_inv @ t
+    return result
+
+
+def _parse_space_transforms(
+    entries: list[SpaceTransformEntry] | None,
+    ndim: int,
+) -> dict[str, _NamedTransform]:
+    """Parse space_transforms metadata into _NamedTransform objects."""
+    if not entries:
+        return {}
+
+    transforms: dict[str, _NamedTransform] = {}
+
+    for entry in entries:
+        # Target space name
+        to_ref = entry.to
+        if to_ref.name is None:
+            continue  # skip built-in → built-in (not useful here)
+        name = to_ref.name
+
+        # Source space (defaults to "world")
+        from_ref = entry.from_
+        if from_ref is None or from_ref.space is None:
+            from_space = "world"
+        else:
+            from_space = from_ref.space
+
+        if from_space not in _BUILTIN_SPACES:
+            continue  # can only chain from built-in spaces
+
+        # Parse forward/inverse
+        fwd = None
+        fwd_identity = False
+        inv = None
+        inv_identity = False
+
+        if entry.forward is not None:
+            fwd, fwd_identity = _parse_transform_object(entry.forward, ndim)
+        if entry.inverse is not None:
+            inv, inv_identity = _parse_transform_object(entry.inverse, ndim)
+
+        # Compute missing direction by inversion
+        is_identity = fwd_identity or inv_identity
+        if is_identity:
+            eye = np.eye(ndim, ndim + 1)
+            fwd = eye
+            inv = eye
+        else:
+            if fwd is not None and inv is None:
+                inv = _invert_affine(fwd)
+            elif inv is not None and fwd is None:
+                fwd = _invert_affine(inv)
+
+        transforms[name] = _NamedTransform(
+            name=name,
+            from_space=from_space,
+            forward=fwd,
+            inverse=inv,
+            is_identity=is_identity,
+            metadata=entry.metadata,
+        )
+
+    return transforms
 
 
 @dataclass(frozen=True)
@@ -58,6 +171,10 @@ class VolumeGeometry:
 
     # Inverse affine: world → index
     affine_inv: np.ndarray
+
+    # Named space transforms from space_transforms metadata
+    # Maps target space name → _NamedTransform
+    _named_transforms: dict  # not frozen, set via __post_init__ workaround
 
     @staticmethod
     def from_metadata(
@@ -127,6 +244,9 @@ class VolumeGeometry:
         affine_inv[:, :ndim] = D_inv
         affine_inv[:, ndim] = -D_inv @ origin - centering
 
+        # Parse named space transforms
+        named = _parse_space_transforms(meta.space_transforms, ndim)
+
         return VolumeGeometry(
             shape=spatial_shape,
             ndim=ndim,
@@ -139,6 +259,7 @@ class VolumeGeometry:
             S=S,
             affine=affine,
             affine_inv=affine_inv,
+            _named_transforms=named,
         )
 
     # ------------------------------------------------------------------
@@ -174,6 +295,51 @@ class VolumeGeometry:
     def is_isotropic(self) -> bool:
         """True if all voxel spacings are equal."""
         return np.allclose(self.spacing, self.spacing[0], rtol=1e-6)
+
+    @property
+    def named_spaces(self) -> list[str]:
+        """List available named coordinate spaces (from space_transforms)."""
+        return list(self._named_transforms.keys())
+
+    # ------------------------------------------------------------------
+    # Named space helpers
+    # ------------------------------------------------------------------
+
+    def _apply_affine(self, m: np.ndarray, coords: np.ndarray) -> np.ndarray:
+        """Apply an (N, N+1) affine matrix to coordinates."""
+        coords = np.asarray(coords, dtype=float)
+        A = m[:, :self.ndim]
+        t = m[:, self.ndim]
+        if coords.ndim == 1:
+            return A @ coords + t
+        else:
+            return (A @ coords.T).T + t
+
+    def _to_builtin(self, coords: np.ndarray, space: str) -> np.ndarray:
+        """Convert from a built-in space to world coordinates."""
+        if space == "world":
+            return np.asarray(coords, dtype=float)
+        elif space == "axis-aligned":
+            return self.axis_aligned_to_world(coords)
+        elif space == "axis-aligned-centered":
+            aa = self.centered_to_axis_aligned(coords)
+            return self.axis_aligned_to_world(aa)
+        elif space == "index":
+            return self.index_to_world(coords)
+        raise ValueError(f"Unknown built-in space: {space!r}")
+
+    def _from_builtin(self, world: np.ndarray, space: str) -> np.ndarray:
+        """Convert from world coordinates to a built-in space."""
+        if space == "world":
+            return world
+        elif space == "axis-aligned":
+            return self.world_to_axis_aligned(world)
+        elif space == "axis-aligned-centered":
+            aa = self.world_to_axis_aligned(world)
+            return self.axis_aligned_to_centered(aa)
+        elif space == "index":
+            return self.world_to_index(world)
+        raise ValueError(f"Unknown built-in space: {space!r}")
 
     # ------------------------------------------------------------------
     # Index ↔ World
@@ -285,19 +451,32 @@ class VolumeGeometry:
         -------
         index : index coordinates (float if not rounded, int if rounded)
         """
-        if space == "index":
-            idx = np.asarray(coords, dtype=float)
-        elif space == "world":
-            idx = self.world_to_index(coords)
-        elif space == "axis-aligned":
-            world = self.axis_aligned_to_world(coords)
-            idx = self.world_to_index(world)
-        elif space == "axis-aligned-centered":
-            aa = self.centered_to_axis_aligned(coords)
-            world = self.axis_aligned_to_world(aa)
+        if space in _BUILTIN_SPACES:
+            if space == "index":
+                idx = np.asarray(coords, dtype=float)
+            elif space == "world":
+                idx = self.world_to_index(coords)
+            elif space == "axis-aligned":
+                world = self.axis_aligned_to_world(coords)
+                idx = self.world_to_index(world)
+            elif space == "axis-aligned-centered":
+                aa = self.centered_to_axis_aligned(coords)
+                world = self.axis_aligned_to_world(aa)
+                idx = self.world_to_index(world)
+        elif space in self._named_transforms:
+            # Named → inverse transform → built-in from_space → index
+            nt = self._named_transforms[space]
+            if nt.inverse is None:
+                raise ValueError(f"No inverse transform for space {space!r}")
+            builtin_coords = self._apply_affine(nt.inverse, coords)
+            world = self._to_builtin(builtin_coords, nt.from_space)
             idx = self.world_to_index(world)
         else:
-            raise ValueError(f"Unknown space: {space!r}")
+            raise ValueError(
+                f"Unknown space: {space!r}. "
+                f"Built-in: {sorted(_BUILTIN_SPACES)}. "
+                f"Named: {self.named_spaces}"
+            )
 
         if clamp:
             idx = self.clamp_index(idx)
@@ -322,23 +501,58 @@ class VolumeGeometry:
         -------
         coords : coordinates in the target space
         """
-        if space == "index":
-            return np.asarray(index, dtype=float)
-        elif space == "world":
-            return self.index_to_world(index)
-        elif space == "axis-aligned":
+        if space in _BUILTIN_SPACES:
+            if space == "index":
+                return np.asarray(index, dtype=float)
+            elif space == "world":
+                return self.index_to_world(index)
+            elif space == "axis-aligned":
+                world = self.index_to_world(index)
+                return self.world_to_axis_aligned(world)
+            elif space == "axis-aligned-centered":
+                world = self.index_to_world(index)
+                aa = self.world_to_axis_aligned(world)
+                return self.axis_aligned_to_centered(aa)
+        elif space in self._named_transforms:
+            # index → world → built-in from_space → forward transform → named
+            nt = self._named_transforms[space]
+            if nt.forward is None:
+                raise ValueError(f"No forward transform for space {space!r}")
             world = self.index_to_world(index)
-            return self.world_to_axis_aligned(world)
-        elif space == "axis-aligned-centered":
-            world = self.index_to_world(index)
-            aa = self.world_to_axis_aligned(world)
-            return self.axis_aligned_to_centered(aa)
+            builtin_coords = self._from_builtin(world, nt.from_space)
+            return self._apply_affine(nt.forward, builtin_coords)
         else:
-            raise ValueError(f"Unknown space: {space!r}")
+            raise ValueError(
+                f"Unknown space: {space!r}. "
+                f"Built-in: {sorted(_BUILTIN_SPACES)}. "
+                f"Named: {self.named_spaces}"
+            )
 
     # ------------------------------------------------------------------
     # Bounds checking
     # ------------------------------------------------------------------
+
+    def transform(
+        self,
+        coords: np.ndarray,
+        from_space: str,
+        to_space: str,
+    ) -> np.ndarray:
+        """Transform coordinates between any two spaces.
+
+        Chains through index as the hub:
+        from_space → index → to_space.
+
+        Parameters
+        ----------
+        coords : array of shape (ndim,) or (N, ndim)
+        from_space : source space (built-in or named)
+        to_space : destination space (built-in or named)
+        """
+        if from_space == to_space:
+            return np.asarray(coords, dtype=float)
+        idx = self.to_index(coords, space=from_space)
+        return self.from_index(idx, space=to_space)
 
     def in_bounds(
         self,
