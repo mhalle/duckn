@@ -586,8 +586,11 @@ async def async_build_idc_zmp(
     pixel_bytes_per_slice = rows * cols * (bits // 8)
 
     # Phase 5: build ZMP via ZMPBuilder
+    # Use base_resolve for the common S3 series prefix
+    series_base_url = f"{base_url}/{series_uuid}/"
     builder = ZMPBuilder(
         metadata={"idc_series_uuid": series_uuid},
+        base_resolve={"http": {"url": series_base_url}},
     )
     builder.add("zarr.json", text=zarr_json_text)
 
@@ -722,9 +725,11 @@ async def async_build_idc_zmp(
             else:
                 from zarr_zmp import git_blob_hash
                 hash_val = git_blob_hash(pixel_data)
+                # Use relative filename (base_resolve provides the prefix)
+                filename = s.url.rsplit("/", 1)[-1]
                 builder.add(
                     chunk_path,
-                    resolve={"http": {"url": s.url, "offset": s.pixel_offset, "length": chunk_length}, "git": {"oid": hash_val}},
+                    resolve={"http": {"url": filename, "offset": s.pixel_offset, "length": chunk_length}, "git": {"oid": hash_val}},
                     checksum=hash_val, size=s.file_size,
                 )
     else:
@@ -732,9 +737,11 @@ async def async_build_idc_zmp(
         for k, s in enumerate(slices):
             chunk_path = f"c/{k}/0/0"
             chunk_length = s.pixel_length if is_compressed else pixel_bytes_per_slice
+            # Use relative filename (base_resolve provides the prefix)
+            filename = s.url.rsplit("/", 1)[-1]
             builder.add(
                 chunk_path,
-                resolve={"http": {"url": s.url, "offset": s.pixel_offset, "length": chunk_length}},
+                resolve={"http": {"url": filename, "offset": s.pixel_offset, "length": chunk_length}},
                 size=s.file_size,
             )
 
