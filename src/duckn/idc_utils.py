@@ -166,49 +166,72 @@ def _resolve_via_dicomweb(
     seg_sr_series: "pd.DataFrame",
     dicomweb_url: str,
 ) -> dict[str, str]:
-    """Resolve SEG/SR → CT via DICOMweb ReferencedSeriesSequence."""
+    """Resolve SEG/SR → CT via DICOMweb ReferencedSeriesSequence.
+
+    Fetches metadata for all SEG/SR series in parallel.
+    """
+    import asyncio
+
     import httpx
 
-    refs: dict[str, str] = {}
     ct_uids = set(
         patient_series[patient_series["Modality"] == "CT"]["SeriesInstanceUID"]
     )
 
-    client = httpx.Client(timeout=30, follow_redirects=True)
+    async def _fetch_all() -> dict[str, str]:
+        refs: dict[str, str] = {}
+
+        async with httpx.AsyncClient(
+            timeout=30, follow_redirects=True, http2=True,
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=20),
+        ) as client:
+
+            async def _fetch_one(study_uid: str, series_uid: str) -> None:
+                try:
+                    meta_url = (
+                        f"{dicomweb_url}/studies/{study_uid}"
+                        f"/series/{series_uid}/metadata"
+                    )
+                    resp = await client.get(
+                        meta_url,
+                        headers={"Accept": "application/dicom+json"},
+                    )
+                    resp.raise_for_status()
+                    instances = resp.json()
+
+                    if not instances:
+                        return
+
+                    inst = instances[0]
+                    ref_seq = inst.get("00081115", {}).get("Value", [])
+                    for ref in ref_seq:
+                        ref_series_uid = ref.get("0020000E", {}).get("Value", [""])[0]
+                        if ref_series_uid in ct_uids:
+                            refs[series_uid] = ref_series_uid
+                            break
+                except Exception:
+                    pass
+
+            tasks = [
+                _fetch_one(row["StudyInstanceUID"], row["SeriesInstanceUID"])
+                for _, row in seg_sr_series.iterrows()
+            ]
+            await asyncio.gather(*tasks)
+
+        return refs
+
     try:
-        for _, row in seg_sr_series.iterrows():
-            study_uid = row["StudyInstanceUID"]
-            series_uid = row["SeriesInstanceUID"]
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
 
-            try:
-                meta_url = (
-                    f"{dicomweb_url}/studies/{study_uid}"
-                    f"/series/{series_uid}/metadata"
-                )
-                resp = client.get(
-                    meta_url,
-                    headers={"Accept": "application/dicom+json"},
-                )
-                resp.raise_for_status()
-                instances = resp.json()
-
-                if not instances:
-                    continue
-
-                inst = instances[0]
-                # ReferencedSeriesSequence (0008,1115)
-                ref_seq = inst.get("00081115", {}).get("Value", [])
-                for ref in ref_seq:
-                    ref_series_uid = ref.get("0020000E", {}).get("Value", [""])[0]
-                    if ref_series_uid in ct_uids:
-                        refs[series_uid] = ref_series_uid
-                        break
-            except Exception:
-                continue
-    finally:
-        client.close()
-
-    return refs
+    if loop and loop.is_running():
+        # Already in an async context — run in a new thread
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(1) as pool:
+            return pool.submit(lambda: asyncio.run(_fetch_all())).result()
+    else:
+        return asyncio.run(_fetch_all())
 
 
 def _resolve_via_description(
