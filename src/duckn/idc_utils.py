@@ -203,11 +203,29 @@ def _resolve_via_dicomweb(
                         return
 
                     inst = instances[0]
+
+                    # Try ReferencedSeriesSequence (0008,1115) — used by SEGs
                     ref_seq = inst.get("00081115", {}).get("Value", [])
                     for ref in ref_seq:
                         ref_series_uid = ref.get("0020000E", {}).get("Value", [""])[0]
                         if ref_series_uid in ct_uids:
                             refs[series_uid] = ref_series_uid
+                            break
+
+                    if series_uid in refs:
+                        return
+
+                    # Try CurrentRequestedProcedureEvidenceSequence (0040,A375)
+                    # — used by SRs, contains both SEG and CT references
+                    evidence = inst.get("0040A375", {}).get("Value", [])
+                    for ev in evidence:
+                        ev_ref_seq = ev.get("00081115", {}).get("Value", [])
+                        for ref in ev_ref_seq:
+                            ref_series_uid = ref.get("0020000E", {}).get("Value", [""])[0]
+                            if ref_series_uid in ct_uids:
+                                refs[series_uid] = ref_series_uid
+                                break
+                        if series_uid in refs:
                             break
                 except Exception:
                     pass
