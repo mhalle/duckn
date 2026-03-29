@@ -658,4 +658,12 @@ def group_patient_data(
             elif "firstorder" in row["SeriesDescription"].lower():
                 hierarchy[year][kernel]["sr_firstorder"].append(series_info)
 
-    return hierarchy
+    # Prune kernel groups with no segmentation — these are scouts,
+    # localizers, or non-diagnostic series that TotalSegmentator skipped
+    pruned: dict[str, dict[str, dict[str, list]]] = {}
+    for year in hierarchy:
+        for kernel, data in hierarchy[year].items():
+            if data["seg"]:
+                pruned.setdefault(year, {})[kernel] = data
+
+    return pruned
