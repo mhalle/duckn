@@ -174,13 +174,15 @@ def resample(
     if order == 0:
         resampled = resampled.astype(vol.data.dtype)
 
-    # Update metadata — scale space_direction vectors
+    # Update metadata — scale space_direction, thickness, clear samples
     new_meta = deepcopy(vol.meta)
     spatial_idx = 0
     for i, ax in enumerate(new_meta.axes):
         if ax.space_direction is not None:
             scale = 1.0 / zoom_factors[spatial_idx]
             ax.space_direction = [v * scale for v in ax.space_direction]
+            if ax.thickness is not None:
+                ax.thickness = ax.thickness * scale
             ax.samples = None  # no longer valid after resampling
             spatial_idx += 1
 
