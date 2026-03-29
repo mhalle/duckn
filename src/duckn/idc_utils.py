@@ -608,62 +608,81 @@ def group_patient_data(
     """
     refs = resolve_seg_sr_references(series_df, dicomweb_url=dicomweb_url)
 
-    # Build CT lookup: SeriesInstanceUID → kernel name
+    # Build reverse ref: CT SeriesInstanceUID → set of SEG/SR that reference it
+    ct_referenced_by: dict[str, set[str]] = {}
+    for seg_sr_uid, ct_uid in refs.items():
+        ct_referenced_by.setdefault(ct_uid, set()).add(seg_sr_uid)
+
+    # Build CT lookup: SeriesInstanceUID → (kernel, series_info, year)
     ct_kernels: dict[str, str] = {}
+    ct_info_map: dict[str, dict] = {}
+    ct_years: dict[str, str] = {}
     for _, row in series_df[series_df["Modality"] == "CT"].iterrows():
-        kernel = normalize_kernel(row["SeriesDescription"])
-        ct_kernels[row["SeriesInstanceUID"]] = kernel
-
-    hierarchy: dict[str, dict[str, dict[str, list]]] = {}
-
-    for _, row in series_df.iterrows():
-        year = str(row["StudyDate"])[:4]
-        if year not in hierarchy:
-            hierarchy[year] = {}
-
-        modality = row["Modality"]
-        series_info = {
-            "SeriesInstanceUID": row["SeriesInstanceUID"],
+        uid = row["SeriesInstanceUID"]
+        ct_kernels[uid] = normalize_kernel(row["SeriesDescription"])
+        ct_info_map[uid] = {
+            "SeriesInstanceUID": uid,
             "crdc_series_uuid": row["crdc_series_uuid"],
             "SeriesDescription": row["SeriesDescription"],
             "series_size_MB": row["series_size_MB"],
         }
+        ct_years[uid] = str(row["StudyDate"])[:4]
 
-        if modality == "CT":
-            kernel = ct_kernels[row["SeriesInstanceUID"]]
-            if kernel not in hierarchy[year]:
-                hierarchy[year][kernel] = {
-                    "ct": [], "seg": [], "sr_shape": [], "sr_firstorder": [],
-                }
-            hierarchy[year][kernel]["ct"].append(series_info)
+    # Build hierarchy from SEGs outward — only include CTs that are referenced
+    hierarchy: dict[str, dict[str, dict[str, list]]] = {}
+    included_cts: set[str] = set()
 
-        elif modality in ("SEG", "SR"):
-            # Find the referenced CT and its kernel
-            ref_ct = refs.get(row["SeriesInstanceUID"])
-            if ref_ct and ref_ct in ct_kernels:
-                kernel = ct_kernels[ref_ct]
-            else:
-                # Can't resolve — skip or put in unknown
-                continue
+    # First pass: add SEGs and their referenced CTs
+    for _, row in series_df[series_df["Modality"] == "SEG"].iterrows():
+        seg_uid = row["SeriesInstanceUID"]
+        ref_ct = refs.get(seg_uid)
+        if not ref_ct or ref_ct not in ct_kernels:
+            continue
 
-            if kernel not in hierarchy[year]:
-                hierarchy[year][kernel] = {
-                    "ct": [], "seg": [], "sr_shape": [], "sr_firstorder": [],
-                }
+        year = ct_years[ref_ct]
+        kernel = ct_kernels[ref_ct]
 
-            if modality == "SEG":
-                hierarchy[year][kernel]["seg"].append(series_info)
-            elif "shape" in row["SeriesDescription"].lower():
-                hierarchy[year][kernel]["sr_shape"].append(series_info)
-            elif "firstorder" in row["SeriesDescription"].lower():
-                hierarchy[year][kernel]["sr_firstorder"].append(series_info)
+        if kernel not in hierarchy.setdefault(year, {}):
+            hierarchy[year][kernel] = {
+                "ct": [], "seg": [], "sr_shape": [], "sr_firstorder": [],
+            }
 
-    # Prune kernel groups with no segmentation — these are scouts,
-    # localizers, or non-diagnostic series that TotalSegmentator skipped
-    pruned: dict[str, dict[str, dict[str, list]]] = {}
-    for year in hierarchy:
-        for kernel, data in hierarchy[year].items():
-            if data["seg"]:
-                pruned.setdefault(year, {})[kernel] = data
+        seg_info = {
+            "SeriesInstanceUID": seg_uid,
+            "crdc_series_uuid": row["crdc_series_uuid"],
+            "SeriesDescription": row["SeriesDescription"],
+            "series_size_MB": row["series_size_MB"],
+        }
+        hierarchy[year][kernel]["seg"].append(seg_info)
 
-    return pruned
+        # Add the referenced CT (once)
+        if ref_ct not in included_cts:
+            included_cts.add(ref_ct)
+            hierarchy[year][kernel]["ct"].append(ct_info_map[ref_ct])
+
+    # Second pass: add SRs to their kernel groups
+    for _, row in series_df[series_df["Modality"] == "SR"].iterrows():
+        sr_uid = row["SeriesInstanceUID"]
+        ref_ct = refs.get(sr_uid)
+        if not ref_ct or ref_ct not in ct_kernels:
+            continue
+
+        year = ct_years[ref_ct]
+        kernel = ct_kernels[ref_ct]
+
+        if kernel not in hierarchy.get(year, {}):
+            # No SEG for this kernel — skip (filtered out)
+            continue
+
+        sr_info = {
+            "SeriesInstanceUID": sr_uid,
+            "crdc_series_uuid": row["crdc_series_uuid"],
+            "SeriesDescription": row["SeriesDescription"],
+            "series_size_MB": row["series_size_MB"],
+        }
+        if "shape" in row["SeriesDescription"].lower():
+            hierarchy[year][kernel]["sr_shape"].append(sr_info)
+        elif "firstorder" in row["SeriesDescription"].lower():
+            hierarchy[year][kernel]["sr_firstorder"].append(sr_info)
+
+    return hierarchy
