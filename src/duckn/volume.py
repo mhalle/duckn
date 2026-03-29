@@ -29,6 +29,7 @@ class Volume:
         to_space: str,
         *,
         affine: "np.ndarray | list[list[float]] | None" = None,
+        inverse: "np.ndarray | list[list[float]] | None" = None,
         identity: bool = False,
         metadata: dict | None = None,
     ) -> None:
@@ -37,10 +38,15 @@ class Volume:
         Parameters
         ----------
         to_space : target space name (e.g., "nifti:mni152")
-        affine : N×(N+1) affine matrix (world → target), mutually
-                 exclusive with identity
+        affine : N×(N+1) forward affine matrix (world → target)
+        inverse : N×(N+1) inverse affine matrix (target → world).
+                  Useful when a registration tool returns the inverse
+                  direction (e.g., SimpleITK's fixed→moving transform).
+                  The forward will be computed by matrix inversion.
         identity : if True, declares world space IS the target space
         metadata : optional provenance dict (software, method, date, etc.)
+
+        Exactly one of affine, inverse, or identity must be specified.
         """
         import numpy as np
 
@@ -50,20 +56,26 @@ class Volume:
             TransformObject,
         )
 
-        if affine is not None and identity:
-            raise ValueError("Cannot specify both affine and identity")
-        if affine is None and not identity:
-            raise ValueError("Must specify either affine or identity=True")
+        n_specified = sum(x is not None for x in (affine, inverse)) + int(identity)
+        if n_specified != 1:
+            raise ValueError("Exactly one of affine, inverse, or identity must be specified")
+
+        forward = None
+        inverse_obj = None
 
         if identity:
-            transform = TransformObject(identity=True)
-        else:
+            forward = TransformObject(identity=True)
+        elif affine is not None:
             matrix = np.asarray(affine, dtype=float).tolist()
-            transform = TransformObject(affine=matrix)
+            forward = TransformObject(affine=matrix)
+        elif inverse is not None:
+            matrix = np.asarray(inverse, dtype=float).tolist()
+            inverse_obj = TransformObject(affine=matrix)
 
         entry = SpaceTransformEntry(
             to=SpaceReference(name=to_space),
-            forward=transform,
+            forward=forward,
+            inverse=inverse_obj,
             metadata=metadata,
         )
 
