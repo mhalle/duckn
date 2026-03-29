@@ -268,31 +268,43 @@ class VolumeGeometry:
         self,
         coords: np.ndarray,
         space: str = "world",
+        *,
+        round: bool = False,
+        clamp: bool = False,
     ) -> np.ndarray:
-        """Convert coordinates from any named space to continuous index.
+        """Convert coordinates from any named space to index.
 
         Parameters
         ----------
         coords : array of shape (ndim,) or (N, ndim)
         space : one of "world", "axis-aligned", "axis-aligned-centered", "index"
+        round : if True, round to nearest integer voxel
+        clamp : if True, clamp to valid range [0, shape-1]
 
         Returns
         -------
-        index : continuous index coordinates
+        index : index coordinates (float if not rounded, int if rounded)
         """
         if space == "index":
-            return np.asarray(coords, dtype=float)
+            idx = np.asarray(coords, dtype=float)
         elif space == "world":
-            return self.world_to_index(coords)
+            idx = self.world_to_index(coords)
         elif space == "axis-aligned":
             world = self.axis_aligned_to_world(coords)
-            return self.world_to_index(world)
+            idx = self.world_to_index(world)
         elif space == "axis-aligned-centered":
             aa = self.centered_to_axis_aligned(coords)
             world = self.axis_aligned_to_world(aa)
-            return self.world_to_index(world)
+            idx = self.world_to_index(world)
         else:
             raise ValueError(f"Unknown space: {space!r}")
+
+        if clamp:
+            idx = self.clamp_index(idx)
+        if round:
+            idx = self.round_index(idx)
+
+        return idx
 
     def from_index(
         self,
