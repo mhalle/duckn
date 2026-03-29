@@ -1,0 +1,8 @@
+{
+  "name": "@duckn/spatial",
+  "version": "0.1.0",
+  "description": "Spatial coordinate transforms for duckn volumes",
+  "type": "module",
+  "main": "src/index.js",
+  "license": "MIT"
+}
