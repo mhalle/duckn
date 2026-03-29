@@ -82,7 +82,7 @@ class SegAccessor:
         self,
         *,
         name: str | None = None,
-        label: int | None = None,
+        label_value: int | None = None,
         snomed: str | None = None,
     ) -> SegmentView | None:
         """Find a segment by name, label value, or SNOMED code.
@@ -92,7 +92,7 @@ class SegAccessor:
         for seg in self.segments:
             if name is not None and seg.name == name:
                 return seg
-            if label is not None and seg.label_value == label:
+            if label_value is not None and seg.label_value == label_value:
                 return seg
             if snomed is not None:
                 sct = seg.identifiers.get("snomedct", {})
@@ -109,9 +109,9 @@ class SegAccessor:
         seg = self.segment(name=name)
         return seg.label_value if seg else None
 
-    def name_for(self, label: int) -> str | None:
+    def name_for(self, label_value: int) -> str | None:
         """Get the name for a label value."""
-        seg = self.segment(label=label)
+        seg = self.segment(label_value=label_value)
         return seg.name if seg else None
 
     @property
