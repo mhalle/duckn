@@ -31,6 +31,25 @@ from .models import (
 _BUILTIN_SPACES = {"world", "axis-aligned", "axis-aligned-centered", "index"}
 
 
+def has_uniform_spacing(meta: DucknMetadata) -> bool:
+    """Check if a volume has uniform spacing (no per-sample positions).
+
+    Can be called before constructing a VolumeGeometry to decide
+    whether the uniform-spacing code path is valid.
+    """
+    if meta.axes is None:
+        return True
+    spatial_axes = [ax for ax in meta.axes if ax.space_direction is not None]
+    return all(
+        ax.samples is None
+        or all(
+            s.position is None and s.origin is None
+            for s in ax.samples
+        )
+        for ax in spatial_axes
+    )
+
+
 @dataclass
 class _NamedTransform:
     """A parsed named space transform."""
@@ -172,9 +191,12 @@ class VolumeGeometry:
     # Inverse affine: world → index
     affine_inv: np.ndarray
 
+    # Whether all spatial axes have uniform spacing (no per-sample positions)
+    _uniform: bool
+
     # Named space transforms from space_transforms metadata
     # Maps target space name → _NamedTransform
-    _named_transforms: dict  # not frozen, set via __post_init__ workaround
+    _named_transforms: dict
 
     @staticmethod
     def from_metadata(
@@ -244,6 +266,25 @@ class VolumeGeometry:
         affine_inv[:, :ndim] = D_inv
         affine_inv[:, ndim] = -D_inv @ origin - centering
 
+        # Check for per-sample positions (non-uniform spacing)
+        uniform = all(
+            ax.samples is None
+            or all(
+                s.position is None and s.origin is None
+                for s in ax.samples
+            )
+            for ax in spatial_axes
+        )
+
+        if not uniform:
+            import warnings
+            warnings.warn(
+                "Volume has per-sample positions (non-uniform spacing). "
+                "VolumeGeometry assumes uniform spacing — transforms may "
+                "be approximate for non-uniformly sampled axes.",
+                stacklevel=2,
+            )
+
         # Parse named space transforms
         named = _parse_space_transforms(meta.space_transforms, ndim)
 
@@ -259,6 +300,7 @@ class VolumeGeometry:
             S=S,
             affine=affine,
             affine_inv=affine_inv,
+            _uniform=uniform,
             _named_transforms=named,
         )
 
@@ -293,13 +335,8 @@ class VolumeGeometry:
 
     @property
     def has_uniform_spacing(self) -> bool:
-        """True if spacing is constant along each axis (no per-sample positions).
-
-        Currently always True since VolumeGeometry only supports
-        uniform sampling. Will be False when per-sample positions
-        are supported.
-        """
-        return True
+        """True if spacing is constant along each axis (no per-sample positions)."""
+        return self._uniform
 
     @property
     def is_isotropic(self) -> bool:
