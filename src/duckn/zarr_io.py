@@ -35,7 +35,10 @@ def open_store(path: str | Path, *, mode: str = "r", overwrite: bool = False):
         (ZipStore cannot delete entries inside an existing archive)
     """
     path = Path(path)
-    if _is_zip_path(path):
+    if path.suffix == ".zmp":
+        from zarr_zmp import ZMPStore
+        yield ZMPStore.from_file(str(path))
+    elif _is_zip_path(path):
         if mode == "w" and path.exists():
             if not overwrite:
                 raise FileExistsError(f"{path} already exists (use --overwrite)")
