@@ -95,10 +95,7 @@ def to_nifti(vol: Volume, space: str = "world") -> Any:
         raise ValueError(f"Unsupported space: {space!r}")
 
     # Reverse data axes to match NIfTI i,j,k (fastest-first)
-    data_nifti = np.ascontiguousarray(vol.data.transpose()[::-1, ::-1, ::-1].transpose()
-                                       if ndim == 3 else vol.data)
-    # Simpler: just reverse the axis order
-    data_nifti = np.ascontiguousarray(np.moveaxis(vol.data, range(ndim), range(ndim - 1, -1, -1)))
+    data_nifti = vol.data.transpose()
 
     return nib.Nifti1Image(data_nifti, affine)
 
@@ -128,7 +125,7 @@ def from_nifti(
     ndim = 3
 
     # Reverse NIfTI i,j,k (fastest-first) → duckn C-order (slowest-first)
-    data = np.ascontiguousarray(np.moveaxis(data_nifti, range(ndim), range(ndim - 1, -1, -1)))
+    data = data_nifti.transpose()
 
     if meta is not None:
         new_meta = deepcopy(meta)
