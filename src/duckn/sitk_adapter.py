@@ -13,12 +13,12 @@ from typing import Any
 
 import numpy as np
 
-from .adapters import _get_lps_flip, to_lps_params
+from .adapters import _get_target_flip, to_lps_params
 from .models import DucknMetadata
 from .volume import Volume
 
 
-def to_sitk(vol: Volume, space: str = "world") -> Any:
+def to_sitk(vol: Volume, space: str = "world", convention: str = "lps") -> Any:
     """Convert a duckn Volume to a SimpleITK Image.
 
     Parameters
@@ -33,7 +33,7 @@ def to_sitk(vol: Volume, space: str = "world") -> Any:
     """
     import SimpleITK as sitk
 
-    params = to_lps_params(vol, space=space)
+    params = to_lps_params(vol, space=space, convention=convention)
 
     img = sitk.GetImageFromArray(params["data"])
     img.SetSpacing(params["spacing"])
@@ -47,6 +47,7 @@ def from_sitk(
     img: Any,
     meta: DucknMetadata | None = None,
     space: str = "world",
+    convention: str = "lps",
 ) -> Volume:
     """Convert a SimpleITK Image to a duckn Volume.
 
@@ -74,15 +75,20 @@ def from_sitk(
     spacing_zyx = spacing_xyz[::-1]
     direction_zyx = direction_flat[:, ::-1]
 
-    # Convert from LPS back to duckn space
+    # Convert from external convention back to duckn space
     if meta is not None:
         new_meta = deepcopy(meta)
-        flip = _get_lps_flip(meta)
+        flip = _get_target_flip(meta, convention=convention)
     else:
         from .models import AxisKind, AxisMetadata, Centering, SpaceName
-        flip = np.array([1, 1, 1], dtype=float)  # assume LPS
+        flip = np.array([1, 1, 1], dtype=float)
+        default_space = (
+            SpaceName.RIGHT_ANTERIOR_SUPERIOR
+            if convention == "ras"
+            else SpaceName.LEFT_POSTERIOR_SUPERIOR
+        )
         new_meta = DucknMetadata(
-            space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
+            space=default_space,
             space_origin=[0.0] * ndim,
             axes=[
                 AxisMetadata(

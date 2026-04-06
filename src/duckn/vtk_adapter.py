@@ -13,7 +13,7 @@ from typing import Any
 
 import numpy as np
 
-from .adapters import _get_lps_flip, to_lps_params
+from .adapters import _get_target_flip, to_lps_params
 from .models import DucknMetadata
 from .volume import Volume
 
@@ -30,7 +30,7 @@ _NUMPY_TO_VTK = {
 }
 
 
-def to_vtk(vol: Volume, space: str = "world") -> Any:
+def to_vtk(vol: Volume, space: str = "world", convention: str = "lps") -> Any:
     """Convert a duckn Volume to a vtkImageData.
 
     Parameters
@@ -38,6 +38,8 @@ def to_vtk(vol: Volume, space: str = "world") -> Any:
     vol : input Volume
     space : coordinate space ("world", "axis-aligned",
             "axis-aligned-centered", or any named space)
+    convention : "lps" (default, for ITK/VTK pipelines) or "ras"
+                 (for Slicer / RAS-native consumers)
 
     Returns
     -------
@@ -46,7 +48,7 @@ def to_vtk(vol: Volume, space: str = "world") -> Any:
     import vtk
     from vtk.util.numpy_support import numpy_to_vtk
 
-    params = to_lps_params(vol, space=space)
+    params = to_lps_params(vol, space=space, convention=convention)
     data = params["data"]
     ndim = vol.geometry.ndim
 
@@ -80,6 +82,7 @@ def from_vtk(
     img: Any,
     meta: DucknMetadata | None = None,
     space: str = "world",
+    convention: str = "lps",
 ) -> Volume:
     """Convert a vtkImageData to a duckn Volume.
 
@@ -123,15 +126,20 @@ def from_vtk(
     spacing_zyx = spacing_xyz[::-1]
     direction_zyx = direction[:, ::-1]
 
-    # Convert from LPS back to duckn space
+    # Convert from external convention back to duckn space
     if meta is not None:
         new_meta = deepcopy(meta)
-        flip = _get_lps_flip(meta)
+        flip = _get_target_flip(meta, convention=convention)
     else:
         from .models import AxisKind, AxisMetadata, Centering, SpaceName
         flip = np.array([1, 1, 1], dtype=float)
+        default_space = (
+            SpaceName.RIGHT_ANTERIOR_SUPERIOR
+            if convention == "ras"
+            else SpaceName.LEFT_POSTERIOR_SUPERIOR
+        )
         new_meta = DucknMetadata(
-            space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
+            space=default_space,
             space_origin=[0.0] * ndim,
             axes=[
                 AxisMetadata(

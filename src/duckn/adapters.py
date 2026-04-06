@@ -16,34 +16,56 @@ from .models import DucknMetadata, SpaceName
 from .spatial import VolumeGeometry
 from .volume import Volume
 
-# Sign flips from named space → LPS
-_TO_LPS_FLIP: dict[str, list[float]] = {
-    "left-posterior-superior": [1, 1, 1],       # already LPS
-    "right-anterior-superior": [-1, -1, 1],     # RAS → LPS
-    "left-anterior-superior": [1, -1, 1],       # LAS → LPS
+# Sign flips from named source space → target convention.
+# Each entry maps "<source space name>" → flip vector for the named target.
+_TO_TARGET_FLIP: dict[str, dict[str, list[float]]] = {
+    "lps": {
+        "left-posterior-superior": [1, 1, 1],     # already LPS
+        "right-anterior-superior": [-1, -1, 1],   # RAS → LPS
+        "left-anterior-superior": [1, -1, 1],     # LAS → LPS
+    },
+    "ras": {
+        "left-posterior-superior": [-1, -1, 1],   # LPS → RAS
+        "right-anterior-superior": [1, 1, 1],     # already RAS
+        "left-anterior-superior": [-1, 1, 1],     # LAS → RAS
+    },
 }
 
 
-def _get_lps_flip(meta: DucknMetadata) -> np.ndarray:
-    """Get the sign flip vector to convert from the volume's space to LPS."""
+def _get_target_flip(meta: DucknMetadata, convention: str = "lps") -> np.ndarray:
+    """Get the sign flip vector to convert from the volume's space to *convention*."""
+    if convention not in _TO_TARGET_FLIP:
+        raise ValueError(
+            f"Unknown convention {convention!r}; expected one of {list(_TO_TARGET_FLIP)}"
+        )
     space = str(meta.space) if meta.space else "left-posterior-superior"
-    flip = _TO_LPS_FLIP.get(space)
+    flip = _TO_TARGET_FLIP[convention].get(space)
     if flip is None:
         # Unknown space — assume no flip needed
         flip = [1, 1, 1]
     return np.array(flip, dtype=float)
 
 
+# Backward-compat alias — existing call sites assume LPS.
+def _get_lps_flip(meta: DucknMetadata) -> np.ndarray:
+    return _get_target_flip(meta, convention="lps")
+
+
 def to_lps_params(
     vol: Volume,
     space: str = "world",
+    convention: str = "lps",
 ) -> dict:
-    """Compute LPS-convention spatial parameters for an external library.
+    """Compute spatial parameters for an external library.
+
+    Despite the name, this function supports both LPS and RAS targets via
+    the *convention* parameter; the default remains LPS for backward
+    compatibility with existing adapter call sites.
 
     Returns dict with keys:
         spacing: (sx, sy, sz) in xyz order
-        origin: (ox, oy, oz) in LPS
-        direction: 9-element flat array, row-major, xyz basis vectors in LPS
+        origin: (ox, oy, oz) in *convention*
+        direction: 9-element flat array, row-major, xyz basis vectors in *convention*
         data: numpy array (unchanged, zyx C-order)
 
     Parameters
@@ -51,9 +73,10 @@ def to_lps_params(
     vol : input Volume
     space : coordinate space to export in ("world", "axis-aligned",
             "axis-aligned-centered", or any named space)
+    convention : "lps" (default) or "ras"
     """
     geom = vol.geometry
-    flip = _get_lps_flip(vol.meta)
+    flip = _get_target_flip(vol.meta, convention=convention)
 
     if space == "world":
         origin = geom.origin * flip
