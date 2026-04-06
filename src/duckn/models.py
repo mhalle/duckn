@@ -447,7 +447,7 @@ class CodedEntry(BaseModel):
 
 
 class DicomClassification(BaseModel):
-    """DICOM SEG classification (lives in segment metadata.dicom)."""
+    """DICOM SEG classification structure for a segment."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -456,6 +456,28 @@ class DicomClassification(BaseModel):
     type_modifier: Identifier | CodedEntry | None = None
     anatomic_region: Identifier | CodedEntry | None = None
     anatomic_region_modifier: Identifier | CodedEntry | None = None
+
+
+class Designation(BaseModel):
+    """A coded reference to a concept in some terminology system.
+
+    A segment carries a list of these — one per terminology in which the
+    structure is identified — making the multiplicity of cross-ontology
+    identity explicit.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    scheme: str
+    code: str
+    meaning: str
+    url: str | None = None
+    display: dict[str, str] | None = None
+    modifier: "Designation | None" = None
+
+
+# Resolve the forward reference for the recursive `modifier` field.
+Designation.model_rebuild()
 
 
 class Segment(BaseModel):
@@ -468,6 +490,13 @@ class Segment(BaseModel):
     label_value: int | list[int]
     layer: int | None = None
     extent: list[int] | None = None
+    designations: list[Designation] | None = None
+    dicom: DicomClassification | None = None
+    name_auto_generated: bool | None = None
+    color_auto_generated: bool | None = None
+    tags: dict[str, str] | None = None
+    # Legacy field — superseded by `designations`. Kept for back-compat
+    # with older callers and for round-tripping models that use it.
     identifiers: dict[str, Identifier] | None = None
     metadata: dict[str, Any] | None = None
 
@@ -477,6 +506,9 @@ class SegmentationExtension(BaseModel):
 
     version: str
     source_representation: SourceRepresentation | None = None
+    contained_representations: list[str] | None = None
+    conversion_parameters: dict[str, ConversionParameter] | None = None
+    reference_extent_offset: list[int] | None = None
     terminologies: dict[str, TerminologyEntry] | None = None
     segments: list[Segment]
     metadata: dict[str, Any] | None = None
