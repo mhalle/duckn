@@ -1,19 +1,27 @@
 # Changelog
 
-## 0.1.4 — 2026-05-04
+## 0.1.5 — 2026-05-04
 
 ### Added
-- `duckn.open_array(source, *, apply_value_transforms=True)` returns a
-  `DucknArray` — a thin wrapper around `zarr.Array` that applies linear
-  value transforms on slice. Toggle via the mutable
+- `duckn.open_array(source, *, apply_value_transforms=True, transform_dtype=None)`
+  returns a `DucknArray` — a thin wrapper around `zarr.Array` that
+  applies linear value transforms on slice. Toggle via the mutable
   `arr.apply_value_transforms` attribute at any time. `arr.metadata`
   exposes the parsed `DucknMetadata` snapshot; `arr.zarr` exposes the
   underlying `zarr.Array` (use `arr.zarr.metadata` for zarr-level array
   info — shape/codecs/chunk grid). `arr.attrs`, `shape`, `chunks`,
-  `ndim`, `size` forward to the zarr handle. `arr.dtype` is dynamic
-  (float32 when a non-identity transform applies, else the stored
-  dtype). Supports the context-manager protocol so the store is closed
-  on exit (relevant for `.zarr.zip` and `.zmp`).
+  `ndim`, `size` forward to the zarr handle. `arr.dtype` is dynamic and
+  reflects the effective output dtype under current settings. Supports
+  the context-manager protocol so the store is closed on exit (relevant
+  for `.zarr.zip` and `.zmp`).
+- `transform_dtype` lets callers pin the output dtype of slicing when
+  transforms apply (e.g., `np.float64` for high-precision computation,
+  `np.int16` to write back into integer space). `None` (default) keeps
+  the existing behavior: float32 for non-identity transforms, native
+  dtype for identity. Float targets compute in their own dtype if
+  float64; otherwise float32 working precision (no excessive memory).
+  Integer targets round with `np.rint` before cast (no overflow check —
+  caller's responsibility).
 
 ### Removed
 - `read_array` (added in 0.1.3) — superseded by `open_array(p)[:]` or

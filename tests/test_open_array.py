@@ -255,6 +255,76 @@ class TestReadMetadataStillWorks:
         assert meta.value_transforms[0].parameters == {"slope": 3.0, "intercept": 7.0}
 
 
+class TestTransformDtype:
+    def test_float64_output(self, tmp_path):
+        data = np.arange(6, dtype=np.int16).reshape(2, 3)
+        vt = [ValueTransform(name="linear", parameters={"slope": 0.1, "intercept": 0.0})]
+        store_path = tmp_path / "f64.zarr"
+        _write_test_store(store_path, data, value_transforms=vt)
+
+        arr = open_array(store_path, transform_dtype=np.float64)
+        out = arr[:]
+        assert out.dtype == np.float64
+        np.testing.assert_allclose(out, data * 0.1, rtol=1e-12)
+
+    def test_int16_output_rounds(self, tmp_path):
+        # slope/intercept produce values that need rounding (not truncation)
+        data = np.array([[0, 1, 2, 3, 4]], dtype=np.uint8)
+        vt = [ValueTransform(name="linear", parameters={"slope": 0.7, "intercept": 0.0})]
+        store_path = tmp_path / "i16.zarr"
+        _write_test_store(store_path, data, value_transforms=vt)
+
+        arr = open_array(store_path, transform_dtype=np.int16)
+        out = arr[:]
+        assert out.dtype == np.int16
+        # data * 0.7 = [0, 0.7, 1.4, 2.1, 2.8] → rint → [0, 1, 1, 2, 3]
+        np.testing.assert_array_equal(out, [[0, 1, 1, 2, 3]])
+
+    def test_int8_output(self, tmp_path):
+        data = np.array([[0, 50, 100, 150, 200]], dtype=np.uint8)
+        # 0.5*x - 50: [-50, -25, 0, 25, 50] — fits in int8
+        vt = [ValueTransform(name="linear", parameters={"slope": 0.5, "intercept": -50.0})]
+        store_path = tmp_path / "i8.zarr"
+        _write_test_store(store_path, data, value_transforms=vt)
+
+        arr = open_array(store_path, transform_dtype=np.int8)
+        out = arr[:]
+        assert out.dtype == np.int8
+        np.testing.assert_array_equal(out, [[-50, -25, 0, 25, 50]])
+
+    def test_transform_dtype_overrides_identity_bypass(self, tmp_path):
+        data = np.arange(6, dtype=np.int16).reshape(2, 3)
+        vt = [ValueTransform(name="linear", parameters={"slope": 1.0, "intercept": 0.0})]
+        store_path = tmp_path / "id_override.zarr"
+        _write_test_store(store_path, data, value_transforms=vt)
+
+        # Default: identity bypass keeps int16
+        arr = open_array(store_path)
+        assert arr.dtype == np.int16
+
+        # With transform_dtype set: bypass disabled, output respects the override
+        arr2 = open_array(store_path, transform_dtype=np.float64)
+        assert arr2.dtype == np.float64
+        out = arr2[:]
+        assert out.dtype == np.float64
+        np.testing.assert_array_equal(out, data.astype(np.float64))
+
+    def test_transform_dtype_ignored_when_apply_false(self, tmp_path):
+        data = np.arange(6, dtype=np.int16).reshape(2, 3)
+        vt = [ValueTransform(name="linear", parameters={"slope": 2.0, "intercept": 0.0})]
+        store_path = tmp_path / "ignore.zarr"
+        _write_test_store(store_path, data, value_transforms=vt)
+
+        arr = open_array(
+            store_path,
+            apply_value_transforms=False,
+            transform_dtype=np.float64,
+        )
+        # apply_value_transforms=False wins — raw output, native dtype
+        assert arr.dtype == np.int16
+        np.testing.assert_array_equal(arr[:], data)
+
+
 class TestRepr:
     def test_repr_shows_mode(self, tmp_path):
         data = np.zeros((2, 2), dtype=np.int16)

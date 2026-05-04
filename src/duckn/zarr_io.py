@@ -155,11 +155,22 @@ class DucknArray:
     calibrated reads on the same handle.
 
     Forwards ``shape``, ``chunks``, ``ndim``, ``size``, and ``attrs`` to
-    the underlying ``zarr.Array``. ``dtype`` is dynamic: float32 when a
-    non-identity transform is being applied, otherwise the stored dtype.
+    the underlying ``zarr.Array``. ``dtype`` is dynamic: it reflects the
+    output dtype of slicing under the current settings.
     Use ``.metadata`` for the parsed duckn metadata snapshot and
     ``.zarr`` for the underlying ``zarr.Array`` (whose own ``.metadata``
     gives zarr-level array info: shape/codecs/chunk grid).
+
+    Output dtype rules
+    ------------------
+    - ``apply_value_transforms=False`` → stored dtype.
+    - ``transform_dtype`` set → that dtype (rescale always applied;
+      integer targets are rounded with ``np.rint`` before cast, no
+      overflow check).
+    - ``transform_dtype=None`` (default) and identity transform
+      (slope=1, intercept=0) → stored dtype (bypass).
+    - ``transform_dtype=None`` (default) and non-identity transform
+      → float32.
 
     Supports the context-manager protocol so the underlying store is
     closed on exit (relevant for ZipStore and ZMPStore).
@@ -171,6 +182,7 @@ class DucknArray:
         metadata: DucknMetadata | None = None,
         *,
         apply_value_transforms: bool = True,
+        transform_dtype: Any = None,
         _store_to_close: Any = None,
     ) -> None:
         self._arr = zarr_array
@@ -178,6 +190,9 @@ class DucknArray:
             metadata = DucknMetadata(**zarr_array.attrs.get("duckn", {}))
         self._metadata = metadata
         self.apply_value_transforms = apply_value_transforms
+        self.transform_dtype = (
+            np.dtype(transform_dtype) if transform_dtype is not None else None
+        )
         self._slope, self._intercept = _compose_linear_transforms(
             metadata.value_transforms
         )
@@ -225,9 +240,13 @@ class DucknArray:
 
     @property
     def dtype(self) -> np.dtype:
-        if self.apply_value_transforms and not self._is_identity:
-            return np.dtype(np.float32)
-        return np.dtype(self._arr.dtype)
+        if not self.apply_value_transforms:
+            return np.dtype(self._arr.dtype)
+        if self.transform_dtype is not None:
+            return self.transform_dtype
+        if self._is_identity:
+            return np.dtype(self._arr.dtype)
+        return np.dtype(np.float32)
 
     @property
     def _is_identity(self) -> bool:
@@ -235,11 +254,34 @@ class DucknArray:
 
     def __getitem__(self, key):
         data = self._arr[key]
-        if not self.apply_value_transforms or self._is_identity:
+        if not self.apply_value_transforms:
             return data
-        out = data.astype(np.float32, copy=False) * np.float32(self._slope)
+
+        target = self.transform_dtype
+        if target is None:
+            if self._is_identity:
+                return data
+            target = np.dtype(np.float32)
+
+        # Compute the rescale in float32 (sufficient mantissa for any
+        # reasonable medical-imaging source dtype). Use float64 only when
+        # the user has explicitly asked for float64 output.
+        work = (
+            np.dtype(np.float64)
+            if target == np.dtype(np.float64)
+            else np.dtype(np.float32)
+        )
+
+        out = data.astype(work, copy=False) * work.type(self._slope)
         if self._intercept != 0.0:
-            out = out + np.float32(self._intercept)
+            out = out + work.type(self._intercept)
+
+        if work != target:
+            if np.issubdtype(target, np.integer):
+                # float → integer: round to avoid truncate-toward-zero
+                out = np.rint(out).astype(target, copy=False)
+            else:
+                out = out.astype(target, copy=False)
         return out
 
     def __array__(self, dtype=None, copy=None):
@@ -278,6 +320,7 @@ def open_array(
     source: str | Path | Any,
     *,
     apply_value_transforms: bool = True,
+    transform_dtype: Any = None,
 ) -> DucknArray:
     """Open a duckn Zarr store and return a ``DucknArray`` handle.
 
@@ -296,6 +339,12 @@ def open_array(
         or any object implementing the Zarr Store interface.
     apply_value_transforms : if True (default), apply linear value
         transforms on read.
+    transform_dtype : optional dtype for slicing output when transforms
+        are applied. None (default) keeps the existing behavior: float32
+        for non-identity transforms, native dtype for identity. Set to
+        any numpy dtype (e.g., ``np.float64``, ``np.int16``) to pin the
+        output dtype; integer targets are rounded with ``np.rint``
+        before cast (no overflow check — caller's responsibility).
     """
     if isinstance(source, (str, Path)):
         path = Path(source)
@@ -314,6 +363,7 @@ def open_array(
         return DucknArray(
             zarr_arr,
             apply_value_transforms=apply_value_transforms,
+            transform_dtype=transform_dtype,
             _store_to_close=store_to_close,
         )
     else:
@@ -325,6 +375,7 @@ def open_array(
         return DucknArray(
             zarr_arr,
             apply_value_transforms=apply_value_transforms,
+            transform_dtype=transform_dtype,
         )
 
 
