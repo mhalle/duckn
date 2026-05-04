@@ -18,7 +18,7 @@ from pydicom.sequence import Sequence as DicomSequence
 from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
 from duckn.dicom_convert import (
-    DicomGeometry,
+    DicomImageInfo,
     _extract_seg_extension,
     _is_dicom_seg,
     build_duckn_metadata,
@@ -30,6 +30,7 @@ from duckn.dicom_convert import (
     _should_be_array,
     _sort_datasets,
     dicom_to_zarr,
+    zarr_to_dicom,
 )
 from duckn.models import DucknMetadata, SegmentationExtension, SpaceName
 
@@ -412,7 +413,7 @@ class TestGeometry:
 
 class TestMetadataBuilding:
     def test_value_transforms(self):
-        geom = DicomGeometry(
+        geom = DicomImageInfo(
             shape=(3, 4, 4),
             dtype=np.dtype(np.uint16),
             space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
@@ -436,7 +437,7 @@ class TestMetadataBuilding:
         assert meta.sample_units == "HU"
 
     def test_dicom_extension_structure(self):
-        geom = DicomGeometry(
+        geom = DicomImageInfo(
             shape=(3, 4, 4),
             dtype=np.dtype(np.uint16),
             space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
@@ -457,7 +458,7 @@ class TestMetadataBuilding:
         assert dicom_ext["tags"]["Modality"] == "MR"
 
     def test_no_tags_flag(self):
-        geom = DicomGeometry(
+        geom = DicomImageInfo(
             shape=(1, 4, 4),
             dtype=np.dtype(np.uint16),
             space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
@@ -473,7 +474,7 @@ class TestMetadataBuilding:
         assert meta.extensions is None
 
     def test_axes_structure(self):
-        geom = DicomGeometry(
+        geom = DicomImageInfo(
             shape=(3, 4, 4),
             dtype=np.dtype(np.uint16),
             space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
@@ -614,6 +615,157 @@ class TestEndToEnd:
         with pytest.raises(ValueError, match="series"):
             dicom_to_zarr(dcm_dir, zarr_path)
 
+    def test_pixel_description_round_trip(self, tmp_path):
+        """BitsStored, HighBit, PhotometricInterpretation round-trip losslessly.
+
+        Realistic CT case: 12 bits stored in a 16-bit container, plus
+        MONOCHROME1 (inverted grayscale) which differs from the writer default.
+        """
+        dcm_dir = tmp_path / "dicom"
+        dcm_dir.mkdir()
+
+        for i in range(3):
+            pixel_data = np.full((8, 8), i * 100, dtype=np.uint16)
+            ds = _make_dataset(
+                rows=8,
+                cols=8,
+                position=(0.0, 0.0, float(i * 5)),
+                pixel_spacing=(0.5, 0.5),
+                pixel_data=pixel_data,
+            )
+            ds.SliceThickness = 5.0
+            # Override the helper's BitsStored=BitsAllocated default
+            ds.BitsStored = 12
+            ds.HighBit = 11
+            ds.PhotometricInterpretation = "MONOCHROME1"
+            fds = _make_file_dataset(ds, str(dcm_dir / f"slice_{i:03d}.dcm"))
+            fds.save_as(str(dcm_dir / f"slice_{i:03d}.dcm"))
+
+        zarr_path = tmp_path / "output.zarr"
+        dicom_to_zarr(dcm_dir, zarr_path)
+
+        # Verify the lossy fields landed in stored tags
+        import zarr
+
+        store = zarr.storage.LocalStore(str(zarr_path))
+        arr = zarr.open_array(store, mode="r")
+        duckn_meta = DucknMetadata(**arr.attrs["duckn"])
+        tags = duckn_meta.extensions["dicom"]["tags"]
+        assert tags["BitsStored"] == 12
+        assert tags["HighBit"] == 11
+        assert tags["PhotometricInterpretation"] == "MONOCHROME1"
+        assert tags["SamplesPerPixel"] == 1
+        # Truly redundant fields stay out
+        assert "BitsAllocated" not in tags
+        assert "PixelRepresentation" not in tags
+
+        # Round-trip back to DICOM and confirm values survive
+        out_dcm = tmp_path / "round_trip.dcm"
+        zarr_to_dicom(zarr_path, out_dcm)
+
+        restored = pydicom.dcmread(str(out_dcm))
+        assert restored.BitsAllocated == 16
+        assert restored.BitsStored == 12
+        assert restored.HighBit == 11
+        assert restored.PixelRepresentation == 0
+        assert restored.SamplesPerPixel == 1
+        assert restored.PhotometricInterpretation == "MONOCHROME1"
+
+    def test_export_rejects_multi_sample(self, tmp_path):
+        """zarr_to_dicom must reject SamplesPerPixel != 1 — array has no channel axis."""
+        dcm_dir = tmp_path / "dicom"
+        dcm_dir.mkdir()
+
+        for i in range(2):
+            ds = _make_dataset(position=(0.0, 0.0, float(i)))
+            ds.SliceThickness = 1.0
+            fds = _make_file_dataset(ds, str(dcm_dir / f"slice_{i}.dcm"))
+            fds.save_as(str(dcm_dir / f"slice_{i}.dcm"))
+
+        zarr_path = tmp_path / "output.zarr"
+        dicom_to_zarr(dcm_dir, zarr_path)
+
+        # Manually corrupt the stored tags to simulate an RGB source
+        import zarr
+
+        store = zarr.storage.LocalStore(str(zarr_path))
+        arr = zarr.open_array(store, mode="r+")
+        duckn = dict(arr.attrs["duckn"])
+        duckn["extensions"]["dicom"]["tags"]["SamplesPerPixel"] = 3
+        duckn["extensions"]["dicom"]["tags"]["PhotometricInterpretation"] = "RGB"
+        arr.attrs["duckn"] = duckn
+
+        out_dcm = tmp_path / "fail.dcm"
+        with pytest.raises(ValueError, match="SamplesPerPixel"):
+            zarr_to_dicom(zarr_path, out_dcm)
+
+    def test_rgb_round_trip(self, tmp_path):
+        """RGB DICOM (SamplesPerPixel=3, PhotometricInterpretation=RGB) round-trips."""
+        from duckn.models import AxisKind
+
+        dcm_dir = tmp_path / "dicom"
+        dcm_dir.mkdir()
+
+        rgb_slices = []
+        for i in range(3):
+            arr = np.zeros((4, 4, 3), dtype=np.uint8)
+            arr[..., 0] = i * 50
+            arr[..., 1] = np.arange(4)[None, :] * 20
+            arr[..., 2] = np.arange(4)[:, None] * 20
+            rgb_slices.append(arr)
+
+            ds = Dataset()
+            ds.Rows = 4
+            ds.Columns = 4
+            ds.ImagePositionPatient = [0.0, 0.0, float(i)]
+            ds.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
+            ds.PixelSpacing = [1.0, 1.0]
+            ds.SliceThickness = 1.0
+            ds.BitsAllocated = 8
+            ds.BitsStored = 8
+            ds.HighBit = 7
+            ds.PixelRepresentation = 0
+            ds.SamplesPerPixel = 3
+            ds.PhotometricInterpretation = "RGB"
+            ds.PlanarConfiguration = 0
+            ds.SeriesInstanceUID = "1.2.3.4.99"
+            ds.Modality = "OT"
+            ds.PixelData = arr.tobytes()
+            ds.file_meta = FileMetaDataset()
+            ds.file_meta.TransferSyntaxUID = ExplicitVRLittleEndian
+
+            fds = _make_file_dataset(ds, str(dcm_dir / f"slice_{i:03d}.dcm"))
+            fds.save_as(str(dcm_dir / f"slice_{i:03d}.dcm"))
+
+        zarr_path = tmp_path / "output.zarr"
+        dicom_to_zarr(dcm_dir, zarr_path)
+
+        import zarr
+
+        store = zarr.storage.LocalStore(str(zarr_path))
+        arr = zarr.open_array(store, mode="r")
+        assert arr.shape == (3, 4, 4, 3)
+        assert arr.dtype == np.uint8
+
+        duckn_meta = DucknMetadata(**arr.attrs["duckn"])
+        assert len(duckn_meta.axes) == 4
+        assert duckn_meta.axes[-1].kind == AxisKind.RGB_COLOR
+        np.testing.assert_array_equal(arr[:], np.stack(rgb_slices, axis=0))
+
+        out_dcm = tmp_path / "round_trip.dcm"
+        zarr_to_dicom(zarr_path, out_dcm)
+
+        restored = pydicom.dcmread(str(out_dcm))
+        assert restored.SamplesPerPixel == 3
+        assert restored.PhotometricInterpretation == "RGB"
+        assert restored.PlanarConfiguration == 0
+        assert restored.BitsAllocated == 8
+        assert restored.NumberOfFrames == 3
+        assert restored.SOPClassUID == "1.2.840.10008.5.1.4.1.1.7.4"
+        np.testing.assert_array_equal(
+            restored.pixel_array, np.stack(rgb_slices, axis=0)
+        )
+
 
 # ---------------------------------------------------------------------------
 # DICOM SEG → slicerseg extension
@@ -736,7 +888,7 @@ class TestDicomSegExtraction:
     def test_seg_in_build_duckn_metadata(self):
         ds = _make_seg_dataset()
         ds.PixelData = np.zeros((4, 4), dtype=np.uint8).tobytes()
-        geom = DicomGeometry(
+        geom = DicomImageInfo(
             shape=(1, 4, 4),
             dtype=np.dtype("uint8"),
             space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
@@ -766,7 +918,7 @@ class TestPerSampleMetadata:
             _make_dataset(position=(0, 0, float(i * 2)), modality="CT")
             for i in range(3)
         ]
-        geom = DicomGeometry(
+        geom = DicomImageInfo(
             shape=(3, 4, 4),
             dtype=np.dtype("uint16"),
             space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
@@ -789,7 +941,7 @@ class TestPerSampleMetadata:
             _make_dataset(position=(0, 0, 2.0), modality="CT"),
             _make_dataset(position=(0, 0, 5.0), modality="CT"),  # gap
         ]
-        geom = DicomGeometry(
+        geom = DicomImageInfo(
             shape=(3, 4, 4),
             dtype=np.dtype("uint16"),
             space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
@@ -816,7 +968,7 @@ class TestPerSampleMetadata:
             _make_dataset(position=(0.3, 0.0, 2.0), modality="CT"),
             _make_dataset(position=(0.6, 0.0, 4.0), modality="CT"),
         ]
-        geom = DicomGeometry(
+        geom = DicomImageInfo(
             shape=(3, 4, 4),
             dtype=np.dtype("uint16"),
             space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
@@ -850,7 +1002,7 @@ class TestPerSampleMetadata:
         ds2.AcquisitionTime = "143025.500"
 
         datasets = [ds0, ds1, ds2]
-        geom = DicomGeometry(
+        geom = DicomImageInfo(
             shape=(3, 4, 4),
             dtype=np.dtype("uint16"),
             space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
@@ -889,7 +1041,7 @@ class TestPerSampleMetadata:
             _make_dataset(position=(0, 0, 0.0), modality="CT"),
             _make_dataset(position=(0, 0, 2.0), modality="CT"),
         ]
-        geom = DicomGeometry(
+        geom = DicomImageInfo(
             shape=(2, 4, 4),
             dtype=np.dtype("uint16"),
             space=SpaceName.LEFT_POSTERIOR_SUPERIOR,

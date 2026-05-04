@@ -58,8 +58,12 @@ def _require_pydicom() -> None:
 
 
 @dataclass
-class DicomGeometry:
-    """Computed spatial geometry from DICOM headers."""
+class DicomImageInfo:
+    """Properties extracted from DICOM headers needed to build duckn metadata.
+
+    Includes spatial geometry, pixel dtype, value transforms, per-slice
+    samples, and pixel layout (e.g., RGB color).
+    """
 
     shape: tuple[int, ...]
     dtype: np.dtype
@@ -71,6 +75,10 @@ class DicomGeometry:
     rescale_intercept: float | None
     rescale_type: str | None
     samples: list[dict[str, Any]] | None = None
+    # True when the source is RGB color (SamplesPerPixel=3,
+    # PhotometricInterpretation=RGB). When set, the volume has an extra
+    # innermost axis of size 3 (channel-last canonical form).
+    is_color: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -89,12 +97,7 @@ _SKIP_KEYWORDS = frozenset({
     "Columns",
     "NumberOfFrames",
     "BitsAllocated",
-    "BitsStored",
-    "HighBit",
     "PixelRepresentation",
-    "SamplesPerPixel",
-    "PhotometricInterpretation",
-    "PlanarConfiguration",
     "ImagePositionPatient",
     "ImageOrientationPatient",
 })
@@ -282,7 +285,7 @@ def _get_transfer_syntax(ds: Any) -> str | None:
 
 def _compute_geometry(
     datasets: list[Any],
-) -> tuple[np.ndarray, DicomGeometry]:
+) -> tuple[np.ndarray, DicomImageInfo]:
     """Compute geometry and stack pixel data from sorted datasets.
 
     Parameters
@@ -292,7 +295,7 @@ def _compute_geometry(
     Returns
     -------
     volume : np.ndarray with shape (n_slices, Rows, Columns)
-    geometry : DicomGeometry
+    geometry : DicomImageInfo
     """
     ds0 = datasets[0]
 
@@ -398,11 +401,39 @@ def _compute_geometry(
     cols = int(ds0.Columns)
     n_slices = len(datasets)
 
+    # Color (RGB) detection — only PhotometricInterpretation=RGB with
+    # SamplesPerPixel=3 is supported. Other multi-sample variants
+    # (YBR_*, PALETTE_COLOR, ARGB) are rejected.
+    spp = int(getattr(ds0, "SamplesPerPixel", 1))
+    photometric = str(getattr(ds0, "PhotometricInterpretation", "MONOCHROME2"))
+    is_color = False
+    if spp == 1:
+        if photometric not in ("MONOCHROME1", "MONOCHROME2"):
+            raise ValueError(
+                f"Unsupported PhotometricInterpretation={photometric!r} "
+                f"with SamplesPerPixel=1"
+            )
+    elif spp == 3 and photometric == "RGB":
+        is_color = True
+    else:
+        raise ValueError(
+            f"Unsupported pixel layout: SamplesPerPixel={spp}, "
+            f"PhotometricInterpretation={photometric!r}. "
+            f"Only grayscale (MONOCHROME1/2) and RGB (SamplesPerPixel=3) "
+            f"are supported."
+        )
+
     # Build per-slice samples with origins
     samples = [{"origin": pos.tolist()} for pos in positions]
 
-    geometry = DicomGeometry(
-        shape=(n_slices, rows, cols),
+    shape: tuple[int, ...]
+    if is_color:
+        shape = (n_slices, rows, cols, 3)
+    else:
+        shape = (n_slices, rows, cols)
+
+    geometry = DicomImageInfo(
+        shape=shape,
         dtype=dtype,
         space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
         space_origin=space_origin,
@@ -412,11 +443,20 @@ def _compute_geometry(
         rescale_slope=rescale_slope,
         rescale_intercept=rescale_intercept,
         rescale_type=rescale_type,
+        is_color=is_color,
     )
 
-    # Stack pixel data
+    # Stack pixel data. For RGB, canonicalize to channel-last regardless
+    # of PlanarConfiguration. pydicom's pixel_array returns shape
+    # (rows, cols, 3) for PlanarConfiguration=0 (color-by-pixel) and
+    # (3, rows, cols) for =1 (color-by-plane); convert the latter.
     try:
-        slices = [ds.pixel_array for ds in datasets]
+        slices = []
+        for ds in datasets:
+            arr = ds.pixel_array
+            if is_color and arr.ndim == 3 and arr.shape[0] == 3:
+                arr = np.moveaxis(arr, 0, -1)  # (3, R, C) → (R, C, 3)
+            slices.append(arr)
     except Exception as e:
         raise RuntimeError(
             f"Failed to read pixel data: {e}. "
@@ -466,7 +506,7 @@ def _get_temporal_key(ds: Any) -> float:
 
 def _load_2d_series(
     datasets: list[Any],
-) -> tuple[np.ndarray, DicomGeometry, list[Any]]:
+) -> tuple[np.ndarray, DicomImageInfo, list[Any]]:
     """Load 2D projection images (CR, DX) without world-space positioning.
 
     Synthesizes a 2D spatial embedding from PixelSpacing or
@@ -528,7 +568,7 @@ def _load_2d_series(
     ]
     space_origin = [0.0, 0.0, 0.0]
 
-    geometry = DicomGeometry(
+    geometry = DicomImageInfo(
         shape=volume.shape,
         dtype=dtype,
         space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
@@ -546,7 +586,7 @@ def _load_2d_series(
 
 def _load_single_frame_series(
     dir_path: Path,
-) -> tuple[np.ndarray, DicomGeometry, list[Any]]:
+) -> tuple[np.ndarray, DicomImageInfo, list[Any]]:
     """Load a directory of single-frame DICOM files as one volume.
 
     Automatically detects 4D temporal data (e.g., cardiac cine) when
@@ -678,7 +718,7 @@ def _load_single_frame_series(
     _, geom_3d = _compute_geometry(first_t_datasets)
 
     # Extend geometry to 4D
-    geometry = DicomGeometry(
+    geometry = DicomImageInfo(
         shape=volume.shape,
         dtype=dtype,
         space=geom_3d.space,
@@ -707,7 +747,7 @@ def _load_single_frame_series(
 
 def _load_seg_labelmap(
     ds: Any,
-) -> tuple[np.ndarray, DicomGeometry, list[Any]]:
+) -> tuple[np.ndarray, DicomImageInfo, list[Any]]:
     """Load a DICOM LABELMAP Segmentation as a 3D volume.
 
     Pixel values are segment numbers directly. One frame per slice.
@@ -805,7 +845,7 @@ def _load_seg_labelmap(
     # Per-slice samples with origins
     seg_samples = [{"origin": fi["position"]} for fi in frame_infos]
 
-    geometry = DicomGeometry(
+    geometry = DicomImageInfo(
         shape=volume.shape,
         dtype=dtype,
         space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
@@ -823,7 +863,7 @@ def _load_seg_labelmap(
 
 def _load_seg(
     ds: Any,
-) -> tuple[np.ndarray, DicomGeometry, list[Any]]:
+) -> tuple[np.ndarray, DicomImageInfo, list[Any]]:
     """Load a DICOM Segmentation object.
 
     For BINARY segmentations, returns a 4D volume (n_segments, n_z, rows, cols)
@@ -956,7 +996,7 @@ def _load_seg(
         z_to_origin[fr["z_proj"]] = fr["position"]
     seg_bin_samples = [{"origin": z_to_origin[z]} for z in z_sorted]
 
-    geometry = DicomGeometry(
+    geometry = DicomImageInfo(
         shape=volume.shape,
         dtype=np.dtype(np.uint8),
         space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
@@ -979,7 +1019,7 @@ def _load_seg(
 
 def _load_multiframe(
     file_path: Path,
-) -> tuple[np.ndarray, DicomGeometry, list[Any]]:
+) -> tuple[np.ndarray, DicomImageInfo, list[Any]]:
     """Load an enhanced multi-frame DICOM file."""
     import pydicom
 
@@ -988,6 +1028,21 @@ def _load_multiframe(
     # Route DICOM SEG to dedicated loader
     if _is_dicom_seg(ds):
         return _load_seg(ds)
+
+    # RGB color is only supported via the directory (single-frame-per-file)
+    # path, not enhanced multi-frame. Reject explicitly.
+    spp = int(getattr(ds, "SamplesPerPixel", 1))
+    photometric = str(getattr(ds, "PhotometricInterpretation", "MONOCHROME2"))
+    if spp != 1:
+        raise NotImplementedError(
+            f"Multi-frame RGB/color DICOM is not supported "
+            f"(SamplesPerPixel={spp}, PhotometricInterpretation={photometric!r}). "
+            f"Use a directory of single-frame files instead."
+        )
+    if photometric not in ("MONOCHROME1", "MONOCHROME2"):
+        raise ValueError(
+            f"Unsupported PhotometricInterpretation={photometric!r}"
+        )
 
     n_frames = int(getattr(ds, "NumberOfFrames", 1))
     if n_frames <= 1 and hasattr(ds, "ImagePositionPatient"):
@@ -1163,7 +1218,7 @@ def _load_multiframe(
             z_to_frame[fi["z_proj"]] = fi["ImagePositionPatient"]
         samples = [{"origin": z_to_frame[z]} for z in z_values]
 
-        geometry = DicomGeometry(
+        geometry = DicomImageInfo(
             shape=volume.shape,
             dtype=dtype,
             space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
@@ -1518,7 +1573,7 @@ def _get_varying_tag_keys(datasets: list[Any], include_binary: bool) -> set[str]
 
 
 def build_duckn_metadata(
-    geometry: DicomGeometry,
+    geometry: DicomImageInfo,
     datasets: list[Any],
     anonymized: bool | None,
     include_tags: bool,
@@ -1528,8 +1583,11 @@ def build_duckn_metadata(
     # Axes in C order
     axes = []
 
-    # For 4D data, prepend the appropriate axis
-    is_4d = len(geometry.shape) == 4
+    # 4D shape can mean time, segment-list, or RGB color (channel-last).
+    # is_color appends a channel axis after the spatial axes; the others
+    # prepend their axis before the spatial axes.
+    is_color = geometry.is_color
+    is_4d = len(geometry.shape) == 4 and not is_color
     if is_4d:
         ds0 = datasets[0]
         if _is_dicom_seg(ds0):
@@ -1603,6 +1661,10 @@ def build_duckn_metadata(
         if i == 0 and samples is not None:
             ax_kwargs["samples"] = samples
         axes.append(AxisMetadata(**ax_kwargs))
+
+    # Channel axis (RGB color) — appended after spatial axes (channel-last).
+    if is_color:
+        axes.append(AxisMetadata(kind=AxisKind.RGB_COLOR))
 
     # Value transforms from RescaleSlope/Intercept
     value_transforms = None
@@ -1903,7 +1965,7 @@ def _scan_headers(
 
 def geometry_from_headers(
     datasets: list[Any],
-) -> DicomGeometry:
+) -> DicomImageInfo:
     """Compute geometry from sorted header-only datasets (no pixel data)."""
     ds0 = datasets[0]
 
@@ -1981,7 +2043,7 @@ def geometry_from_headers(
     # Per-slice samples with origins
     samples = [{"origin": pos.tolist()} for pos in positions]
 
-    return DicomGeometry(
+    return DicomImageInfo(
         shape=(len(datasets), rows, cols),
         dtype=dtype,
         space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
@@ -2149,8 +2211,7 @@ _DTYPE_TO_PIXEL_DESC = {
 _ZARR_TO_DICOM_SKIP = frozenset({
     "PixelData", "OverlayData",
     "Rows", "Columns", "NumberOfFrames",
-    "BitsAllocated", "BitsStored", "HighBit", "PixelRepresentation",
-    "SamplesPerPixel", "PhotometricInterpretation",
+    "BitsAllocated", "PixelRepresentation",
     "ImageOrientationPatient", "ImagePositionPatient",
     "PixelSpacing", "SliceThickness", "SpacingBetweenSlices", "SliceLocation",
     # File meta tags restored separately
@@ -2241,7 +2302,24 @@ def zarr_to_dicom(
         duckn_attrs = arr.attrs.get("duckn", {})
         meta = DucknMetadata(**duckn_attrs)
 
-    if data.ndim == 4:
+    # Detect RGB color axis (always trailing, channel-last canonical form)
+    is_color = bool(
+        meta.axes
+        and len(meta.axes) >= 1
+        and meta.axes[-1].kind == AxisKind.RGB_COLOR
+    )
+
+    if is_color:
+        if data.ndim != 4 or data.shape[-1] != 3:
+            raise ValueError(
+                f"RGB-color axis present but data shape {data.shape} "
+                f"is not (slices, rows, cols, 3)"
+            )
+        is_4d = False
+        n_t = 1
+        n_slices, rows, cols, _ = data.shape
+        total_frames = n_slices
+    elif data.ndim == 4:
         is_4d = True
         n_t, n_slices, rows, cols = data.shape
         # Flatten to (n_t * n_slices, rows, cols) for DICOM frames
@@ -2327,7 +2405,11 @@ def zarr_to_dicom(
             continue
 
     # SOP Class
-    sop_class_uid = _ENHANCED_SOP_CLASSES.get(modality, "1.2.840.10008.5.1.4.1.1.7.2")
+    if is_color:
+        # Multi-frame True Color Secondary Capture Image Storage
+        sop_class_uid = "1.2.840.10008.5.1.4.1.1.7.4"
+    else:
+        sop_class_uid = _ENHANCED_SOP_CLASSES.get(modality, "1.2.840.10008.5.1.4.1.1.7.2")
     sop_instance_uid = generate_uid()
 
     ds.SOPClassUID = sop_class_uid
@@ -2338,12 +2420,66 @@ def zarr_to_dicom(
     ds.Rows = rows
     ds.Columns = cols
     ds.NumberOfFrames = total_frames
+
+    # Pixel description: BitsAllocated and PixelRepresentation are authoritative
+    # from dtype. BitsStored / HighBit / SamplesPerPixel / PhotometricInterpretation
+    # may have been restored from stored_tags; validate or fall back to defaults.
     ds.BitsAllocated = bits_alloc
-    ds.BitsStored = bits_stored
-    ds.HighBit = high_bit
     ds.PixelRepresentation = pixel_rep
-    ds.SamplesPerPixel = 1
-    ds.PhotometricInterpretation = "MONOCHROME2"
+
+    restored_bits_stored = getattr(ds, "BitsStored", None)
+    if restored_bits_stored is not None:
+        rb = int(restored_bits_stored)
+        if not (1 <= rb <= bits_alloc):
+            raise ValueError(
+                f"BitsStored={rb} from stored tags is invalid for "
+                f"BitsAllocated={bits_alloc}"
+            )
+        ds.BitsStored = rb
+        ds.HighBit = int(getattr(ds, "HighBit", rb - 1))
+        if ds.HighBit != rb - 1:
+            raise ValueError(
+                f"HighBit={ds.HighBit} inconsistent with BitsStored={rb}"
+            )
+    else:
+        ds.BitsStored = bits_stored
+        ds.HighBit = high_bit
+
+    if is_color:
+        # RGB color: layout dictated by the channel axis. Stored tags
+        # for SamplesPerPixel/PhotometricInterpretation must agree if present.
+        spp = int(getattr(ds, "SamplesPerPixel", 3))
+        if spp != 3:
+            raise ValueError(
+                f"SamplesPerPixel={spp} from stored tags conflicts with "
+                f"RGB-color axis (expected 3)"
+            )
+        photometric = str(getattr(ds, "PhotometricInterpretation", "RGB"))
+        if photometric != "RGB":
+            raise ValueError(
+                f"PhotometricInterpretation={photometric!r} from stored tags "
+                f"conflicts with RGB-color axis (expected 'RGB')"
+            )
+        ds.SamplesPerPixel = 3
+        ds.PhotometricInterpretation = "RGB"
+        # Color-by-pixel layout: channel-last canonical form
+        ds.PlanarConfiguration = 0
+    else:
+        spp = int(getattr(ds, "SamplesPerPixel", 1))
+        if spp != 1:
+            raise ValueError(
+                f"SamplesPerPixel={spp} from stored tags is unsupported; "
+                f"duckn array layout has no channel axis"
+            )
+        ds.SamplesPerPixel = 1
+
+        photometric = str(getattr(ds, "PhotometricInterpretation", "MONOCHROME2"))
+        if photometric not in ("MONOCHROME1", "MONOCHROME2"):
+            raise ValueError(
+                f"PhotometricInterpretation={photometric!r} is unsupported; "
+                f"only MONOCHROME1 and MONOCHROME2 round-trip through duckn"
+            )
+        ds.PhotometricInterpretation = photometric
 
     # Image Orientation Patient (row_cosines + col_cosines, 6 values)
     iop = row_cosines.tolist() + col_cosines.tolist()

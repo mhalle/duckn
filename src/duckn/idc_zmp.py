@@ -27,7 +27,7 @@ from .dicom_convert import (
     UNCOMPRESSED_TRANSFER_SYNTAXES,
     build_duckn_metadata,
     geometry_from_headers,
-    DicomGeometry,
+    DicomImageInfo,
 )
 from .wsi_zmp import _TS_TO_CODEC
 
