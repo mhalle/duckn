@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.3 — 2026-05-04
+
+### Added
+- `read_array(source, *, apply_value_transforms=True)` — high-level reader
+  that returns a numpy array with linear value transforms (slope/intercept)
+  applied by default. Pass `apply_value_transforms=False` for raw stored
+  values. Identity transforms preserve the source dtype; otherwise output
+  is float32. Multiple linear transforms compose into a single rescale.
+- `read_metadata(source)` — short-form alias of `read_duckn_metadata`.
+
 ## 0.1.2 — 2026-05-04
 
 ### Added

@@ -103,6 +103,91 @@ def read_duckn_metadata(source: str | Path | Any) -> DucknMetadata:
         return DucknMetadata(**duckn_attrs)
 
 
+# Alias under the canonical short name. ``read_metadata`` is the
+# language-neutral pair to ``read_array``; ``read_duckn_metadata`` is
+# the original long-form spelling kept for back-compat.
+read_metadata = read_duckn_metadata
+
+
+def read_array(
+    source: str | Path | Any,
+    *,
+    apply_value_transforms: bool = True,
+) -> np.ndarray:
+    """Read a duckn Zarr array and return the data as a numpy array.
+
+    By default, linear value transforms from the duckn metadata
+    (``value_transforms``) are applied to the stored values, returning
+    physical-unit data (e.g., HU for CT) as float32. Pass
+    ``apply_value_transforms=False`` to receive the raw stored values
+    unchanged.
+
+    Parameters
+    ----------
+    source : path to a Zarr store (directory, ``.zarr.zip``, or ``.zmp``)
+        or any object implementing the Zarr Store interface.
+    apply_value_transforms : if True (default), apply linear
+        transforms (slope/intercept) declared in the duckn metadata.
+        Non-linear transforms (if any) are skipped with a warning.
+
+    Returns
+    -------
+    numpy array. dtype is the stored dtype when transforms are not
+    applied (or none exist), otherwise float32.
+    """
+    if isinstance(source, (str, Path)):
+        with open_store(source, mode="r") as store:
+            arr = zarr.open_array(store, mode="r")
+            data = arr[:]
+            duckn_attrs = arr.attrs.get("duckn", {})
+    else:
+        arr = zarr.open_array(store=source, mode="r")
+        data = arr[:]
+        duckn_attrs = arr.attrs.get("duckn", {})
+
+    if not apply_value_transforms or not duckn_attrs.get("value_transforms"):
+        return data
+
+    return _apply_value_transforms(data, duckn_attrs["value_transforms"])
+
+
+def _apply_value_transforms(
+    data: np.ndarray, transforms: list[dict[str, Any]]
+) -> np.ndarray:
+    """Apply duckn ``value_transforms`` (in order) to a numpy array.
+
+    Linear transforms are folded into a single composed slope/intercept
+    so the data is rescaled exactly once. Unknown transform names are
+    skipped with a warning rather than failing.
+    """
+    import warnings
+
+    composed_slope = 1.0
+    composed_intercept = 0.0
+    for vt in transforms:
+        name = vt.get("name")
+        params = vt.get("parameters") or {}
+        if name == "linear":
+            slope = float(params.get("slope", 1.0))
+            intercept = float(params.get("intercept", 0.0))
+            # Compose: y = slope * (composed_slope * x + composed_intercept) + intercept
+            composed_slope = slope * composed_slope
+            composed_intercept = slope * composed_intercept + intercept
+        else:
+            warnings.warn(
+                f"Skipping unsupported value_transform name={name!r}",
+                stacklevel=3,
+            )
+
+    if composed_slope == 1.0 and composed_intercept == 0.0:
+        return data
+
+    out = data.astype(np.float32, copy=False) * np.float32(composed_slope)
+    if composed_intercept != 0.0:
+        out = out + np.float32(composed_intercept)
+    return out
+
+
 def get_zarr_attrs(path: str | Path) -> dict[str, Any]:
     """Return the raw attributes dict from a Zarr store."""
     with open_store(path, mode="r") as store:

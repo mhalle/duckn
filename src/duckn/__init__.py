@@ -26,10 +26,16 @@ independent metadata can coexist as sibling Zarr attributes.
 
 Reading and writing
 -------------------
-read_duckn(path)
-    Read a duckn Zarr store, returning ``(data, DucknMetadata)``.
-read_duckn_metadata(path)
+read_array(path, *, apply_value_transforms=True)
+    Read a duckn Zarr array as a numpy array. By default applies
+    linear value transforms (slope/intercept) and returns float32.
+read_metadata(path)
     Read only the metadata (no array data loaded).
+read_duckn(path)
+    Long-form: read both data and metadata, returning
+    ``(data, DucknMetadata)`` with raw values (no transforms applied).
+read_duckn_metadata(path)
+    Long-form alias of ``read_metadata``.
 get_zarr_attrs(path)
     Return the raw Zarr attributes dict.
 open_store(path, mode, overwrite)
@@ -125,7 +131,14 @@ from .models import (
     ValueTransform,
     validate_against_shape,
 )
-from .zarr_io import get_zarr_attrs, open_store, read_duckn, read_duckn_metadata
+from .zarr_io import (
+    get_zarr_attrs,
+    open_store,
+    read_array,
+    read_duckn,
+    read_duckn_metadata,
+    read_metadata,
+)
 
 __all__ = [  # noqa: RUF022
     "AxisKind",
@@ -165,8 +178,10 @@ __all__ = [  # noqa: RUF022
     "nrrd_to_zarr",
     "nrrd_to_zarr_zerocopy",
     "open_store",
+    "read_array",
     "read_duckn",
     "read_duckn_metadata",
+    "read_metadata",
     "UNCOMPRESSED_TRANSFER_SYNTAXES",
     "validate_against_shape",
     "zarr_to_nifti",
