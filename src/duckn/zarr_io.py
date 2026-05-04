@@ -103,74 +103,38 @@ def read_duckn_metadata(source: str | Path | Any) -> DucknMetadata:
         return DucknMetadata(**duckn_attrs)
 
 
-# Alias under the canonical short name. ``read_metadata`` is the
-# language-neutral pair to ``read_array``; ``read_duckn_metadata`` is
-# the original long-form spelling kept for back-compat.
+# Short-form alias of read_duckn_metadata. Pairs with open_array.
 read_metadata = read_duckn_metadata
 
 
-def read_array(
-    source: str | Path | Any,
-    *,
-    apply_value_transforms: bool = True,
-) -> np.ndarray:
-    """Read a duckn Zarr array and return the data as a numpy array.
+def _compose_linear_transforms(
+    transforms: list[Any] | None,
+) -> tuple[float, float]:
+    """Compose a sequence of linear ValueTransforms into one (slope, intercept).
 
-    By default, linear value transforms from the duckn metadata
-    (``value_transforms``) are applied to the stored values, returning
-    physical-unit data (e.g., HU for CT) as float32. Pass
-    ``apply_value_transforms=False`` to receive the raw stored values
-    unchanged.
-
-    Parameters
-    ----------
-    source : path to a Zarr store (directory, ``.zarr.zip``, or ``.zmp``)
-        or any object implementing the Zarr Store interface.
-    apply_value_transforms : if True (default), apply linear
-        transforms (slope/intercept) declared in the duckn metadata.
-        Non-linear transforms (if any) are skipped with a warning.
-
-    Returns
-    -------
-    numpy array. dtype is the stored dtype when transforms are not
-    applied (or none exist), otherwise float32.
-    """
-    if isinstance(source, (str, Path)):
-        with open_store(source, mode="r") as store:
-            arr = zarr.open_array(store, mode="r")
-            data = arr[:]
-            duckn_attrs = arr.attrs.get("duckn", {})
-    else:
-        arr = zarr.open_array(store=source, mode="r")
-        data = arr[:]
-        duckn_attrs = arr.attrs.get("duckn", {})
-
-    if not apply_value_transforms or not duckn_attrs.get("value_transforms"):
-        return data
-
-    return _apply_value_transforms(data, duckn_attrs["value_transforms"])
-
-
-def _apply_value_transforms(
-    data: np.ndarray, transforms: list[dict[str, Any]]
-) -> np.ndarray:
-    """Apply duckn ``value_transforms`` (in order) to a numpy array.
-
-    Linear transforms are folded into a single composed slope/intercept
-    so the data is rescaled exactly once. Unknown transform names are
-    skipped with a warning rather than failing.
+    Unknown transform names are skipped with a warning. Returns (1.0, 0.0)
+    when there are no applicable transforms — i.e., identity.
     """
     import warnings
 
     composed_slope = 1.0
     composed_intercept = 0.0
+    if not transforms:
+        return composed_slope, composed_intercept
+
     for vt in transforms:
-        name = vt.get("name")
-        params = vt.get("parameters") or {}
+        # Accept either ValueTransform models or raw dicts
+        if hasattr(vt, "name"):
+            name = vt.name
+            params = vt.parameters or {}
+        else:
+            name = vt.get("name")
+            params = vt.get("parameters") or {}
+
         if name == "linear":
             slope = float(params.get("slope", 1.0))
             intercept = float(params.get("intercept", 0.0))
-            # Compose: y = slope * (composed_slope * x + composed_intercept) + intercept
+            # Compose: y = slope * (cs*x + ci) + intercept
             composed_slope = slope * composed_slope
             composed_intercept = slope * composed_intercept + intercept
         else:
@@ -179,13 +143,189 @@ def _apply_value_transforms(
                 stacklevel=3,
             )
 
-    if composed_slope == 1.0 and composed_intercept == 0.0:
-        return data
+    return composed_slope, composed_intercept
 
-    out = data.astype(np.float32, copy=False) * np.float32(composed_slope)
-    if composed_intercept != 0.0:
-        out = out + np.float32(composed_intercept)
-    return out
+
+class DucknArray:
+    """Wrapper around a ``zarr.Array`` that applies value transforms on read.
+
+    Slicing returns numpy arrays with linear value transforms (slope and
+    intercept) applied when ``apply_value_transforms`` is True (the
+    default). Toggle the flag at any time to switch between raw and
+    calibrated reads on the same handle.
+
+    Forwards ``shape``, ``chunks``, ``ndim``, ``size``, and ``attrs`` to
+    the underlying ``zarr.Array``. ``dtype`` is dynamic: float32 when a
+    non-identity transform is being applied, otherwise the stored dtype.
+    Use ``.metadata`` for the parsed duckn metadata snapshot and
+    ``.zarr`` for the underlying ``zarr.Array`` (whose own ``.metadata``
+    gives zarr-level array info: shape/codecs/chunk grid).
+
+    Supports the context-manager protocol so the underlying store is
+    closed on exit (relevant for ZipStore and ZMPStore).
+    """
+
+    def __init__(
+        self,
+        zarr_array: Any,
+        metadata: DucknMetadata | None = None,
+        *,
+        apply_value_transforms: bool = True,
+        _store_to_close: Any = None,
+    ) -> None:
+        self._arr = zarr_array
+        if metadata is None:
+            metadata = DucknMetadata(**zarr_array.attrs.get("duckn", {}))
+        self._metadata = metadata
+        self.apply_value_transforms = apply_value_transforms
+        self._slope, self._intercept = _compose_linear_transforms(
+            metadata.value_transforms
+        )
+        self._store_to_close = _store_to_close
+
+    @property
+    def metadata(self) -> DucknMetadata:
+        """Parsed duckn metadata, cached at construction.
+
+        For zarr-level array metadata (shape/codecs/chunk grid), use
+        ``arr.zarr.metadata``.
+        """
+        return self._metadata
+
+    @property
+    def attrs(self):
+        """Underlying ``zarr.Array.attrs`` (raw dict, mutable)."""
+        return self._arr.attrs
+
+    @property
+    def zarr(self):
+        """Underlying ``zarr.Array`` (lazy, no transform application).
+
+        Use this for raw byte access or zarr-native operations like
+        ``arr.zarr.metadata`` (zarr-level array info: shape, codecs,
+        chunk grid, etc.).
+        """
+        return self._arr
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return tuple(self._arr.shape)
+
+    @property
+    def chunks(self) -> tuple[int, ...]:
+        return tuple(self._arr.chunks)
+
+    @property
+    def ndim(self) -> int:
+        return int(self._arr.ndim)
+
+    @property
+    def size(self) -> int:
+        return int(self._arr.size)
+
+    @property
+    def dtype(self) -> np.dtype:
+        if self.apply_value_transforms and not self._is_identity:
+            return np.dtype(np.float32)
+        return np.dtype(self._arr.dtype)
+
+    @property
+    def _is_identity(self) -> bool:
+        return self._slope == 1.0 and self._intercept == 0.0
+
+    def __getitem__(self, key):
+        data = self._arr[key]
+        if not self.apply_value_transforms or self._is_identity:
+            return data
+        out = data.astype(np.float32, copy=False) * np.float32(self._slope)
+        if self._intercept != 0.0:
+            out = out + np.float32(self._intercept)
+        return out
+
+    def __array__(self, dtype=None, copy=None):
+        out = self[...]
+        if dtype is not None and np.dtype(dtype) != out.dtype:
+            return out.astype(dtype, copy=True if copy else False)
+        return out
+
+    def __len__(self) -> int:
+        return self.shape[0] if self.shape else 0
+
+    def __repr__(self) -> str:
+        mode = "transformed" if self.apply_value_transforms and not self._is_identity else "raw"
+        return (
+            f"DucknArray(shape={self.shape}, dtype={self.dtype}, "
+            f"chunks={self.chunks}, mode={mode!r})"
+        )
+
+    def close(self) -> None:
+        """Close the underlying store if this handle owns it."""
+        if self._store_to_close is not None:
+            try:
+                self._store_to_close.close()
+            except AttributeError:
+                pass
+            self._store_to_close = None
+
+    def __enter__(self) -> DucknArray:
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+
+def open_array(
+    source: str | Path | Any,
+    *,
+    apply_value_transforms: bool = True,
+) -> DucknArray:
+    """Open a duckn Zarr store and return a ``DucknArray`` handle.
+
+    By default, slicing the returned handle yields numpy arrays with
+    linear value transforms applied (float32 output). Set
+    ``apply_value_transforms=False`` (or toggle the attribute on the
+    returned object) to get raw stored values instead.
+
+    For ``.zarr.zip`` and ``.zmp`` paths the returned handle owns the
+    store; close it with ``handle.close()`` or use it as a context
+    manager. ``LocalStore`` (directory) inputs need no cleanup.
+
+    Parameters
+    ----------
+    source : path to a Zarr store (directory, ``.zarr.zip``, or ``.zmp``)
+        or any object implementing the Zarr Store interface.
+    apply_value_transforms : if True (default), apply linear value
+        transforms on read.
+    """
+    if isinstance(source, (str, Path)):
+        path = Path(source)
+        store: Any
+        store_to_close: Any = None
+        if path.suffix == ".zmp":
+            from zarr_zmp import ZMPStore
+            store = ZMPStore.from_file(str(path))
+            store_to_close = store
+        elif _is_zip_path(path):
+            store = zarr.storage.ZipStore(path, mode="r", compression=ZIP_STORED)
+            store_to_close = store
+        else:
+            store = zarr.storage.LocalStore(str(path))
+        zarr_arr = zarr.open_array(store=store, mode="r")
+        return DucknArray(
+            zarr_arr,
+            apply_value_transforms=apply_value_transforms,
+            _store_to_close=store_to_close,
+        )
+    else:
+        # Assume Store object (or already-opened zarr.Array)
+        if hasattr(source, "shape"):
+            zarr_arr = source
+        else:
+            zarr_arr = zarr.open_array(store=source, mode="r")
+        return DucknArray(
+            zarr_arr,
+            apply_value_transforms=apply_value_transforms,
+        )
 
 
 def get_zarr_attrs(path: str | Path) -> dict[str, Any]:

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.4 — 2026-05-04
+
+### Added
+- `duckn.open_array(source, *, apply_value_transforms=True)` returns a
+  `DucknArray` — a thin wrapper around `zarr.Array` that applies linear
+  value transforms on slice. Toggle via the mutable
+  `arr.apply_value_transforms` attribute at any time. `arr.metadata`
+  exposes the parsed `DucknMetadata` snapshot; `arr.zarr` exposes the
+  underlying `zarr.Array` (use `arr.zarr.metadata` for zarr-level array
+  info — shape/codecs/chunk grid). `arr.attrs`, `shape`, `chunks`,
+  `ndim`, `size` forward to the zarr handle. `arr.dtype` is dynamic
+  (float32 when a non-identity transform applies, else the stored
+  dtype). Supports the context-manager protocol so the store is closed
+  on exit (relevant for `.zarr.zip` and `.zmp`).
+
+### Removed
+- `read_array` (added in 0.1.3) — superseded by `open_array(p)[:]` or
+  `np.asarray(open_array(p))`. One fewer name to maintain.
+
 ## 0.1.3 — 2026-05-04
 
 ### Added

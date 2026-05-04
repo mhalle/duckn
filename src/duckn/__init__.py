@@ -26,9 +26,14 @@ independent metadata can coexist as sibling Zarr attributes.
 
 Reading and writing
 -------------------
-read_array(path, *, apply_value_transforms=True)
-    Read a duckn Zarr array as a numpy array. By default applies
-    linear value transforms (slope/intercept) and returns float32.
+open_array(path, *, apply_value_transforms=True)
+    Open a duckn Zarr store and return a ``DucknArray`` (zarr.Array
+    wrapper that applies linear value transforms on slice). Slice with
+    ``arr[:]`` for a numpy result; toggle ``arr.apply_value_transforms``
+    at any time. ``arr.metadata`` is the parsed ``DucknMetadata`` snapshot;
+    ``arr.zarr`` exposes the underlying ``zarr.Array`` (use
+    ``arr.zarr.metadata`` for zarr-level array info). Use as a context
+    manager for ``.zarr.zip`` / ``.zmp``.
 read_metadata(path)
     Read only the metadata (no array data loaded).
 read_duckn(path)
@@ -132,9 +137,10 @@ from .models import (
     validate_against_shape,
 )
 from .zarr_io import (
+    DucknArray,
     get_zarr_attrs,
+    open_array,
     open_store,
-    read_array,
     read_duckn,
     read_duckn_metadata,
     read_metadata,
@@ -177,8 +183,9 @@ __all__ = [  # noqa: RUF022
     "nifti_to_zarr",
     "nrrd_to_zarr",
     "nrrd_to_zarr_zerocopy",
+    "DucknArray",
+    "open_array",
     "open_store",
-    "read_array",
     "read_duckn",
     "read_duckn_metadata",
     "read_metadata",
