@@ -90,7 +90,7 @@ def _read_zarr(source: str | Path) -> Volume:
 
     arr = zarr.open_array(store, mode="r")
     meta = DucknMetadata(**arr.attrs["duckn"])
-    return Volume(data=arr[:], meta=meta)
+    return Volume(data=arr[:], metadata=meta)
 
 
 def _read_zmp(source: str | Path) -> Volume:
@@ -115,7 +115,7 @@ def _read_zmp(source: str | Path) -> Volume:
 
     arr = zarr.open_array(store, mode="r")
     meta = DucknMetadata(**arr.attrs["duckn"])
-    return Volume(data=arr[:], meta=meta)
+    return Volume(data=arr[:], metadata=meta)
 
 
 def _read_nrrd(source: str | Path) -> Volume:
@@ -125,7 +125,7 @@ def _read_nrrd(source: str | Path) -> Volume:
 
     data, header = nrrd.read(str(source))
     meta, _ = _header_to_metadata(header, data.ndim)
-    return Volume(data=data, meta=meta)
+    return Volume(data=data, metadata=meta)
 
 
 def _read_nifti(source: str | Path) -> Volume:
@@ -220,7 +220,7 @@ def _write_zarr(vol, dest, *, chunks, compressor, level, overwrite):
 
     chunks = chunks or _auto_chunks(vol.shape, vol.data.dtype)
     compressors = _build_compressors(compressor, level)
-    attrs = {"duckn": vol.meta.model_dump(exclude_none=True)}
+    attrs = {"duckn": vol.metadata.model_dump(exclude_none=True)}
 
     with open_store(dest, mode="w", overwrite=overwrite) as store:
         zarr.create_array(
@@ -242,7 +242,7 @@ def _write_zarr_zip(vol, dest, *, chunks, compressor, level, overwrite):
 
     chunks = chunks or _auto_chunks(vol.shape, vol.data.dtype)
     compressors = _build_compressors(compressor, level)
-    attrs = {"duckn": vol.meta.model_dump(exclude_none=True)}
+    attrs = {"duckn": vol.metadata.model_dump(exclude_none=True)}
 
     store = zarr.storage.ZipStore(str(dest), mode="w")
     zarr.create_array(
@@ -270,7 +270,7 @@ def _write_zmp(vol, dest, *, chunks, compressor, level, overwrite):
         output = dest  # BytesIO
 
     chunks = chunks or _auto_chunks(vol.shape, vol.data.dtype)
-    attrs = {"duckn": vol.meta.model_dump(exclude_none=True)}
+    attrs = {"duckn": vol.metadata.model_dump(exclude_none=True)}
 
     store = ZMPWritableStore(output)
     arr = zarr.open_array(
@@ -304,7 +304,7 @@ def _write_nrrd(vol, dest, *, overwrite):
     if dest.exists() and not overwrite:
         raise FileExistsError(f"{dest} exists")
 
-    header = _metadata_to_header(vol.meta)
+    header = _metadata_to_header(vol.metadata)
     nrrd.write(str(dest), vol.data, header)
 
 

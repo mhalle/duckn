@@ -50,7 +50,7 @@ def to_nifti(vol: Volume, space: str = "world") -> Any:
     import nibabel as nib
 
     geom = vol.geometry
-    flip = _get_ras_flip(vol.meta)
+    flip = _get_ras_flip(vol.metadata)
     ndim = geom.ndim
 
     if space == "world":
@@ -102,7 +102,7 @@ def to_nifti(vol: Volume, space: str = "world") -> Any:
 
 def from_nifti(
     img: Any,
-    meta: DucknMetadata | None = None,
+    metadata: DucknMetadata | None = None,
     space: str = "world",
 ) -> Volume:
     """Convert a nibabel Nifti1Image to a duckn Volume.
@@ -110,7 +110,7 @@ def from_nifti(
     Parameters
     ----------
     img : nib.Nifti1Image
-    meta : optional DucknMetadata to preserve. If None, creates
+    metadata : optional DucknMetadata to preserve. If None, creates
            minimal metadata in RAS space.
     space : coordinate space the NIfTI image is in
 
@@ -127,9 +127,9 @@ def from_nifti(
     # Reverse NIfTI i,j,k (fastest-first) → duckn C-order (slowest-first)
     data = data_nifti.transpose()
 
-    if meta is not None:
-        new_meta = deepcopy(meta)
-        flip = _get_ras_flip(meta)
+    if metadata is not None:
+        new_meta = deepcopy(metadata)
+        flip = _get_ras_flip(metadata)
     else:
         from .models import AxisKind, AxisMetadata, Centering
         flip = np.array([1, 1, 1], dtype=float)  # RAS
@@ -168,9 +168,9 @@ def from_nifti(
 
     spatial_idx = 0
     for ax in new_meta.axes:
-        if ax.space_direction is not None or meta is None:
+        if ax.space_direction is not None or metadata is None:
             ax.space_direction = D_duckn[:, spatial_idx].tolist()
             ax.samples = None
             spatial_idx += 1
 
-    return Volume(data=data, meta=new_meta)
+    return Volume(data=data, metadata=new_meta)

@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.1.6 — 2026-05-04
+
+### Changed (breaking)
+- Renamed `Volume.meta` → `Volume.metadata` for consistency with
+  `DucknArray.metadata`. Also renames the constructor kwarg
+  (`Volume(metadata=...)`) and the `meta=` parameter in `from_sitk`,
+  `from_nifti`, `from_vtk` to `metadata=`. Mechanical migration: replace
+  `vol.meta` with `vol.metadata` and `meta=` with `metadata=` at call
+  sites for these APIs.
+
+### Added
+- `DucknMetadata.add_transform`, `DucknMetadata.get_extension`,
+  `DucknMetadata.set_extension` — metadata-only operations now live on
+  `DucknMetadata` so they're callable from any handle (`arr.metadata
+  .add_transform(...)`, `vol.metadata.add_transform(...)`).
+  `Volume.add_transform` etc. continue to work as thin delegations
+  (Volume's wrapper additionally invalidates the cached geometry).
+- `DucknArray.geometry` — cached `VolumeGeometry` computed from
+  metadata + shape, parallel to `Volume.geometry`.
+- `DucknArray.to_volume()` — eager bridge to `Volume`. Materializes via
+  the wrapper's current settings (`apply_value_transforms`,
+  `transform_dtype`); strips `value_transforms` from the returned
+  metadata when transforms have already been applied so consumers don't
+  double-apply.
+
 ## 0.1.5 — 2026-05-04
 
 ### Added

@@ -149,7 +149,7 @@ def resample(
     # For axes being downsampled, pre-blur to prevent aliasing
     data = vol.data.astype(float) if order > 0 else vol.data
     spatial_indices = [
-        i for i, ax in enumerate(vol.meta.axes)
+        i for i, ax in enumerate(vol.metadata.axes)
         if ax.space_direction is not None
     ]
 
@@ -175,7 +175,7 @@ def resample(
         resampled = resampled.astype(vol.data.dtype)
 
     # Update metadata — scale space_direction, thickness, clear samples
-    new_meta = deepcopy(vol.meta)
+    new_meta = deepcopy(vol.metadata)
     spatial_idx = 0
     for i, ax in enumerate(new_meta.axes):
         if ax.space_direction is not None:
@@ -186,4 +186,4 @@ def resample(
             ax.samples = None  # no longer valid after resampling
             spatial_idx += 1
 
-    return Volume(data=resampled, meta=new_meta)
+    return Volume(data=resampled, metadata=new_meta)

@@ -386,6 +386,66 @@ class DucknMetadata(BaseModel):
             return _SPACE_DIMENSIONS[self.space.value]
         return self.space_dimension
 
+    # ------------------------------------------------------------------
+    # Convenience methods (in-memory metadata edits)
+    # ------------------------------------------------------------------
+
+    def add_transform(
+        self,
+        to_space: str,
+        *,
+        affine: "Any" = None,
+        inverse: "Any" = None,
+        identity: bool = False,
+        metadata: dict | None = None,
+    ) -> None:
+        """Add a space transform from world to a named space.
+
+        Exactly one of ``affine``, ``inverse``, or ``identity`` must be
+        specified. ``metadata`` is an optional provenance dict.
+        """
+        import numpy as np
+
+        n_specified = sum(x is not None for x in (affine, inverse)) + int(identity)
+        if n_specified != 1:
+            raise ValueError(
+                "Exactly one of affine, inverse, or identity must be specified"
+            )
+
+        forward = None
+        inverse_obj = None
+        if identity:
+            forward = TransformObject(identity=True)
+        elif affine is not None:
+            forward = TransformObject(affine=np.asarray(affine, dtype=float).tolist())
+        elif inverse is not None:
+            inverse_obj = TransformObject(
+                affine=np.asarray(inverse, dtype=float).tolist()
+            )
+
+        entry = SpaceTransformEntry(
+            to=SpaceReference(name=to_space),
+            forward=forward,
+            inverse=inverse_obj,
+            metadata=metadata,
+        )
+
+        if self.space_transforms is None:
+            self.space_transforms = []
+        self.space_transforms.append(entry)
+
+    def get_extension(self, name: str) -> Any | None:
+        """Return the top-level extension by name, or None if not present."""
+        if self.extensions is None:
+            return None
+        return self.extensions.get(name)
+
+    def set_extension(self, name: str, value: Any) -> None:
+        """Set a top-level extension. Overwrites if already present."""
+        if self.extensions is None:
+            self.extensions = {}
+        self.extensions[name] = value
+
 
 # ---------------------------------------------------------------------------
 # Standalone validation against array shape

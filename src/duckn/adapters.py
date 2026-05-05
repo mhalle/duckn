@@ -76,7 +76,7 @@ def to_lps_params(
     convention : "lps" (default) or "ras"
     """
     geom = vol.geometry
-    flip = _get_target_flip(vol.meta, convention=convention)
+    flip = _get_target_flip(vol.metadata, convention=convention)
 
     if space == "world":
         origin = geom.origin * flip

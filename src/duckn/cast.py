@@ -74,4 +74,4 @@ def cast(
     else:
         result = data.astype(target)
 
-    return Volume(data=result, meta=deepcopy(vol.meta))
+    return Volume(data=result, metadata=deepcopy(vol.metadata))

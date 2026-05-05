@@ -80,7 +80,7 @@ def to_vtk(vol: Volume, space: str = "world", convention: str = "lps") -> Any:
 
 def from_vtk(
     img: Any,
-    meta: DucknMetadata | None = None,
+    metadata: DucknMetadata | None = None,
     space: str = "world",
     convention: str = "lps",
 ) -> Volume:
@@ -89,7 +89,7 @@ def from_vtk(
     Parameters
     ----------
     img : vtkImageData
-    meta : optional DucknMetadata to preserve (spatial fields will be
+    metadata : optional DucknMetadata to preserve (spatial fields will be
            updated from the VTK image). If None, creates minimal metadata.
     space : coordinate space the VTK image is in ("world", etc.)
 
@@ -127,9 +127,9 @@ def from_vtk(
     direction_zyx = direction[:, ::-1]
 
     # Convert from external convention back to duckn space
-    if meta is not None:
-        new_meta = deepcopy(meta)
-        flip = _get_target_flip(meta, convention=convention)
+    if metadata is not None:
+        new_meta = deepcopy(metadata)
+        flip = _get_target_flip(metadata, convention=convention)
     else:
         from .models import AxisKind, AxisMetadata, Centering, SpaceName
         flip = np.array([1, 1, 1], dtype=float)
@@ -159,9 +159,9 @@ def from_vtk(
         direction_zyx[i, :] *= flip[i]
 
     for j, ax in enumerate(new_meta.axes):
-        if ax.space_direction is not None or (meta is None):
+        if ax.space_direction is not None or (metadata is None):
             col = direction_zyx[:, j]
             ax.space_direction = (col * spacing_zyx[j]).tolist()
             ax.samples = None
 
-    return Volume(data=data, meta=new_meta)
+    return Volume(data=data, metadata=new_meta)

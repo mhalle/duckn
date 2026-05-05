@@ -341,6 +341,96 @@ class TestRepr:
         assert "raw" in repr(arr)
 
 
+class TestToVolume:
+    def test_to_volume_applies_and_strips_transforms(self, tmp_path):
+        from duckn.volume import Volume
+
+        data = np.arange(6, dtype=np.int16).reshape(2, 3)
+        vt = [ValueTransform(name="linear", parameters={"slope": 2.0, "intercept": 5.0})]
+        store_path = tmp_path / "to_vol.zarr"
+        _write_test_store(store_path, data, value_transforms=vt)
+
+        arr = open_array(store_path)
+        vol = arr.to_volume()
+        assert isinstance(vol, Volume)
+        # Data is calibrated
+        assert vol.data.dtype == np.float32
+        np.testing.assert_allclose(vol.data, data * 2.0 + 5.0)
+        # value_transforms stripped to prevent double-apply
+        assert vol.metadata.value_transforms is None
+
+    def test_to_volume_raw_mode_preserves_transforms(self, tmp_path):
+        from duckn.volume import Volume
+
+        data = np.arange(6, dtype=np.int16).reshape(2, 3)
+        vt = [ValueTransform(name="linear", parameters={"slope": 2.0, "intercept": 5.0})]
+        store_path = tmp_path / "to_vol_raw.zarr"
+        _write_test_store(store_path, data, value_transforms=vt)
+
+        arr = open_array(store_path, apply_value_transforms=False)
+        vol = arr.to_volume()
+        assert isinstance(vol, Volume)
+        # Raw data, dtype preserved
+        assert vol.data.dtype == np.int16
+        np.testing.assert_array_equal(vol.data, data)
+        # value_transforms preserved (not applied)
+        assert vol.metadata.value_transforms is not None
+        assert vol.metadata.value_transforms[0].parameters == {"slope": 2.0, "intercept": 5.0}
+
+    def test_to_volume_no_transforms_field(self, tmp_path):
+        """No value_transforms in metadata → straight materialization."""
+        from duckn.volume import Volume
+
+        data = np.arange(6, dtype=np.uint16).reshape(2, 3)
+        store_path = tmp_path / "no_vt.zarr"
+        _write_test_store(store_path, data)
+
+        arr = open_array(store_path)
+        vol = arr.to_volume()
+        assert isinstance(vol, Volume)
+        assert vol.data.dtype == np.uint16
+        np.testing.assert_array_equal(vol.data, data)
+
+
+class TestGeometryOnDucknArray:
+    def test_geometry_available(self, tmp_path):
+        from duckn.spatial import VolumeGeometry
+
+        data = np.zeros((2, 3, 4), dtype=np.uint16)
+        store_path = tmp_path / "geom.zarr"
+        _write_test_store(store_path, data)
+
+        arr = open_array(store_path)
+        geom = arr.geometry
+        assert isinstance(geom, VolumeGeometry)
+        # Cached: same object on second access
+        assert arr.geometry is geom
+
+
+class TestMetadataMethods:
+    def test_metadata_add_transform(self, tmp_path):
+        data = np.zeros((2, 3, 4), dtype=np.uint16)
+        store_path = tmp_path / "addtfm.zarr"
+        _write_test_store(store_path, data)
+
+        arr = open_array(store_path)
+        # add_transform now lives on DucknMetadata
+        arr.metadata.add_transform("test:target", identity=True)
+        assert arr.metadata.space_transforms is not None
+        assert len(arr.metadata.space_transforms) == 1
+        assert arr.metadata.space_transforms[0].to.name == "test:target"
+
+    def test_metadata_get_set_extension(self, tmp_path):
+        data = np.zeros((2, 3, 4), dtype=np.uint16)
+        store_path = tmp_path / "ext.zarr"
+        _write_test_store(store_path, data)
+
+        arr = open_array(store_path)
+        assert arr.metadata.get_extension("custom") is None
+        arr.metadata.set_extension("custom", {"key": "value"})
+        assert arr.metadata.get_extension("custom") == {"key": "value"}
+
+
 class TestDucknArrayDirectConstruction:
     def test_construct_from_zarr_array(self, tmp_path):
         data = np.arange(6, dtype=np.uint16).reshape(2, 3)

@@ -300,6 +300,33 @@ class DucknArray:
             f"chunks={self.chunks}, mode={mode!r})"
         )
 
+    @property
+    def geometry(self):
+        """Spatial geometry computed from metadata + shape, cached."""
+        cached = self.__dict__.get("_geometry_cache")
+        if cached is None:
+            from .spatial import VolumeGeometry
+            cached = VolumeGeometry.from_metadata(self._metadata, tuple(self._arr.shape))
+            self.__dict__["_geometry_cache"] = cached
+        return cached
+
+    def to_volume(self):
+        """Materialize as a :class:`Volume` (eager numpy + metadata).
+
+        Uses the wrapper's current ``apply_value_transforms`` and
+        ``transform_dtype`` settings. When transforms are applied, the
+        returned Volume's metadata has ``value_transforms`` cleared so
+        consumers don't double-apply.
+        """
+        from copy import deepcopy
+        from .volume import Volume
+
+        data = np.asarray(self)
+        meta = deepcopy(self._metadata)
+        if self.apply_value_transforms and meta.value_transforms:
+            meta.value_transforms = None
+        return Volume(data=data, metadata=meta)
+
     def close(self) -> None:
         """Close the underlying store if this handle owns it."""
         if self._store_to_close is not None:

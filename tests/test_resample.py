@@ -45,7 +45,7 @@ def _make_volume(shape=(20, 64, 64), spacing=(2.0, 0.7, 0.7), dtype="uint16"):
             ),
         ],
     )
-    return Volume(data=data, meta=meta)
+    return Volume(data=data, metadata=meta)
 
 
 def _make_labelmap(shape=(20, 64, 64), spacing=(2.0, 0.7, 0.7)):
@@ -76,7 +76,7 @@ def _make_labelmap(shape=(20, 64, 64), spacing=(2.0, 0.7, 0.7)):
             ),
         ],
     )
-    return Volume(data=data, meta=meta)
+    return Volume(data=data, metadata=meta)
 
 
 # ---- Default: isotropic ----
@@ -221,23 +221,23 @@ class TestMetadata:
     def test_origin_preserved(self):
         vol = _make_volume()
         result = resample(vol, spacing=1.0)
-        assert result.meta.space_origin == vol.meta.space_origin
+        assert result.metadata.space_origin == vol.metadata.space_origin
 
     def test_space_preserved(self):
         vol = _make_volume()
         result = resample(vol, spacing=1.0)
-        assert result.meta.space == vol.meta.space
+        assert result.metadata.space == vol.metadata.space
 
     def test_samples_cleared(self):
         from duckn.models import SampleMetadata
         vol = _make_volume()
         # Add fake samples
-        vol.meta.axes[0].samples = [SampleMetadata(position=float(i)) for i in range(vol.shape[0])]
+        vol.metadata.axes[0].samples = [SampleMetadata(position=float(i)) for i in range(vol.shape[0])]
         # Clear cached geometry since we mutated meta
         if "geometry" in vol.__dict__:
             del vol.__dict__["geometry"]
         result = resample(vol, spacing=1.0)
-        assert result.meta.axes[0].samples is None
+        assert result.metadata.axes[0].samples is None
 
 
 # ---- Mutual exclusivity ----
