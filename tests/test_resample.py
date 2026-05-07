@@ -45,7 +45,7 @@ def _make_volume(shape=(20, 64, 64), spacing=(2.0, 0.7, 0.7), dtype="uint16"):
             ),
         ],
     )
-    return Volume(data=data, metadata=meta)
+    return Volume(raw=data, metadata=meta)
 
 
 def _make_labelmap(shape=(20, 64, 64), spacing=(2.0, 0.7, 0.7)):
@@ -76,7 +76,7 @@ def _make_labelmap(shape=(20, 64, 64), spacing=(2.0, 0.7, 0.7)):
             ),
         ],
     )
-    return Volume(data=data, metadata=meta)
+    return Volume(raw=data, metadata=meta)
 
 
 # ---- Default: isotropic ----

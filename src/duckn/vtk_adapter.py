@@ -164,4 +164,4 @@ def from_vtk(
             ax.space_direction = (col * spacing_zyx[j]).tolist()
             ax.samples = None
 
-    return Volume(data=data, metadata=new_meta)
+    return Volume(raw=data, metadata=new_meta)

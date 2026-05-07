@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.1.7 — 2026-05-07
+
+### Changed (breaking)
+- `Volume.data` is now the calibrated view: linear `value_transforms`
+  from the metadata are applied lazily on first access and cached.
+  `Volume.raw` is the new field holding raw stored values. Constructor
+  takes `Volume(raw=..., metadata=...)` (was `data=`). `vol.dtype`
+  reflects the effective output dtype (float32 when a non-identity
+  transform applies, else `vol.raw.dtype`).
+- This closes the calibration gap in adapter exports: `to_sitk`,
+  `to_nifti`, `to_vtk` use `vol.data` and now automatically receive
+  calibrated values (e.g., HU for CT) regardless of how the volume
+  was loaded. `io.read("ct.zarr")` followed by `to_sitk(vol)` produces
+  an SITK image containing HU values, not raw uint16.
+
+### Migration
+- `Volume(data=arr, metadata=meta)` → `Volume(raw=arr, metadata=meta)`.
+- Code reading raw stored values from a Volume should switch to
+  `vol.raw` (was `vol.data`). Code that wants calibrated values keeps
+  using `vol.data`.
+
+### Internal
+- New shared `_rescale` helper in `zarr_io.py`. Used by both
+  `DucknArray.__getitem__` and `Volume.data` so the rescale +
+  output-dtype rules are defined in one place.
+- Writers in `io.py` (`_write_zarr`, `_write_zmp`, `_write_zarr_zip`)
+  now use `vol.raw` to preserve source representation through the
+  metadata's `value_transforms`. NRRD writer keeps `vol.data` (NRRD
+  has no standard slope/intercept field).
+- `cast.py` operates on `vol.data` and strips `value_transforms` from
+  the result's metadata (calibrated values baked into the cast output).
+- `resample.py` operates on `vol.raw`, preserving metadata —
+  linear value_transforms commute with linear interpolation.
+- `_read_zarr` and `_read_zmp` route through `open_array().to_volume()`
+  for a single source of truth.
+- `DucknArray.to_volume()` simplified: always returns
+  `Volume(raw=arr.zarr[:], metadata=copy)`. The wrapper's
+  `apply_value_transforms` toggle is irrelevant for `to_volume` since
+  Volume handles transforms itself.
+
 ## 0.1.6 — 2026-05-04
 
 ### Changed (breaking)

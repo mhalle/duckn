@@ -38,6 +38,9 @@ def cast(
     Volume with cast data and same metadata
     """
     target = np.dtype(dtype)
+    # Cast operates on the calibrated view (vol.data) — users typically
+    # want to cast the values they see, not the raw storage. The result
+    # is in calibrated space, so strip value_transforms below.
     data = vol.data
 
     if normalize:
@@ -74,4 +77,8 @@ def cast(
     else:
         result = data.astype(target)
 
-    return Volume(data=result, metadata=deepcopy(vol.metadata))
+    new_meta = deepcopy(vol.metadata)
+    # Calibrated values are baked into the result — clear value_transforms
+    # so vol.data on the result doesn't double-apply.
+    new_meta.value_transforms = None
+    return Volume(raw=result, metadata=new_meta)

@@ -80,28 +80,20 @@ def read(source: str | Path | BinaryIO, *, format: str | None = None) -> Volume:
 
 
 def _read_zarr(source: str | Path) -> Volume:
-    import zarr
+    """Read a zarr/zarr.zip duckn store via the DucknArray bridge."""
+    from .zarr_io import open_array
 
-    p = Path(source)
-    if str(p).endswith(".zarr.zip"):
-        store = zarr.storage.ZipStore(str(p), mode="r")
-    else:
-        store = zarr.storage.LocalStore(str(p), read_only=True)
-
-    arr = zarr.open_array(store, mode="r")
-    meta = DucknMetadata(**arr.attrs["duckn"])
-    return Volume(data=arr[:], metadata=meta)
+    with open_array(source) as arr:
+        return arr.to_volume()
 
 
 def _read_zmp(source: str | Path) -> Volume:
+    """Read a .zmp duckn store via the DucknArray bridge."""
     import json
 
-    import zarr
-    from zarr_zmp import Manifest, ZMPStore
+    from zarr_zmp import Manifest
 
-    store = ZMPStore.from_file(str(source))
-
-    # Check if root is an array or a group
+    # Detect group-style ZMPs (patient hierarchies) — not handled here
     m = Manifest(str(source))
     root_entry = m.get_entry("/zarr.json")
     if root_entry and root_entry.text:
@@ -113,9 +105,10 @@ def _read_zmp(source: str | Path) -> Volume:
                 f"or use ZMPStore + zarr.open_array(store, path='...') directly."
             )
 
-    arr = zarr.open_array(store, mode="r")
-    meta = DucknMetadata(**arr.attrs["duckn"])
-    return Volume(data=arr[:], metadata=meta)
+    from .zarr_io import open_array
+
+    with open_array(source) as arr:
+        return arr.to_volume()
 
 
 def _read_nrrd(source: str | Path) -> Volume:
@@ -125,7 +118,7 @@ def _read_nrrd(source: str | Path) -> Volume:
 
     data, header = nrrd.read(str(source))
     meta, _ = _header_to_metadata(header, data.ndim)
-    return Volume(data=data, metadata=meta)
+    return Volume(raw=data, metadata=meta)
 
 
 def _read_nifti(source: str | Path) -> Volume:
@@ -218,13 +211,13 @@ def _write_zarr(vol, dest, *, chunks, compressor, level, overwrite):
     if dest.exists() and not overwrite:
         raise FileExistsError(f"{dest} exists")
 
-    chunks = chunks or _auto_chunks(vol.shape, vol.data.dtype)
+    chunks = chunks or _auto_chunks(vol.shape, vol.raw.dtype)
     compressors = _build_compressors(compressor, level)
     attrs = {"duckn": vol.metadata.model_dump(exclude_none=True)}
 
     with open_store(dest, mode="w", overwrite=overwrite) as store:
         zarr.create_array(
-            store, data=vol.data, chunks=chunks,
+            store, data=vol.raw, chunks=chunks,
             compressors=compressors, attributes=attrs,
             fill_value=0, overwrite=overwrite,
         )
@@ -240,13 +233,13 @@ def _write_zarr_zip(vol, dest, *, chunks, compressor, level, overwrite):
     if dest.exists() and overwrite:
         dest.unlink()
 
-    chunks = chunks or _auto_chunks(vol.shape, vol.data.dtype)
+    chunks = chunks or _auto_chunks(vol.shape, vol.raw.dtype)
     compressors = _build_compressors(compressor, level)
     attrs = {"duckn": vol.metadata.model_dump(exclude_none=True)}
 
     store = zarr.storage.ZipStore(str(dest), mode="w")
     zarr.create_array(
-        store, data=vol.data, chunks=chunks,
+        store, data=vol.raw, chunks=chunks,
         compressors=compressors, attributes=attrs,
         fill_value=0,
     )
@@ -269,16 +262,16 @@ def _write_zmp(vol, dest, *, chunks, compressor, level, overwrite):
     else:
         output = dest  # BytesIO
 
-    chunks = chunks or _auto_chunks(vol.shape, vol.data.dtype)
+    chunks = chunks or _auto_chunks(vol.shape, vol.raw.dtype)
     attrs = {"duckn": vol.metadata.model_dump(exclude_none=True)}
 
     store = ZMPWritableStore(output)
     arr = zarr.open_array(
         store, mode="w",
-        shape=vol.shape, dtype=vol.data.dtype,
+        shape=vol.shape, dtype=vol.raw.dtype,
         chunks=chunks, attributes=attrs,
     )
-    arr[:] = vol.data
+    arr[:] = vol.raw
 
     try:
         loop = asyncio.get_running_loop()

@@ -146,8 +146,11 @@ def resample(
     if np.allclose(zoom_factors, 1.0, rtol=1e-6):
         return vol
 
-    # For axes being downsampled, pre-blur to prevent aliasing
-    data = vol.data.astype(float) if order > 0 else vol.data
+    # Resample on raw stored values. Linear value_transforms commute with
+    # linear interpolation, so the result is equivalent to resampling
+    # calibrated values, while preserving the source dtype and the
+    # metadata's value_transforms for the result.
+    data = vol.raw.astype(float) if order > 0 else vol.raw
     spatial_indices = [
         i for i, ax in enumerate(vol.metadata.axes)
         if ax.space_direction is not None
@@ -155,13 +158,13 @@ def resample(
 
     for axis in range(geom.ndim):
         if zoom_factors[axis] < 1.0 - 1e-6 and order > 0:
-            sigma = [0.0] * vol.data.ndim
+            sigma = [0.0] * vol.raw.ndim
             data_axis = spatial_indices[axis]
             sigma[data_axis] = 0.5 / zoom_factors[axis]
             data = ndimage.gaussian_filter(data, sigma)
 
     # Build full zoom array (1.0 for non-spatial axes)
-    full_zoom = np.ones(vol.data.ndim)
+    full_zoom = np.ones(vol.raw.ndim)
     for i, si in enumerate(spatial_indices):
         full_zoom[si] = zoom_factors[i]
 
@@ -172,7 +175,7 @@ def resample(
 
     # Cast back to original dtype for nearest-neighbor
     if order == 0:
-        resampled = resampled.astype(vol.data.dtype)
+        resampled = resampled.astype(vol.raw.dtype)
 
     # Update metadata — scale space_direction, thickness, clear samples
     new_meta = deepcopy(vol.metadata)
@@ -186,4 +189,4 @@ def resample(
             ax.samples = None  # no longer valid after resampling
             spatial_idx += 1
 
-    return Volume(data=resampled, metadata=new_meta)
+    return Volume(raw=resampled, metadata=new_meta)

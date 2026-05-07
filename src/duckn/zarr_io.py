@@ -146,6 +146,45 @@ def _compose_linear_transforms(
     return composed_slope, composed_intercept
 
 
+def _rescale(
+    data: np.ndarray,
+    slope: float,
+    intercept: float,
+    transform_dtype: np.dtype | None,
+) -> np.ndarray:
+    """Apply slope*data + intercept and cast to ``transform_dtype``.
+
+    Default (``transform_dtype is None``): float32 output, with a
+    no-op short-circuit on identity transforms (slope=1, intercept=0)
+    that returns the input dtype unchanged.
+
+    With an explicit ``transform_dtype``: always rescale, computing in
+    float32 (or float64 when target is float64) to bound memory; integer
+    targets are rounded with ``np.rint`` before cast.
+    """
+    target = transform_dtype
+    if target is None:
+        if slope == 1.0 and intercept == 0.0:
+            return data
+        target = np.dtype(np.float32)
+
+    work = (
+        np.dtype(np.float64)
+        if target == np.dtype(np.float64)
+        else np.dtype(np.float32)
+    )
+    out = data.astype(work, copy=False) * work.type(slope)
+    if intercept != 0.0:
+        out = out + work.type(intercept)
+
+    if work != target:
+        if np.issubdtype(target, np.integer):
+            out = np.rint(out).astype(target, copy=False)
+        else:
+            out = out.astype(target, copy=False)
+    return out
+
+
 class DucknArray:
     """Wrapper around a ``zarr.Array`` that applies value transforms on read.
 
@@ -256,33 +295,7 @@ class DucknArray:
         data = self._arr[key]
         if not self.apply_value_transforms:
             return data
-
-        target = self.transform_dtype
-        if target is None:
-            if self._is_identity:
-                return data
-            target = np.dtype(np.float32)
-
-        # Compute the rescale in float32 (sufficient mantissa for any
-        # reasonable medical-imaging source dtype). Use float64 only when
-        # the user has explicitly asked for float64 output.
-        work = (
-            np.dtype(np.float64)
-            if target == np.dtype(np.float64)
-            else np.dtype(np.float32)
-        )
-
-        out = data.astype(work, copy=False) * work.type(self._slope)
-        if self._intercept != 0.0:
-            out = out + work.type(self._intercept)
-
-        if work != target:
-            if np.issubdtype(target, np.integer):
-                # float → integer: round to avoid truncate-toward-zero
-                out = np.rint(out).astype(target, copy=False)
-            else:
-                out = out.astype(target, copy=False)
-        return out
+        return _rescale(data, self._slope, self._intercept, self.transform_dtype)
 
     def __array__(self, dtype=None, copy=None):
         out = self[...]
@@ -311,21 +324,22 @@ class DucknArray:
         return cached
 
     def to_volume(self):
-        """Materialize as a :class:`Volume` (eager numpy + metadata).
+        """Materialize as a :class:`Volume` (eager raw values + metadata).
 
-        Uses the wrapper's current ``apply_value_transforms`` and
-        ``transform_dtype`` settings. When transforms are applied, the
-        returned Volume's metadata has ``value_transforms`` cleared so
-        consumers don't double-apply.
+        Reads the underlying zarr array (always raw stored values,
+        ignoring the wrapper's ``apply_value_transforms`` toggle) and
+        wraps it in a Volume with a copy of the metadata. The Volume
+        applies any ``value_transforms`` lazily on ``vol.data`` access.
+
+        For an explicit calibrated materialization with full control
+        over output dtype, slice the wrapper directly:
+        ``np.asarray(arr)`` honors the ``apply_value_transforms`` and
+        ``transform_dtype`` settings.
         """
         from copy import deepcopy
         from .volume import Volume
 
-        data = np.asarray(self)
-        meta = deepcopy(self._metadata)
-        if self.apply_value_transforms and meta.value_transforms:
-            meta.value_transforms = None
-        return Volume(data=data, metadata=meta)
+        return Volume(raw=self._arr[:], metadata=deepcopy(self._metadata))
 
     def close(self) -> None:
         """Close the underlying store if this handle owns it."""

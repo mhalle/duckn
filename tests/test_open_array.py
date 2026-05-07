@@ -342,7 +342,8 @@ class TestRepr:
 
 
 class TestToVolume:
-    def test_to_volume_applies_and_strips_transforms(self, tmp_path):
+    def test_to_volume_preserves_raw_and_metadata(self, tmp_path):
+        """Volume holds raw values; vol.data lazily applies transforms."""
         from duckn.volume import Volume
 
         data = np.arange(6, dtype=np.int16).reshape(2, 3)
@@ -353,29 +354,29 @@ class TestToVolume:
         arr = open_array(store_path)
         vol = arr.to_volume()
         assert isinstance(vol, Volume)
-        # Data is calibrated
+        # Raw values preserved with native dtype
+        assert vol.raw.dtype == np.int16
+        np.testing.assert_array_equal(vol.raw, data)
+        # Metadata's value_transforms preserved (not stripped)
+        assert vol.metadata.value_transforms is not None
+        # Calibrated view via vol.data (lazy, cached)
         assert vol.data.dtype == np.float32
         np.testing.assert_allclose(vol.data, data * 2.0 + 5.0)
-        # value_transforms stripped to prevent double-apply
-        assert vol.metadata.value_transforms is None
 
-    def test_to_volume_raw_mode_preserves_transforms(self, tmp_path):
-        from duckn.volume import Volume
-
+    def test_to_volume_independent_of_apply_setting(self, tmp_path):
+        """to_volume always returns raw + metadata regardless of arr.apply_value_transforms."""
         data = np.arange(6, dtype=np.int16).reshape(2, 3)
         vt = [ValueTransform(name="linear", parameters={"slope": 2.0, "intercept": 5.0})]
-        store_path = tmp_path / "to_vol_raw.zarr"
+        store_path = tmp_path / "to_vol_indep.zarr"
         _write_test_store(store_path, data, value_transforms=vt)
 
-        arr = open_array(store_path, apply_value_transforms=False)
-        vol = arr.to_volume()
-        assert isinstance(vol, Volume)
-        # Raw data, dtype preserved
-        assert vol.data.dtype == np.int16
-        np.testing.assert_array_equal(vol.data, data)
-        # value_transforms preserved (not applied)
-        assert vol.metadata.value_transforms is not None
-        assert vol.metadata.value_transforms[0].parameters == {"slope": 2.0, "intercept": 5.0}
+        arr_a = open_array(store_path, apply_value_transforms=True)
+        arr_b = open_array(store_path, apply_value_transforms=False)
+        vol_a = arr_a.to_volume()
+        vol_b = arr_b.to_volume()
+        # Both Volumes have the same raw values and metadata
+        np.testing.assert_array_equal(vol_a.raw, vol_b.raw)
+        np.testing.assert_allclose(vol_a.data, vol_b.data)
 
     def test_to_volume_no_transforms_field(self, tmp_path):
         """No value_transforms in metadata → straight materialization."""

@@ -173,4 +173,4 @@ def from_nifti(
             ax.samples = None
             spatial_idx += 1
 
-    return Volume(data=data, metadata=new_meta)
+    return Volume(raw=data, metadata=new_meta)
