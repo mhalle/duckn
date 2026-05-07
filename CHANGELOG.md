@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.8 — 2026-05-07
+
+### Changed
+- scipy is no longer an undeclared core dependency. Core paths
+  (read/write/geometry/adapters) now run scipy-free. `resample()`
+  still requires `scipy.ndimage` and lazy-imports it with a helpful
+  error if missing: install via `pip install duckn[resample]`.
+- `VolumeGeometry.from_metadata` polar decomposition switched from
+  `scipy.linalg.polar` to numpy SVD (mathematically equivalent).
+
+### Added
+- `[resample]` optional extra in `pyproject.toml` (`scipy>=1.10`).
+
 ## 0.1.7 — 2026-05-07
 
 ### Changed (breaking)

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "duckn"
-version = "0.1.7"
+version = "0.1.8"
 description = "duckn: axis-rich array metadata convention for Zarr V3"
 license = "Apache-2.0"
 requires-python = ">=3.11"
@@ -19,6 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 dicom = ["pydicom>=2.4"]
 nifti = ["nibabel>=4.0"]
+resample = ["scipy>=1.10"]
 
 [project.scripts]
 duckn = "duckn.cli:cli"

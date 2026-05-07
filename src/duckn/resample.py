@@ -16,11 +16,22 @@ from enum import IntEnum
 from typing import Any
 
 import numpy as np
-from scipy import ndimage
 
 from .models import DucknMetadata
 from .spatial import VolumeGeometry
 from .volume import Volume
+
+
+def _require_scipy_ndimage():
+    """Lazy-import scipy.ndimage with a helpful error if missing."""
+    try:
+        from scipy import ndimage
+    except ImportError as e:
+        raise ImportError(
+            "duckn.resample requires scipy. "
+            "Install with: pip install duckn[resample]  (or `pip install scipy`)"
+        ) from e
+    return ndimage
 
 
 class Interpolation(IntEnum):
@@ -145,6 +156,8 @@ def resample(
     # Check if any resampling is needed
     if np.allclose(zoom_factors, 1.0, rtol=1e-6):
         return vol
+
+    ndimage = _require_scipy_ndimage()
 
     # Resample on raw stored values. Linear value_transforms commute with
     # linear interpolation, so the result is equivalent to resampling

@@ -248,10 +248,13 @@ class VolumeGeometry:
             if mag > 0:
                 direction_cosines[:, j] = D[:, j] / mag
 
-        # Polar decomposition: D = R @ S
-        # R = rotation, S = symmetric positive definite (spacing/shear)
-        from scipy.linalg import polar
-        R, S = polar(D)
+        # Polar decomposition D = R @ S via SVD.
+        # SVD: D = U @ diag(sigma) @ Vt
+        # Right polar (D = R @ S): R = U @ Vt (orthogonal),
+        # S = Vt.T @ diag(sigma) @ Vt (symmetric positive semi-definite).
+        U, sigma, Vt = np.linalg.svd(D)
+        R = U @ Vt
+        S = Vt.T @ np.diag(sigma) @ Vt
 
         # Affine: world = D @ index + o
         # space_origin is the position of the first sample (index 0),
