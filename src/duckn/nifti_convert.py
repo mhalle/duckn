@@ -64,11 +64,42 @@ _SFORM_CODE_TO_SPACE: dict[int, SpaceName] = {
     4: SpaceName.RIGHT_ANTERIOR_SUPERIOR,
 }
 
-# space name → default sform_code (for writing back)
+# space name → default sform_code (for writing back). Anatomical spaces
+# (RAS/LAS/LPS and their -time variants) are all reframed to RAS+ on export
+# and written with code 2 (aligned_anat); scanner spaces keep code 1.
 _SPACE_TO_SFORM_CODE: dict[str, int] = {
     "scanner-xyz": 1,
     "right-anterior-superior": 2,
+    "left-anterior-superior": 2,
+    "left-posterior-superior": 2,
 }
+
+
+def _space_to_ras_signs(space_value: str) -> np.ndarray:
+    """Per-axis sign flips to reframe a duckn anatomical space into NIfTI RAS+.
+
+    NIfTI sform/qform are *defined* to be RAS+ (``+x`` → Right, ``+y`` →
+    Anterior, ``+z`` → Superior); there is no code for any other anatomical
+    frame. duckn stores carry their native frame in ``space`` (e.g. DICOM is
+    ``left-posterior-superior``), so on export the affine must be reframed to
+    RAS by negating each axis whose positive direction is opposite RAS — e.g.
+    LPS → negate x (L→R) and y (P→A). This relabels the world coordinate
+    frame only; the voxel data is never touched.
+
+    Returns a length-3 array of ``±1``. Non-anatomical spaces (``scanner-xyz``)
+    are assumed already NIfTI-compatible and get no flip.
+    """
+    toks = space_value.split("-")
+    anatomical = {
+        "right", "left", "anterior", "posterior", "superior", "inferior",
+    }
+    if len(toks) < 3 or not all(t in anatomical for t in toks[:3]):
+        return np.array([1.0, 1.0, 1.0])
+    ras_positive = ("right", "anterior", "superior")
+    return np.array([
+        1.0 if tok == want else -1.0
+        for tok, want in zip(toks[:3], ras_positive)
+    ])
 
 # NIfTI spatial unit codes → unit strings
 _NIFTI_SPATIAL_UNITS: dict[int, str] = {
@@ -495,12 +526,26 @@ def zarr_to_nifti(
     if meta.space_origin:
         affine[:3, 3] = meta.space_origin
 
+    # --- Reframe to RAS+ (NIfTI requires it) ---
+    # The affine above is in the store's native space (e.g. DICOM LPS). NIfTI
+    # sform/qform are RAS+ by definition, so reframe by negating the axes that
+    # point opposite RAS. This is a world-frame relabel only — the voxel data
+    # is untouched. Skipping it (the historical bug) writes, say, LPS numbers
+    # into an RAS-declared sform, which every reader then mis-reads as a 180°
+    # rotation about S (left/right + ant/post swapped).
+    if meta.space:
+        signs = _space_to_ras_signs(meta.space.value)
+        if not np.all(signs == 1.0):
+            affine = np.diag([signs[0], signs[1], signs[2], 1.0]) @ affine
+
     # --- Determine codes ---
+    # After the reframe, anatomical spaces are RAS+ → code 2 (aligned_anat);
+    # scanner spaces keep code 1.
     sform_code = 2  # default: aligned_anat
     if tags and tags.sform_code is not None:
         sform_code = tags.sform_code
     elif meta.space:
-        sform_code = _SPACE_TO_SFORM_CODE.get(meta.space.value, 2)
+        sform_code = 1 if meta.space.value.startswith("scanner") else 2
 
     qform_code_out = sform_code
     if tags and tags.qform_code is not None:

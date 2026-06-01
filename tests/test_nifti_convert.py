@@ -785,7 +785,16 @@ class TestFreshExport:
         np.testing.assert_array_equal(img.dataobj.get_unscaled(), data)
 
     def test_dicom_sourced_zarr_to_nifti(self, tmp_path):
-        """Zarr from DICOM conversion (LPS, no NIfTI extension) → NIfTI."""
+        """Zarr from DICOM conversion (LPS) → NIfTI must be reframed to RAS+.
+
+        NIfTI sform/qform are RAS+ by definition. A DICOM-sourced store is
+        LPS, so the export must negate the X (L→R) and Y (P→A) axes of both
+        the direction columns and the origin. (Regression: the converter used
+        to write the LPS vectors verbatim into an RAS-declared sform, which
+        every reader then mis-read as a 180° rotation about S — flipping
+        left/right and anterior/posterior, and shattering thin structures
+        when fed to an orientation-sensitive model.)
+        """
         import zarr
         from duckn.models import AxisKind, AxisMetadata, Centering, DucknMetadata, SpaceName
 
@@ -793,7 +802,7 @@ class TestFreshExport:
         meta = DucknMetadata(
             version="1.0",
             space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
-            space_origin=[0.0, 0.0, 0.0],
+            space_origin=[10.0, 20.0, -30.0],   # LPS
             axes=[
                 AxisMetadata(kind=AxisKind.SPACE, centering=Centering.CELL,
                              space_direction=[0.0, 0.0, 3.0], unit="mm"),
@@ -821,10 +830,15 @@ class TestFreshExport:
         img = nib.load(str(nii_path))
         assert img.shape == (30, 512, 512)
         sform = img.get_sform()
-        # Space directions as sform columns
-        np.testing.assert_allclose(sform[:3, 0], [0, 0, 3], atol=1e-6)
-        np.testing.assert_allclose(sform[:3, 1], [0, 0.5, 0], atol=1e-6)
-        np.testing.assert_allclose(sform[:3, 2], [0.5, 0, 0], atol=1e-6)
+        # Direction columns reframed LPS→RAS: negate X (row 0) and Y (row 1).
+        np.testing.assert_allclose(sform[:3, 0], [0, 0, 3], atol=1e-6)      # S axis: unchanged
+        np.testing.assert_allclose(sform[:3, 1], [0, -0.5, 0], atol=1e-6)   # P→A: Y negated
+        np.testing.assert_allclose(sform[:3, 2], [-0.5, 0, 0], atol=1e-6)   # L→R: X negated
+        # Origin reframed LPS [10,20,-30] → RAS [-10,-20,-30].
+        np.testing.assert_allclose(sform[:3, 3], [-10, -20, -30], atol=1e-6)
+        # Result is a valid RAS+ NIfTI tagged aligned_anat.
+        assert int(img.header["sform_code"]) == 2
+        assert nib.aff2axcodes(img.affine) == ("S", "P", "L")
 
 
 # ---------------------------------------------------------------------------
