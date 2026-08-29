@@ -122,3 +122,47 @@ class TestJsonExamplesParse:
             else:
                 bad.append((i, stripped[:60]))
         assert not bad, f"{path.name} has unparseable json blocks: {bad}"
+
+
+class TestDocumentedApiIsReachable:
+    """Every call the README shows must work from a clean `import duckn`.
+
+    `duckn.zarr_to_dicom` was documented in the quick start and not exposed
+    on the package — found by smoke-testing a built wheel, not by the suite,
+    because the tests import submodules directly.
+    """
+
+    def _readme(self) -> str:
+        return (Path(__file__).parent.parent / "README.md").read_text()
+
+    def test_quickstart_calls_exist(self):
+        import duckn
+
+        names = sorted(set(re.findall(r"\bduckn\.(\w+)\(", self._readme())))
+        assert names, "no duckn.<call>() examples found in README"
+        missing = [n for n in names if not hasattr(duckn, n)]
+        assert not missing, (
+            f"README documents duckn.{{{','.join(missing)}}} but the package "
+            "does not expose them"
+        )
+
+    def test_converter_entry_points_are_exposed(self):
+        """A converter you can't reach from `duckn.` is effectively private."""
+        import duckn
+        from duckn import convert, dicom_convert, nifti_convert
+
+        expected = set()
+        for mod in (convert, dicom_convert, nifti_convert):
+            for name in dir(mod):
+                if name.startswith("_"):
+                    continue
+                obj = getattr(mod, name)
+                if not callable(obj):
+                    continue
+                if getattr(obj, "__module__", "").startswith("duckn") and (
+                    "_to_zarr" in name or name.startswith("zarr_to_")
+                ):
+                    expected.add(name)
+
+        missing = sorted(n for n in expected if not hasattr(duckn, n))
+        assert not missing, f"converters not reachable as duckn.<name>: {missing}"

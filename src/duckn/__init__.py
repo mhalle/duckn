@@ -228,4 +228,20 @@ def __getattr__(name: str) -> object:
         from .nifti_convert import zarr_to_nifti
 
         return zarr_to_nifti
+    if name == "zarr_to_dicom":
+        from .dicom_convert import zarr_to_dicom
+
+        return zarr_to_dicom
+    if name == "zarr_to_dicom_seg":
+        from .dicom_convert import zarr_to_dicom_seg
+
+        return zarr_to_dicom_seg
+    if name == "dicom_to_zarr_streaming":
+        from .dicom_convert import dicom_to_zarr_streaming
+
+        return dicom_to_zarr_streaming
+    if name == "io":
+        from . import io
+
+        return io
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
