@@ -135,7 +135,9 @@ from .models import (
     UnitObject,
     UnitSystemEntry,
     ValueTransform,
+    effective_label_values,
     validate_against_shape,
+    validate_seg_extension,
 )
 from .zarr_io import (
     DucknArray,
@@ -192,7 +194,9 @@ __all__ = [  # noqa: RUF022
     "read_duckn_metadata",
     "read_metadata",
     "UNCOMPRESSED_TRANSFER_SYNTAXES",
+    "effective_label_values",
     "validate_against_shape",
+    "validate_seg_extension",
     "zarr_to_nifti",
     "zarr_to_nrrd",
     "zarr_to_nrrd_zerocopy",

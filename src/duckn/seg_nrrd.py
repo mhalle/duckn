@@ -177,10 +177,12 @@ def _parse_tags(
         if key == "TerminologyEntry":
             dicom, designations, schemes = _parse_terminology_entry(value)
             all_schemes |= schemes
+        elif key.startswith("Segmentation."):
+            tags[key.removeprefix("Segmentation.")] = value
         else:
-            # Strip "Segmentation." prefix from tag keys
-            tag_key = key.removeprefix("Segmentation.")
-            tags[tag_key] = value
+            # A tag without the prefix keeps its key verbatim, so that
+            # serialization can put back exactly what it found.
+            tags[key] = value
 
     return tags or None, dicom, designations, all_schemes
 
@@ -427,7 +429,12 @@ def _serialize_tags(seg: Segment) -> str:
     pairs: list[str] = []
 
     for key, val in _slicer_metadata(seg).get("tags", {}).items():
-        pairs.append(f"Segmentation.{key}:{val}")
+        # Slicer's own tags are stored with the "Segmentation." prefix
+        # stripped; anything else kept its key verbatim on parse (and
+        # "TerminologyEntry" is reconstructed below, not carried as a tag).
+        if key == "TerminologyEntry":
+            continue
+        pairs.append(f"Segmentation.{key}:{val}" if "." not in key else f"{key}:{val}")
 
     designation = seg.designations[0] if seg.designations else None
     term_val = _serialize_terminology_entry(seg.dicom, designation)
@@ -481,6 +488,8 @@ def _generate_from_model(ext: SegmentationExtension) -> dict[str, str]:
         if isinstance(lv, str) or (
             isinstance(lv, list) and any(isinstance(v, str) for v in lv)
         ):
+            # Resolving first would silently flatten a hierarchy that
+            # .seg.nrrd has no way to express, so refuse instead.
             raise ValueError(
                 f"segment {seg.id!r}: string label_value references cannot be "
                 "represented in .seg.nrrd"

@@ -477,7 +477,9 @@ Throughout this section, a segment's **effective voxel set** is the set of *(lay
 10. String entries in `label_value` must match the `id` of a segment within the same `segments` array.
 11. The segment reference graph formed by string entries in `label_value` must be acyclic. A segment may not directly or transitively reference itself.
 
-Rules 5–11 constrain the metadata alone and are cheap to check; rules 2–4 additionally require the array's shape and axes. None of them can be verified from the voxel data, which this extension never requires a reader to load.
+Rules 5–11 constrain the metadata alone and are cheap to check; rules 2–4 additionally require the array's shape and axes. None of them can be verified from the voxel data, which this extension never requires a reader to load — in particular, rule 9 means a validator cannot tell a legal undescribed label from a mistake.
+
+Writers should validate before serializing. Readers should not assume a file is valid: a segmentation that violates rule 10 or 11 has no well-defined effective voxel set, and a reader encountering one should report the error rather than resolving references partially.
 
 ---
 
@@ -899,6 +901,6 @@ Note that `metadata.dicom` (a converter's scratch space for unmapped DICOM attri
 
 **Why string entries in `label_value` reference by `id`, not by array index.** Array indices are positional and change when segments are reordered, inserted, or deleted. The `id` field is defined as stable — it does not change when the segment is renamed or reordered. Using `id` as the reference target means the reference graph remains valid across edits that do not change segment identity.
 
-**Why the reference graph must be acyclic.** A cycle would make the effective voxel set of a segment depend on itself, which is undefined. An acyclic directed graph is sufficient to represent all biologically meaningful hierarchies, including ontologies with multiple inheritance, as long as there is no circularity. Writers should validate acyclicity before serializing; readers encountering a cycle should treat the affected segments' effective voxel sets as undefined and report an error.
+**Why the reference graph must be acyclic.** A cycle would make the effective voxel set of a segment depend on itself, which is undefined. An acyclic directed graph is sufficient to represent all biologically meaningful hierarchies, including ontologies with multiple inheritance (a segment may be referenced by any number of parents), as long as there is no circularity. Writers should validate acyclicity before serializing; readers encountering a cycle should treat the affected segments' effective voxel sets as undefined and report an error (§5).
 
 **Why string references do not carry layer information.** The `layer` field of a referenced segment is authoritative for that segment's voxel data. When resolving a reference chain, each segment's layer is taken from its own definition. This avoids needing to re-specify layer context at every reference site and ensures that layer assignments are defined once, close to the data they describe.

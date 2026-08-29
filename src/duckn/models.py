@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from enum import StrEnum
 from typing import Annotated, Any, Union
 
@@ -513,7 +512,12 @@ class CodedEntry(BaseModel):
 
 
 class DicomClassification(BaseModel):
-    """DICOM SEG classification structure for a segment."""
+    """DICOM SEG classification structure for a segment.
+
+    Modifiers are separate fields here rather than nested, so a ``Designation``
+    (which carries its own ``modifier``) is not a valid value: assigning one
+    would silently drop that modifier on serialization.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -522,6 +526,23 @@ class DicomClassification(BaseModel):
     type_modifier: CodedEntry | None = None
     anatomic_region: CodedEntry | None = None
     anatomic_region_modifier: CodedEntry | None = None
+
+    @model_validator(mode="after")
+    def _reject_nested_modifiers(self) -> "DicomClassification":
+        for field in (
+            "category",
+            "type",
+            "type_modifier",
+            "anatomic_region",
+            "anatomic_region_modifier",
+        ):
+            entry = getattr(self, field)
+            if getattr(entry, "modifier", None) is not None:
+                raise ValueError(
+                    f"dicom.{field} carries a nested 'modifier'; use the "
+                    f"separate modifier field instead"
+                )
+        return self
 
 
 class Designation(CodedEntry):
@@ -894,3 +915,181 @@ def validate_against_shape(meta: DucknMetadata, shape: tuple[int, ...]) -> None:
                 raise ValueError(
                     f"axes[{i}] has {len(ax.samples)} samples but shape[{i}] is {shape[i]}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Segmentation reference resolution and validation
+# ---------------------------------------------------------------------------
+
+
+def effective_label_values(
+    ext: SegmentationExtension, segment_id: str
+) -> set[tuple[int, int]]:
+    """The effective voxel set of a segment, as ``(layer, label_value)`` pairs.
+
+    Resolves string entries in ``label_value`` recursively: the result is the
+    union of the segment's own integer labels and the effective sets of every
+    segment it references, per spec §3.2. A label value only identifies voxels
+    within a layer, so each element carries the layer of the segment that
+    contributed it — not of the segment doing the referencing.
+
+    Raises
+    ------
+    KeyError
+        If ``segment_id`` is not in the segmentation, or a reference does not
+        resolve (§5 rule 10).
+    ValueError
+        If the reference graph contains a cycle (§5 rule 11).
+    """
+    by_id: dict[str, Segment] = {}
+    for seg in ext.segments:
+        by_id.setdefault(seg.id, seg)
+
+    if segment_id not in by_id:
+        raise KeyError(f"no segment with id {segment_id!r}")
+
+    resolved: dict[str, set[tuple[int, int]]] = {}
+
+    def resolve(sid: str, path: tuple[str, ...]) -> set[tuple[int, int]]:
+        if sid in resolved:
+            return resolved[sid]
+        if sid in path:
+            cycle = " -> ".join((*path[path.index(sid) :], sid))
+            raise ValueError(f"circular segment reference: {cycle}")
+
+        seg = by_id.get(sid)
+        if seg is None:
+            raise KeyError(f"segment reference {sid!r} does not resolve")
+
+        layer = seg.layer or 0
+        entries = (
+            seg.label_value
+            if isinstance(seg.label_value, list)
+            else [seg.label_value]
+        )
+
+        out: set[tuple[int, int]] = set()
+        for entry in entries:
+            if isinstance(entry, bool):
+                continue
+            if isinstance(entry, int):
+                out.add((layer, entry))
+            elif isinstance(entry, str):
+                out |= resolve(entry, (*path, sid))
+
+        resolved[sid] = out
+        return out
+
+    return resolve(segment_id, ())
+
+
+def validate_seg_extension(
+    ext: SegmentationExtension,
+    *,
+    shape: tuple[int, ...] | None = None,
+    axes: list[AxisMetadata] | None = None,
+) -> None:
+    """Validate a segmentation against the consistency rules of spec §5.
+
+    Checks the metadata-only rules (5-11) always. Passing ``axes`` (and
+    ``shape``) additionally checks the rules that depend on the array's axes
+    (2 and 4). Raises ``ValueError`` listing every violation found.
+    """
+    problems: list[str] = []
+
+    # Rule 5: ids unique
+    seen_ids: set[str] = set()
+    for seg in ext.segments:
+        if seg.id in seen_ids:
+            problems.append(f"duplicate segment id {seg.id!r}")
+        seen_ids.add(seg.id)
+
+    # Rule 7: 0 is background
+    for seg in ext.segments:
+        entries = (
+            seg.label_value if isinstance(seg.label_value, list) else [seg.label_value]
+        )
+        if any(e == 0 and not isinstance(e, bool) for e in entries):
+            problems.append(
+                f"segment {seg.id!r} claims label value 0, reserved for background"
+            )
+
+    # Rule 10: every string entry names a segment in this array. Checked
+    # structurally rather than through resolution, so that it is still
+    # reported when duplicate ids make resolution itself ambiguous.
+    for seg in ext.segments:
+        entries = (
+            seg.label_value if isinstance(seg.label_value, list) else [seg.label_value]
+        )
+        for entry in entries:
+            if isinstance(entry, str) and entry not in seen_ids:
+                problems.append(
+                    f"segment {seg.id!r}: reference {entry!r} does not resolve to any "
+                    "segment in this segmentation"
+                )
+
+    # Rules 11 and 8 need resolved effective sets.
+    effective: dict[str, set[tuple[int, int]]] = {}
+    for seg in ext.segments:
+        try:
+            effective[seg.id] = effective_label_values(ext, seg.id)
+        except (KeyError, ValueError) as exc:
+            message = exc.args[0] if exc.args else str(exc)
+            problem = f"segment {seg.id!r}: {message}"
+            if problem not in problems:
+                problems.append(problem)
+
+    # Rule 8: no two segments may claim the same effective voxel set
+    by_set: dict[frozenset[tuple[int, int]], list[str]] = {}
+    for sid, values in effective.items():
+        if not values:
+            continue
+        by_set.setdefault(frozenset(values), []).append(sid)
+    for values, ids in by_set.items():
+        if len(ids) > 1:
+            problems.append(
+                f"segments {', '.join(repr(i) for i in sorted(ids))} have identical "
+                f"effective label sets {sorted(values)}"
+            )
+
+    # Rule 6: schemes should be registered (a recommendation — not an error)
+
+    if axes is not None:
+        list_axes = [i for i, ax in enumerate(axes) if ax.kind is not None and ax.kind.value == "list"]
+
+        # Rule 2: layer requires a list axis and must index it
+        for seg in ext.segments:
+            if seg.layer is None:
+                continue
+            if not list_axes:
+                problems.append(
+                    f"segment {seg.id!r} specifies layer {seg.layer} but the array "
+                    "has no 'list' axis"
+                )
+            elif shape is not None:
+                extent = shape[list_axes[0]]
+                if not 0 <= seg.layer < extent:
+                    problems.append(
+                        f"segment {seg.id!r} layer {seg.layer} is out of range for a "
+                        f"'list' axis of size {extent}"
+                    )
+
+        # Rule 4: fractional labelmaps need one layer per segment
+        if ext.source_representation == SourceRepresentation.FRACTIONAL_LABELMAP:
+            if not list_axes:
+                problems.append(
+                    "a fractional labelmap requires a 'list' axis, one layer per segment"
+                )
+            else:
+                layers = [seg.layer for seg in ext.segments]
+                if len(ext.segments) > 1 and len(set(layers)) != len(layers):
+                    problems.append(
+                        "a fractional labelmap requires a distinct layer per segment; "
+                        f"got layers {layers}"
+                    )
+
+    if problems:
+        raise ValueError(
+            "segmentation violates the seg extension consistency rules:\n  - "
+            + "\n  - ".join(problems)
+        )

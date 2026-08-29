@@ -395,6 +395,38 @@ class TestNiftiTags:
         rt_qform = rt_img.get_qform()
         np.testing.assert_allclose(rt_qform[:3, 3], [-99, -99, -49], atol=1e-4)
 
+    def test_edited_geometry_does_not_restore_a_stale_qform(self, tmp_path):
+        """A qform from legacy must not contradict an edited sform."""
+        import zarr
+
+        sform_affine = np.diag([2.0, 2.0, 2.0, 1.0])
+        sform_affine[:3, 3] = [-100, -100, -50]
+        qform_affine = np.diag([2.0, 2.0, 2.0, 1.0])
+        qform_affine[:3, 3] = [-99, -99, -49]
+
+        nii_path = tmp_path / "dual.nii"
+        img = _make_nifti(affine=sform_affine, sform_code=4)
+        img.header.set_qform(qform_affine, code=1)
+        _save_nifti(img, nii_path)
+
+        zarr_path = tmp_path / "dual.zarr"
+        nifti_to_zarr(nii_path, zarr_path)
+
+        # Edit the stored geometry, as an application repositioning the volume would.
+        arr = zarr.open_array(str(zarr_path), mode="r+")
+        duckn = dict(arr.attrs["duckn"])
+        duckn["space_origin"] = [-200.0, -200.0, -100.0]
+        arr.attrs["duckn"] = duckn
+
+        rt_path = tmp_path / "dual_rt.nii"
+        zarr_to_nifti(zarr_path, rt_path)
+
+        rt_img = nib.load(str(rt_path))
+        # The sform reflects the edit, and the qform follows it rather than
+        # reverting to the stale -99 origin held in legacy.
+        np.testing.assert_allclose(rt_img.get_sform()[:3, 3], [-200, -200, -100], atol=1e-4)
+        np.testing.assert_allclose(rt_img.get_qform()[:3, 3], [-200, -200, -100], atol=1e-4)
+
     def test_legacy_matrices_stored(self, tmp_path):
         """Original sform and qform 4x4 matrices stored in legacy.tags."""
         sform_affine = np.diag([2.0, 2.0, 3.0, 1.0])

@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Added
+- `validate_seg_extension(ext, *, shape=None, axes=None)` checks the
+  consistency rules of seg spec §5 — unique ids, background label 0,
+  dangling and circular references, duplicate effective label sets, and
+  (with `axes`) layer/list-axis agreement and the fractional-labelmap
+  layer rule. It reports every violation at once. The spec said writers
+  "should validate acyclicity"; nothing did.
+- `effective_label_values(ext, segment_id)` resolves a segment's effective
+  voxel set as `(layer, label_value)` pairs, following string references
+  recursively. The format could express the hierarchy in spec §7.5, but
+  no code could traverse it.
+
+### Fixed
+- NIfTI export dropped a qform that differed from the sform. `ed3c27c`
+  moved the legacy qform restore behind `restore_transforms` (default
+  off), so the default path overwrote the qform with a copy of the sform.
+  It is restored again — but only when the reconstructed geometry still
+  matches what was imported, so an edited geometry cannot resurrect a
+  stale qform that contradicts its own sform.
+- `.seg.nrrd` tag keys without the `Segmentation.` prefix gained one on
+  write (`Vendor.Reviewer` → `Segmentation.Vendor.Reviewer`).
+- The DICOM SEG import path never populated `terminologies`, unlike the
+  `.seg.nrrd` path; both now register the schemes they reference.
+- `DicomClassification` accepted a `Designation` in a coded-entry slot and
+  silently dropped its `modifier` on serialization; nested modifiers are
+  now rejected, pointing at the separate modifier field.
+
 ### Changed (breaking) — seg extension 0.5 → 0.6
 - Reconciled the segmentation spec and implementation around a single
   identity model: `designations` (array of `{scheme, code, meaning?,

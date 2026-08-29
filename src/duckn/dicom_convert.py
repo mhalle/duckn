@@ -34,6 +34,7 @@ from .models import (
     SegmentationExtension,
     SourceRepresentation,
     SpaceName,
+    TerminologyEntry,
     ValueTransform,
 )
 
@@ -1274,6 +1275,18 @@ def _load_multiframe(
 # SOP Class UID for Segmentation Storage
 _SEG_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.66.4"
 
+# Coding scheme designator → human-readable name, for the terminologies registry.
+_KNOWN_CODING_SCHEMES: dict[str, str] = {
+    "SCT": "SNOMED Clinical Terms",
+    "SRT": "DICOM SR Coding Scheme",
+    "DCM": "DICOM Controlled Terminology",
+    "LN": "LOINC",
+    "UCUM": "Unified Code for Units of Measure",
+    "FMA": "Foundational Model of Anatomy",
+    "NCIt": "NCI Thesaurus",
+    "RADLEX": "RadLex",
+}
+
 
 def _coded_entry_from_sequence(seq: Any) -> CodedEntry | None:
     """Extract a CodedEntry from a DICOM code sequence item."""
@@ -1427,9 +1440,34 @@ def _extract_seg_extension(ds: Any) -> SegmentationExtension | None:
 
         segments.append(Segment(**seg_kwargs))
 
+    # Register the coding systems the segments actually reference, matching
+    # what the .seg.nrrd path does (spec §3.1).
+    schemes: set[str] = set()
+    for seg in segments:
+        for des in seg.designations or []:
+            schemes.add(des.scheme)
+            if des.modifier is not None:
+                schemes.add(des.modifier.scheme)
+        if seg.dicom is not None:
+            for entry in (
+                seg.dicom.category,
+                seg.dicom.type,
+                seg.dicom.type_modifier,
+                seg.dicom.anatomic_region,
+                seg.dicom.anatomic_region_modifier,
+            ):
+                if entry is not None:
+                    schemes.add(entry.scheme)
+
+    terminologies = (
+        {s: TerminologyEntry(name=_KNOWN_CODING_SCHEMES.get(s)) for s in sorted(schemes)}
+        or None
+    )
+
     return SegmentationExtension(
         version=SEG_EXTENSION_VERSION,
         source_representation=source_rep,
+        terminologies=terminologies,
         segments=segments,
     )
 

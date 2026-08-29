@@ -373,6 +373,27 @@ def test_designation_meaning_optional() -> None:
     assert d2.meaning is None
 
 
+def test_dicom_entry_rejects_a_nested_modifier() -> None:
+    """A Designation in a dicom slot would lose its modifier silently."""
+    with pytest.raises(Exception, match="modifier"):
+        SegmentationExtension(
+            version="0.6",
+            segments=[
+                {
+                    "id": "S1",
+                    "label_value": 1,
+                    "dicom": {
+                        "type": {
+                            "scheme": "SCT",
+                            "code": "64033007",
+                            "modifier": {"scheme": "SCT", "code": "24028007"},
+                        }
+                    },
+                }
+            ],
+        )
+
+
 def test_designation_modifier_depth_one() -> None:
     """Modifiers must not carry their own modifiers."""
     inner = {"scheme": "SCT", "code": "24028007", "meaning": "Right"}

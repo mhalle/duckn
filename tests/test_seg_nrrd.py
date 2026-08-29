@@ -602,6 +602,24 @@ def test_non_labelmap_master_representation_is_readable():
     assert ext.source_representation == "closed-surface"
 
 
+def test_tag_key_prefix_is_symmetric():
+    """A tag without the Segmentation. prefix must not gain one."""
+    kv = {
+        "Segment0_ID": "S1",
+        "Segment0_LabelValue": "1",
+        "Segment0_Tags": "Segmentation.Status:done|Vendor.Reviewer:mh|",
+    }
+    ext, _ = parse_seg_keyvalues(kv)
+    tags = _slicer(ext.segments[0])["tags"]
+    assert tags == {"Status": "done", "Vendor.Reviewer": "mh"}
+
+    ext.segments[0].name = "modified"  # force fresh generation, not legacy replay
+    flat = serialize_seg_extension(ext)
+    assert "Segmentation.Status:done" in flat["Segment0_Tags"]
+    assert "Vendor.Reviewer:mh" in flat["Segment0_Tags"]
+    assert "Segmentation.Vendor.Reviewer" not in flat["Segment0_Tags"]
+
+
 def test_legacy_dropped_when_model_modified():
     """If the model is modified, legacy should be ignored and fresh strings generated."""
     kv = {

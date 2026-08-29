@@ -876,6 +876,14 @@ class TestDicomSegExtraction:
         assert seg2.dicom is None  # no coded entries
         assert seg2.designations is None
 
+    def test_terminologies_registry_populated(self):
+        """The DICOM path registers schemes like the .seg.nrrd path does."""
+        ds = _make_seg_dataset()
+        ext = _extract_seg_extension(ds)
+        assert ext.terminologies is not None
+        assert "SCT" in ext.terminologies
+        assert ext.terminologies["SCT"].name == "SNOMED Clinical Terms"
+
     def test_fractional_seg(self):
         ds = _make_seg_dataset()
         ds.SegmentationType = "FRACTIONAL"
