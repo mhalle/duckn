@@ -228,7 +228,7 @@ Sequences may be nested (a sequence item may contain another sequence attribute)
 
 ### 4.5 Binary Data
 
-Binary DICOM attributes (VRs: OB, OW, OF, OD, OL, OV) are stored as base64-encoded strings. Bulk binary data that is represented by the Zarr array itself (pixel data, overlay data) should be excluded from `tags`, but other binary attributes (VOI and palette colour lookup tables, ICC profiles) should be preserved:
+Binary DICOM attributes (VRs: OB, OW, OF, OD, OL, OV) are stored as base64-encoded strings. Bulk binary data that is represented by the Zarr array itself (pixel data, overlay data) should be excluded from `tags`, but other binary attributes (VOI and palette color lookup tables, ICC profiles) should be preserved:
 
 ```json
 "ICCProfile": "AAAAAA..."
@@ -236,7 +236,7 @@ Binary DICOM attributes (VRs: OB, OW, OF, OD, OL, OV) are stored as base64-encod
 
 The VR determines that the value is binary; consumers can look up the VR from the keyword via PS3.6. No special suffix or annotation is needed.
 
-The **Modality** LUT is the exception: `ModalityLUTSequence`, `LUTDescriptor` and `LUTData` are excluded (§9), because that stage is the array's value mapping and `value_transforms` describes it authoritatively. VOI LUTs and palette colour LUTs have no convention counterpart and are preserved here like any other binary attribute.
+The **Modality** LUT is the exception: `ModalityLUTSequence`, `LUTDescriptor` and `LUTData` are excluded (§9), because that stage is the array's value mapping and `value_transforms` describes it authoritatively. VOI LUTs and palette color LUTs have no convention counterpart and are preserved here like any other binary attribute.
 
 ### 4.6 Multi-Valued Attributes
 
@@ -775,7 +775,7 @@ Three reasons, in increasing order of severity.
 
 ### 10.3 What this does not do
 
-Dropping is a null claim: it says nothing about the relationship between a derived array and its source. That is deliberate. Describing that relationship is provenance modelling, which the duckn convention places out of scope and defers to standards built for it (convention §4.6). A rule that asserts nothing cannot conflict with a provenance model adopted later, whereas an inheritance rule would have committed this specification to derivation semantics it does not define.
+Dropping is a null claim: it says nothing about the relationship between a derived array and its source. That is deliberate. Describing that relationship is provenance modeling, which the duckn convention places out of scope and defers to standards built for it (convention §4.6). A rule that asserts nothing cannot conflict with a provenance model adopted later, whereas an inheritance rule would have committed this specification to derivation semantics it does not define.
 
 The consequence is that a derived array carries no record of its origin *by default*. That is a real gap, and an acknowledged one — it is a limitation of this specification, not a claim that the information is unimportant.
 
@@ -803,7 +803,7 @@ Such a writer, or an extension defined for the purpose, may populate this extens
 
 **Why multi-valued attributes are always arrays.** DICOM's VM rules mean that `PixelSpacing` always has exactly 2 values and `ImageOrientationPatient` always has 6. Making these consistently arrays (not sometimes a bare value, sometimes an array) eliminates a class of reader bugs. The rule is simple: if PS3.6 says VM > 1, it's an array.
 
-**Why `WindowCenter`/`WindowWidth` are permitted while `RescaleSlope` is not.** Both are part of DICOM's display pipeline, so excluding one and keeping the other looks inconsistent. The difference is which side of the encoding boundary they sit on. Rescale slope and intercept describe how the *stored values* encode the quantity — something a duckn writer may change, and something `value_transforms` then describes authoritatively. Window centre and width are expressed in the *quantity* itself: a window of 40/400 is in Hounsfield units, and it stays exactly as valid however the array is subsequently encoded. It never goes stale, so it never needs editing, which is the test this specification applies (§10).
+**Why `WindowCenter`/`WindowWidth` are permitted while `RescaleSlope` is not.** Both are part of DICOM's display pipeline, so excluding one and keeping the other looks inconsistent. The difference is which side of the encoding boundary they sit on. Rescale slope and intercept describe how the *stored values* encode the quantity — something a duckn writer may change, and something `value_transforms` then describes authoritatively. Window center and width are expressed in the *quantity* itself: a window of 40/400 is in Hounsfield units, and it stays exactly as valid however the array is subsequently encoded. It never goes stale, so it never needs editing, which is the test this specification applies (§10).
 
 That it is a display hint — which the duckn convention excludes by design — is not a problem here, because this extension records what the source said rather than constraining how the array is rendered.
 

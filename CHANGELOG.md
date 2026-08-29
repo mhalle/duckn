@@ -66,7 +66,7 @@
   re-encode (explicit, invertible transforms only).
 - §4.4 records that non-affine transforms do not commute with
   interpolation, so a `lut` must be applied before resampling, while
-  nearest-neighbour is exempt because it selects rather than averages.
+  nearest-neighbor is exempt because it selects rather than averages.
 - §4.5/§4.6 define derived arrays and place provenance out of scope:
   inherited metadata is dropped on derivation because inheritance has no
   defined semantics, and dropping asserts nothing that a future provenance
@@ -87,7 +87,7 @@
   valid only for affine transforms; interpolating table *indices* and then
   looking them up is unrelated to interpolating the looked-up values. Such
   arrays are now materialized before resampling and the spent transforms
-  dropped. Nearest-neighbour keeps the previous behavior, since it
+  dropped. Nearest-neighbor keeps the previous behavior, since it
   commutes with any transform.
 
 ### Added — duckn convention 1.1: `lut` value transform

@@ -2,7 +2,7 @@
 
 This module had no coverage, which is how a transposition bug survived in
 it: `io.read` and `io.write` were both wrong about NRRD axis order in
-mutually cancelling ways, so an io-to-io round trip looked perfect. Several
+mutually canceling ways, so an io-to-io round trip looked perfect. Several
 tests here deliberately check against an *independent* reader for that
 reason.
 """

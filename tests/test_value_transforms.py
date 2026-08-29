@@ -205,7 +205,7 @@ class TestResampleCommutation:
         pytest.importorskip("scipy")
         from duckn.resample import resample
 
-        # A steep, non-monotonic table: neighbouring indices differ wildly.
+        # A steep, non-monotonic table: neighboring indices differ wildly.
         lut = {"name": "lut", "parameters": {"first_value": 0, "values": [0.0, 1000.0, 0.0, 1000.0]}}
         out = resample(self._vol([lut]), factor=[1.0, 1.0, 2.0], order=1)
         values = out.data.ravel()
@@ -227,8 +227,8 @@ class TestResampleCommutation:
         assert out.metadata.value_transforms is None
         assert out.metadata.sample_units == "HU"  # the quantity is unchanged
 
-    def test_nearest_neighbour_preserves_the_lut(self):
-        """Nearest-neighbour selects rather than averages, so it commutes."""
+    def test_nearest_neighbor_preserves_the_lut(self):
+        """Nearest-neighbor selects rather than averages, so it commutes."""
         pytest.importorskip("scipy")
         from duckn.resample import resample
 

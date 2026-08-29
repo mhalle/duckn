@@ -173,7 +173,7 @@ def resample(
     # A non-affine transform (lut) does not commute: the table applied to an
     # interpolated stored value is not the interpolation of the looked-up
     # values (spec §4.4). It must be applied first, which materializes the
-    # result. Nearest-neighbour is exempt — it selects an existing sample
+    # result. Nearest-neighbor is exempt — it selects an existing sample
     # rather than averaging, so it commutes with any transform.
     from .zarr_io import has_nonlinear_transforms
 
