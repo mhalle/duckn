@@ -455,7 +455,83 @@ A reader that does not understand the `"dwmri"` extension still knows the axis i
 
 ---
 
-## 4. Consistency Rules
+## 4. Value Interpretation
+
+This section defines what stored values mean, what a reader owes a caller, and what a writer must guarantee. It applies to every transform in `value_transforms`, but several rules bite only for non-affine transforms such as `lut`, and those are called out where they differ.
+
+### 4.1 Encoding and Quantity
+
+An array holds one physical quantity — Hounsfield units, millimetres, a probability. `sample_units` names that quantity. `value_transforms` describes only how the quantity is *encoded* in the stored values.
+
+These are independent. `uint16` plus a linear transform and `float32` with no transform are two encodings of the same quantity; neither is more correct, and both carry the same `sample_units`. A change of encoding never changes `sample_units`, and a change of quantity is not an encoding change at all.
+
+From this follows the invariant every writer must hold:
+
+> **The stored values, interpreted through `value_transforms`, must equal the intended quantity.**
+
+Metadata that disagrees with the bytes it describes is worse than metadata that is missing, because it is confidently wrong. Everything below is a consequence of keeping the two in step.
+
+### 4.2 Reading
+
+A reader that applies `value_transforms` is offering the quantity; a reader that does not is offering the encoding. Both are legitimate, and an implementation should make the distinction explicit rather than leaving it to be inferred — for example, distinct accessors for stored and calibrated values, with the calibrated one the default.
+
+Whichever it offers, a reader **must not present partially transformed values as calibrated**. If any transform in the chain cannot be applied — an unrecognized `name`, a malformed parameter set — the value mapping is undefined (§3.1 `value_transforms`), and returning the partially transformed array under the same contract as a fully transformed one misreports the data. A reader in that position should fail on the calibrated path and continue to offer the stored values, which remain well defined.
+
+This matters more as the transform vocabulary grows: a reader implementing version 1.1 will eventually meet a file written against 1.2.
+
+### 4.3 Writing
+
+Writing is choosing an encoding for a known quantity. Three policies are well defined:
+
+| Policy | Stored values | `value_transforms` | Applicable when |
+|---|---|---|---|
+| **Preserve** | the original stored values | carried forward unchanged | the quantity is unmodified |
+| **Materialize** | the calibrated values | **dropped** | the quantity has been modified, or a self-describing array is wanted |
+| **Re-encode** | newly quantized values | newly derived to match | the quantity is unmodified and a specific storage type is wanted |
+
+**Preserve** is the recommended default. It is the only policy that is reversible: a preserved array can be materialized later, but the original stored values cannot be recovered from a materialized one. It is also the most compact and retains the exact values the instrument produced.
+
+**Materialize** must drop `value_transforms` entirely. Writing calibrated values while retaining the transforms that produced them is the central hazard of this section: on the next read the chain is applied a second time, silently, and the result is plausible enough to go unnoticed. `sample_units` is unaffected and must be kept — the quantity did not change, only its encoding.
+
+**Re-encode** must derive transforms that satisfy the invariant in §4.1 for the new storage type, and is available only for transform families that can be inverted. It is a deliberate act and should never be applied implicitly.
+
+An implementation should not require a caller to keep the array and its metadata in agreement by hand. An interface that accepts stored values and metadata as unrelated arguments permits exactly the mismatch this section forbids; one that writes a value carrying its own encoding does not.
+
+### 4.4 Non-Affine Transforms Do Not Commute With Resampling
+
+For an affine transform, applying the transform and interpolating commute: interpolation is a weighted average whose weights sum to one, so scaling before or after gives the same result. Stored values may therefore be resampled directly and the transform carried forward unchanged.
+
+**This does not hold for `lut`, or for any other non-affine transform.** A lookup table applied to an interpolated stored value is not the interpolation of the looked-up values, and the difference is not small — interpolating between two stored values whose table entries are far apart produces a result unrelated to either. A non-affine transform must therefore be **applied before resampling**, which means resampling an array with a `lut` produces a materialized result (§4.3), never a preserved one.
+
+Nearest-neighbour resampling is exempt: it selects an existing sample rather than averaging, so it commutes with *any* transform, affine or not. An array carrying a `lut` may be resampled with nearest-neighbour interpolation and remain preserved — which matters, since label maps and other categorical data are exactly the arrays most likely to carry a table and to be resampled this way.
+
+Two related cautions. Commutation for affine transforms holds for *interpolation* specifically, not for arbitrary linear filters: a filter whose weights do not sum to one — a gradient or difference operator — does not carry the intercept correctly, and such operators should also be applied to calibrated values. And a `lut` may be many-to-one or non-monotonic, so it has no general inverse: for arrays carrying one, the **re-encode** policy is unavailable and the choice is preserve-unmodified or materialize.
+
+### 4.5 Derived Arrays
+
+An array is **derived** when it is not a faithful re-encoding of its source: its values or its sampling grid differ. Rechunking, recompression, and re-encoding under §4.3 leave an array underived; resampling, cropping, filtering, registration, arithmetic, and segmentation all produce derived arrays.
+
+**Metadata inherited from a source does not survive derivation.** Fields that describe *this* array — `axes`, `space`, `sample_units`, and the `value_transforms` that match the values actually written — are computed for the derived array and remain authoritative. Anything carried over because the source happened to have it, including format-specific provenance held in extensions, must be dropped rather than propagated.
+
+The reason is that inheritance has no defined semantics. There is no general rule for which of a source's attributes survive an arbitrary operation: some are unaffected, some are invalidated, some are ambiguous, and an array derived from several sources may inherit contradictory values with no principled way to choose. A convention that cannot say what inherited metadata means after an operation should not carry it.
+
+Dropping asserts nothing, which is what makes it safe. Retaining would require this convention to define derivation semantics, and it does not — see §4.6.
+
+### 4.6 Scope: Provenance Is Out of Scope
+
+This convention describes a single array: what its values mean, how its axes are structured, and how it is embedded in space. It does not describe **relationships between arrays** — what an array was derived from, what process produced it, or what inputs a result depended on.
+
+That is the domain of provenance standards, several of which are mature and array-agnostic: W3C PROV, RO-Crate, BIDS derivatives, NIDM, and, within its own scope, DICOM's derivation model. Duplicating them here would produce a weaker parallel vocabulary bound to one file format.
+
+Recording derivation properly is nonetheless a real and unmet need for imaging data, and one that affects fidelity: a consumer of a derived array generally cannot tell what was done to it, and the operation may bear directly on whether the values support the measurement being made of them. This convention does not solve that. It is left as known future work, to be taken up deliberately — and preferably in concert with the efforts above rather than in isolation.
+
+The conservative rule in §4.5 is chosen so that this deferral costs nothing. Dropping inherited metadata makes no claim about the relationship between a derived array and its source, so it cannot conflict with any provenance model layered on later. Retaining would have forced this convention to define that relationship in order to say what the retained metadata meant.
+
+An extension, or a writer with specific knowledge of both formats involved, may record such relationships. This convention neither provides nor prohibits that.
+
+---
+
+## 5. Consistency Rules
 
 - If `space` is present, it implies a space dimension. All `space_direction` vectors, the `space_origin` vector, `measurement_frame` rows (and columns), and any `space_dimension` (if present instead of `space`) must have this number of components.
 - The length of `axes` must equal the number of dimensions (`len(shape)`).
@@ -466,7 +542,7 @@ A reader that does not understand the `"dwmri"` extension still knows the axis i
 
 ---
 
-## 5. Fields Deliberately Excluded
+## 6. Fields Deliberately Excluded
 
 The following NRRD fields are **not** part of this convention, with rationale:
 
@@ -489,9 +565,9 @@ The following NRRD fields are **not** part of this convention, with rationale:
 
 ---
 
-## 6. Examples
+## 7. Examples
 
-### 6.1 Scalar MRI Volume
+### 7.1 Scalar MRI Volume
 
 A 256×256×128 16-bit MRI volume in RAS space, 1mm × 1mm × 2mm voxels:
 
@@ -541,7 +617,7 @@ A 256×256×128 16-bit MRI volume in RAS space, 1mm × 1mm × 2mm voxels:
 }
 ```
 
-### 6.2 CT Volume with Value Transform
+### 7.2 CT Volume with Value Transform
 
 A CT volume stored as unsigned 16-bit integers, with Hounsfield unit rescaling:
 
@@ -596,7 +672,7 @@ A CT volume stored as unsigned 16-bit integers, with Hounsfield unit rescaling:
 }
 ```
 
-### 6.3 Diffusion Tensor Volume
+### 7.3 Diffusion Tensor Volume
 
 A 128×128×60 volume of 3D symmetric diffusion tensors:
 
@@ -653,7 +729,7 @@ A 128×128×60 volume of 3D symmetric diffusion tensors:
 }
 ```
 
-### 6.4 Diffusion-Weighted Image Series (Extensions)
+### 7.4 Diffusion-Weighted Image Series (Extensions)
 
 A 128×128×60 DWI volume with 13 gradient directions, demonstrating per-axis and top-level extensions:
 
@@ -735,7 +811,7 @@ A 128×128×60 DWI volume with 13 gradient directions, demonstrating per-axis an
 
 The `"dwmri"` extension is per-axis: it describes what each position along the diffusion axis represents. The gradient vectors are expressed in the coordinate frame defined by the top-level `measurement_frame`. A reader that doesn't understand the `"dwmri"` extension still sees a 4D array with three spatial axes and a `"list"` axis.
 
-### 6.5 RGBA Image
+### 7.5 RGBA Image
 
 A 640×480 RGBA image with color components contiguous in memory (C order, last dimension fastest):
 
@@ -766,7 +842,7 @@ A 640×480 RGBA image with color components contiguous in memory (C order, last 
 }
 ```
 
-### 6.6 CT with DICOM Provenance
+### 7.6 CT with DICOM Provenance
 
 An anonymized CT scan that preserves acquisition metadata via a `dicom` extension. The extension uses a `tags` object to namespace DICOM keywords (PS3.6) separately from extension-level fields. Fields set to `null` indicate values that existed in the source but were redacted during anonymization.
 
@@ -846,7 +922,7 @@ An anonymized CT scan that preserves acquisition metadata via a `dicom` extensio
 
 The `dicom` extension separates its own metadata (`version`, `schema`, `anonymized`) from DICOM's vocabulary (everything inside `tags`). DICOM keywords use PascalCase as defined in PS3.6. Numeric values are stored as JSON numbers rather than DICOM's string encoding — the goal is usability, not round-trip VR fidelity. Spatial fields like `SliceThickness` and `PixelSpacing` overlap with the `duckn` axes; the extension carries the DICOM-native values for provenance, while the axes are authoritative for processing.
 
-### 6.7 Minimal
+### 7.7 Minimal
 
 A Zarr array with only a kind annotation and nothing else:
 
@@ -865,7 +941,7 @@ This is a valid use of the convention. It says "these are spatial axes" and noth
 
 ---
 
-## 7. Notes
+## 8. Notes
 
 - **Axis ordering** follows Zarr convention. `axes[i]` describes `shape[i]` and `dimension_names[i]` — nothing more. This convention does not assign any memory-layout semantics to dimension order. NRRD defines axes fastest-to-slowest; this convention does not. In Zarr, the relationship between logical dimension order and in-memory byte layout is determined by the codec pipeline (e.g., the default bytes codec uses C order where the last dimension varies fastest; the transpose codec can change this). The convention describes logical dimensions; storage layout is Zarr's concern.
 

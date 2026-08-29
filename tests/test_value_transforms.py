@@ -151,6 +151,76 @@ class TestDucknArray:
             np.testing.assert_array_equal(arr[...], [[0.0, 100.0, 200.0, 300.0]])
 
 
+class TestResampleCommutation:
+    """Non-affine transforms do not commute with interpolation (spec §4.4)."""
+
+    def _vol(self, transforms):
+        from duckn.models import AxisMetadata
+
+        meta = DucknMetadata(
+            version="1.1",
+            space="right-anterior-superior",
+            space_origin=[0.0, 0.0, 0.0],
+            sample_units="HU",
+            value_transforms=transforms,
+            axes=[
+                AxisMetadata(kind="space", space_direction=[1.0, 0, 0]),
+                AxisMetadata(kind="space", space_direction=[0, 1.0, 0]),
+                AxisMetadata(kind="space", space_direction=[0, 0, 1.0]),
+            ],
+        )
+        raw = np.array([[[0, 1, 2, 3]]], dtype=np.uint16)
+        return Volume(raw=raw, metadata=meta)
+
+    def test_lut_is_applied_before_interpolation(self):
+        """Interpolating stored indices then looking up gives a wrong answer."""
+        pytest.importorskip("scipy")
+        from duckn.resample import resample
+
+        # A steep, non-monotonic table: neighbouring indices differ wildly.
+        lut = {"name": "lut", "parameters": {"first_value": 0, "values": [0.0, 1000.0, 0.0, 1000.0]}}
+        out = resample(self._vol([lut]), factor=[1.0, 1.0, 2.0], order=1)
+        values = out.data.ravel()
+
+        # Correct: interpolation between the calibrated 0 and 1000.
+        assert values[0] == pytest.approx(0.0)
+        assert 0.0 < values[1] < 1000.0
+        # Wrong would be table[round(interp(index))], which yields exact
+        # table entries only — no intermediate values anywhere.
+        assert not np.all(np.isin(np.round(values, 6), [0.0, 1000.0]))
+
+    def test_lut_resample_materializes_and_drops_transforms(self):
+        """Keeping them would apply the table twice on the next read (§4.3)."""
+        pytest.importorskip("scipy")
+        from duckn.resample import resample
+
+        lut = {"name": "lut", "parameters": {"first_value": 0, "values": [0.0, 10.0, 20.0, 30.0]}}
+        out = resample(self._vol([lut]), factor=[1.0, 1.0, 2.0], order=1)
+        assert out.metadata.value_transforms is None
+        assert out.metadata.sample_units == "HU"  # the quantity is unchanged
+
+    def test_nearest_neighbour_preserves_the_lut(self):
+        """Nearest-neighbour selects rather than averages, so it commutes."""
+        pytest.importorskip("scipy")
+        from duckn.resample import resample
+
+        lut = {"name": "lut", "parameters": {"first_value": 0, "values": [0.0, 10.0, 20.0, 30.0]}}
+        out = resample(self._vol([lut]), factor=[1.0, 1.0, 2.0], order=0)
+        assert out.metadata.value_transforms is not None
+        assert out.raw.dtype == np.uint16
+        assert set(np.unique(out.raw)).issubset({0, 1, 2, 3})
+
+    def test_linear_transform_still_resamples_on_raw(self):
+        """Affine transforms commute, so the preserve path is unchanged."""
+        pytest.importorskip("scipy")
+        from duckn.resample import resample
+
+        linear = {"name": "linear", "parameters": {"slope": 2.0, "intercept": -10.0}}
+        out = resample(self._vol([linear]), factor=[1.0, 1.0, 2.0], order=1)
+        assert out.metadata.value_transforms is not None
+        assert out.metadata.value_transforms[0].name == "linear"
+
+
 class TestDicomModalityLut:
     def test_explicit_modality_lut_becomes_a_lut_transform(self):
         pytest.importorskip("pydicom")

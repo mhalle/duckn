@@ -159,11 +159,24 @@ def resample(
 
     ndimage = _require_scipy_ndimage()
 
-    # Resample on raw stored values. Linear value_transforms commute with
-    # linear interpolation, so the result is equivalent to resampling
-    # calibrated values, while preserving the source dtype and the
-    # metadata's value_transforms for the result.
-    data = vol.raw.astype(float) if order > 0 else vol.raw
+    # Resample on raw stored values. Affine value_transforms commute with
+    # interpolation, so the result is equivalent to resampling calibrated
+    # values, while preserving the source dtype and the metadata's
+    # value_transforms for the result.
+    #
+    # A non-affine transform (lut) does not commute: the table applied to an
+    # interpolated stored value is not the interpolation of the looked-up
+    # values (spec §4.4). It must be applied first, which materializes the
+    # result. Nearest-neighbour is exempt — it selects an existing sample
+    # rather than averaging, so it commutes with any transform.
+    from .zarr_io import has_nonlinear_transforms
+
+    materialize = order > 0 and has_nonlinear_transforms(vol.metadata.value_transforms)
+
+    if materialize:
+        data = vol.data.astype(float)
+    else:
+        data = vol.raw.astype(float) if order > 0 else vol.raw
     spatial_indices = [
         i for i, ax in enumerate(vol.metadata.axes)
         if ax.space_direction is not None
@@ -192,6 +205,12 @@ def resample(
 
     # Update metadata — scale space_direction, thickness, clear samples
     new_meta = deepcopy(vol.metadata)
+
+    # The values written are now the calibrated ones, so the transforms that
+    # produced them must not be carried forward (spec §4.3): keeping them
+    # would apply the chain a second time on the next read.
+    if materialize:
+        new_meta.value_transforms = None
     spatial_idx = 0
     for i, ax in enumerate(new_meta.axes):
         if ax.space_direction is not None:

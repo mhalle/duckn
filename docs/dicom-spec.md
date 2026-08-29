@@ -20,6 +20,10 @@ The design follows two principles:
 
 This is a provenance and metadata carrier, not a DICOM encoding. It does not attempt to represent every DICOM IOD or encode the full DICOM information model. It preserves the header fields a researcher or pipeline needs to understand where the data came from, how it was acquired, and what parameters were used — without requiring a DICOM toolkit to read it.
 
+It is also **not a description of the array it is attached to**. Everything here describes a *source DICOM object*. The array's own properties — its shape, dtype, geometry, units, and value encoding — are given by Zarr and by the duckn convention fields, and those are authoritative wherever the two appear to overlap (§2).
+
+That distinction decides what belongs here and what happens to it when the array changes; see §10.
+
 ---
 
 ## 2. Relationship to duckn Convention Fields
@@ -112,9 +116,11 @@ Omit when unknown or not meaningful. This records how the *source* encoded its b
 "lossy_compressed": true
 ```
 
-This is deliberately sticky, following DICOM's own rule for `LossyImageCompression` (PS3.3 C.7.6.1.1.5): once an image has been lossy compressed, the fact survives decompression, re-encoding, and conversion into other formats — including this one. A writer converting a lossy source must set it, and a writer converting a duckn array back to DICOM must carry it into `LossyImageCompression`.
+This follows DICOM's own rule for `LossyImageCompression` (PS3.3 C.7.6.1.1.5): the fact survives decompression and re-encoding, because it describes the values rather than the container. A writer converting a lossy source must set it, a re-encoding writer must carry it forward, and a writer converting a duckn array back to DICOM must carry it into `LossyImageCompression`.
 
-It is a first-class field rather than a tag because it qualifies the data itself, not the file it came from. Anyone measuring from the array needs it, and should not have to search a tag dictionary — or resolve a Transfer Syntax UID against a table of which syntaxes are lossy — to find it.
+It is a first-class field rather than a tag because a consumer should not have to search a tag dictionary — or resolve a Transfer Syntax UID against a table of which syntaxes are lossy — to learn that the values are degraded.
+
+Note that this stickiness does not extend across *derivation*. Like the rest of this extension, the field describes a source DICOM object, and a derived array drops it along with everything else (§10). Lossy compression is one of many operations that can degrade values — interpolation, filtering, quantization, and model inference among them — and singling it out for inheritance would privilege it for no better reason than that DICOM happens to have standardized a flag for it.
 
 Omit when unknown. Absent means "not known to be lossy", not "known to be lossless"; `false` asserts the stronger claim and should only be written when the source said so.
 
@@ -374,20 +380,18 @@ These are the most commonly anonymized fields. When anonymized, include them wit
 | `InstanceCreationDate` | DA | Instance creation date |
 | `InstanceCreationTime` | TM | Instance creation time |
 
-### 5.10 Image Pixel and Encoding
+### 5.10 Image Quality
 
 | Keyword | VR | Description |
 |---|---|---|
-| `PhotometricInterpretation` | CS | Photometric interpretation **of the source encoding** — see the caveat below |
-| `BitsStored` | US | Significant bits per sample; may be narrower than the Zarr dtype |
-| `HighBit` | US | Position of the high bit |
-| `LossyImageCompression` | CS | `"01"` if ever lossy compressed. Also surfaced as the `lossy_compressed` field (§3) |
 | `LossyImageCompressionRatio` | DS | Approximate compression ratio |
 | `LossyImageCompressionMethod` | CS | Compression method (e.g. `"ISO_10918_1"`) |
 
-**Caveat — tags that describe the encoded form.** Several pixel attributes describe how the source *encoded* its pixels, and stop being true once those pixels are decoded into a Zarr array. `PhotometricInterpretation` is the sharp case: JPEG-compressed color is commonly stored as `YBR_FULL_422`, but a decoder hands back RGB, so copying the tag verbatim would describe the array incorrectly. `PlanarConfiguration` is the same class, and is meaningless once the color axis is explicit in the array's `axes`.
+`LossyImageCompression` itself is surfaced as the extension-level `lossy_compressed` field (§3.1) rather than as a tag.
 
-Writers should either omit such tags or normalize them to describe the decoded array. `Rows`, `Columns`, `BitsAllocated`, and `PixelRepresentation` are already excluded for this reason — the Zarr shape and dtype are authoritative.
+**Pixel encoding attributes are not recommended tags.** Attributes describing how the source encoded its pixels — `PhotometricInterpretation`, `PlanarConfiguration`, `BitsStored`, `HighBit`, `SamplesPerPixel`, `RescaleSlope`/`RescaleIntercept`, `ModalityLUTSequence` — describe the *source encoding*, not the array they would be attached to, and the duckn convention already describes the array's encoding authoritatively (§2). Carrying them yields metadata that is redundant at best and false at worst: `PhotometricInterpretation` is the sharp case, since JPEG-compressed color is commonly stored as `YBR_FULL_422` while a decoder hands back RGB.
+
+They are listed in §9 and discussed in §10.
 
 ---
 
@@ -556,10 +560,6 @@ An anonymized chest CT with full acquisition metadata:
             "ReconstructionDiameter": 360.0,
             "GantryDetectorTilt": 0.0,
 
-            "RescaleSlope": 1.0,
-            "RescaleIntercept": -1024.0,
-            "RescaleType": "HU",
-
             "PatientName": null,
             "PatientID": null,
             "PatientBirthDate": null,
@@ -579,7 +579,7 @@ An anonymized chest CT with full acquisition metadata:
 }
 ```
 
-Note that `SliceThickness`, `PixelSpacing`, `RescaleSlope`, `RescaleIntercept`, and `RescaleType` overlap with convention fields. They are preserved in `tags` for provenance; the convention fields are authoritative.
+Note that `SliceThickness` and `PixelSpacing` overlap with convention fields. They are preserved in `tags` for provenance; the convention fields are authoritative. The value-mapping attributes (`RescaleSlope`, `RescaleIntercept`, `RescaleType`) are *not* preserved — they describe the source's pixel encoding, which a duckn writer may legitimately change, so `value_transforms` and `sample_units` are the only record of how this array's values are encoded (§9).
 
 ### 8.2 MR Brain
 
@@ -732,14 +732,59 @@ A CT volume that includes coded anatomy using DICOM's standard sequence pattern:
 | Image Orientation (Patient) | Losslessly captured by `axes[i].space_direction` |
 | Rows, Columns, Number of Frames | Losslessly captured by Zarr `shape` |
 | Bits Allocated, Bits Stored, High Bit, Pixel Representation | Losslessly captured by Zarr `data_type` |
+| Photometric Interpretation, Planar Configuration, Samples per Pixel | Describe the source pixel encoding; the array's layout is given by `shape`, `data_type`, and the `axes` color `kind` |
+| Rescale Slope, Rescale Intercept, Rescale Type | Captured by `value_transforms` and `sample_units`, which are authoritative for the array as written |
+| Modality LUT Sequence, LUT Descriptor, LUT Data | Captured by the `lut` value transform |
 | Overlay Data | Separate array if needed |
 | Waveform Data | Out of scope (not imaging) |
 | Private tags (by default) | Include only if specifically needed, using hex keys |
 | Group Length tags | Encoding artifact, per PS3.18 |
 
+The value-mapping attributes are excluded for a stronger reason than redundancy. A duckn writer may legitimately change the array's encoding — materializing calibrated values, or re-encoding to a different storage type (duckn convention §4.3). The source's `RescaleSlope` then describes an encoding the array no longer uses, while `value_transforms` describes the one it does. Keeping both would require editing the DICOM copy to track the array, at which point it has stopped being a record of the source.
+
 ---
 
-## 10. Design Notes
+## 10. Source Data and Derived Arrays
+
+Everything in this extension describes a **source DICOM object**. That is what makes it provenance, and it is also what bounds its validity.
+
+### 10.1 The extension describes the source, not the array
+
+A duckn array converted from DICOM is not the DICOM object; it is a re-encoding of that object's pixels together with a description of where they came from. So long as the array remains a faithful re-encoding — the same quantity on the same sampling grid — the extension is a true statement about its origin, and the convention fields are a true statement about the array itself. The two do not compete, because they describe different things (§2).
+
+Consequently, a reader must never consult this extension to interpret the array's values, geometry, or layout. Where an attribute appears to say something about those, the convention fields are authoritative and the tag is history.
+
+### 10.2 Derived arrays
+
+An array is **derived** when it is no longer a faithful re-encoding of its source: its values or its sampling grid differ (duckn convention §4.5). Resampling, cropping, filtering, registration, intensity normalization, and segmentation all produce derived arrays.
+
+**The default for a derived array is to drop this extension entirely** — `tags`, `legacy`, and the extension-level fields alike. Not to edit it, not to filter it, not to carry a subset forward.
+
+Three reasons, in increasing order of severity.
+
+*Inheritance has no defined semantics.* There is no general rule for which of a source's attributes survive an arbitrary operation. Some are unaffected by resampling, some are invalidated, and many are ambiguous. An array derived from several sources — a registration, a fusion, a segmentation informed by multiple series — may inherit contradictory values with no principled basis for choosing. A writer that cannot say what an inherited attribute means after the operation should not carry it.
+
+*Attributes describe an acquisition the derived array is not.* A segmentation is a label map. It was not acquired at 120 kVp with a soft-tissue reconstruction kernel; it was computed. Attaching the parent's acquisition parameters to it does not preserve provenance — it makes the derived array misdescribe itself.
+
+*UIDs are identity claims, not descriptions.* `SOPInstanceUID` and `SeriesInstanceUID` assert that this *is* a particular object. Carrying them onto an array with different pixels either duplicates an identifier that must be unique — corrupting any archive that indexes on it — or forces the writer to mint replacements, which is the editing this rule exists to avoid.
+
+### 10.3 What this does not do
+
+Dropping is a null claim: it says nothing about the relationship between a derived array and its source. That is deliberate. Describing that relationship is provenance modelling, which the duckn convention places out of scope and defers to standards built for it (convention §4.6). A rule that asserts nothing cannot conflict with a provenance model adopted later, whereas an inheritance rule would have committed this specification to derivation semantics it does not define.
+
+The consequence is that a derived array carries no record of its origin *by default*. That is a real gap, and an acknowledged one — it is a limitation of this specification, not a claim that the information is unimportant.
+
+### 10.4 Producing DICOM from a derived array
+
+Nothing here prevents a derived array from carrying DICOM metadata; it prevents metadata from arriving there **by inheritance**.
+
+Writing a conformant DICOM object from a derived array is a deliberate construction, not a metadata copy. It requires minting new instance and series identifiers, marking the result as derived, referencing the source instances through the mechanisms DICOM defines for the purpose, and carrying forward exactly those modules the target SOP class requires — Patient and Study for a Segmentation, for instance, but not the source's acquisition modules. That is knowledge specific to the two formats and the operation performed, and it belongs in a writer built for the job, with access to the source rather than to a stale copy of its header.
+
+Such a writer, or an extension defined for the purpose, may populate this extension on a derived array. This specification neither provides that nor forbids it.
+
+---
+
+## 11. Design Notes
 
 **Why keywords instead of hex codes.** The standard DICOM JSON Model (PS3.18 Annex F) uses hex tag codes (`"00080060"`) as keys. This is correct for a lossless DICOM encoding, but hostile to developers who don't have a tag dictionary memorized. Keywords like `Modality` and `PatientID` are self-documenting. Since this extension is for provenance — not round-trip binary DICOM encoding — readability wins.
 
@@ -753,7 +798,9 @@ A CT volume that includes coded anatomy using DICOM's standard sequence pattern:
 
 **Why multi-valued attributes are always arrays.** DICOM's VM rules mean that `PixelSpacing` always has exactly 2 values and `ImageOrientationPatient` always has 6. Making these consistently arrays (not sometimes a bare value, sometimes an array) eliminates a class of reader bugs. The rule is simple: if PS3.6 says VM > 1, it's an array.
 
-**Why display fields like `WindowCenter`/`WindowWidth` are permitted.** The duckn convention excludes display hints by design, but this extension's purpose is provenance. Window/level values from the source DICOM are useful context for understanding how the data was intended to be viewed, even if they don't constrain the Zarr rendering pipeline.
+**Why `WindowCenter`/`WindowWidth` are permitted while `RescaleSlope` is not.** Both are part of DICOM's display pipeline, so excluding one and keeping the other looks inconsistent. The difference is which side of the encoding boundary they sit on. Rescale slope and intercept describe how the *stored values* encode the quantity — something a duckn writer may change, and something `value_transforms` then describes authoritatively. Window centre and width are expressed in the *quantity* itself: a window of 40/400 is in Hounsfield units, and it stays exactly as valid however the array is subsequently encoded. It never goes stale, so it never needs editing, which is the test this specification applies (§10).
+
+That it is a display hint — which the duckn convention excludes by design — is not a problem here, because this extension records what the source said rather than constraining how the array is rendered.
 
 **Relationship to the seg extension's `dicom` field.** The segmentation extension has its own `dicom` object within each segment for the DICOM Segmentation IOD classification (category, type, anatomic region). That is segment-level DICOM metadata. This extension is array-level DICOM metadata — acquisition parameters, patient context, series identification. They coexist without conflict: the seg extension's `dicom` lives inside segment objects; this extension's `dicom` lives at the top level of `"extensions"`.
 

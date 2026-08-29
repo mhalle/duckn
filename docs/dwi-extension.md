@@ -23,7 +23,7 @@ The purpose of a DWI file format is to record all the information necessary to u
 
 ### What this extension does not cover
 
-Diffusion *tensor* volumes — where the voxel values are the six independent components of the estimated symmetric tensor — do not use this extension. Those are fully described by the specification's `kind: "3D-symmetric-matrix"` axis, `measurement_frame`, `sample_units: "mm²/s"`, and `intent: "diffusion-tensor"`. See specification §6.3 for an example.
+Diffusion *tensor* volumes — where the voxel values are the six independent components of the estimated symmetric tensor — do not use this extension. Those are fully described by the specification's `kind: "3D-symmetric-matrix"` axis, `measurement_frame`, `sample_units: "mm²/s"`, and `intent: "diffusion-tensor"`. See specification §7.3 for an example.
 
 This extension is for the *raw acquisition*: the 4D volume of signal intensities measured under different diffusion-sensitizing gradient configurations, from which tensors or other models are subsequently estimated.
 

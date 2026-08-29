@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Added — value interpretation and derived-data rules (spec)
+- duckn convention §4 "Value Interpretation" defines the model the code has
+  been converging on: `sample_units` names the *quantity*, `value_transforms`
+  describes only its *encoding*, and the writer invariant is that stored
+  values interpreted through the transforms must equal the intended
+  quantity. Readers must not present a partially applied chain as
+  calibrated. Writers get three defined policies — preserve (default,
+  the only reversible one), materialize (drops the transforms), and
+  re-encode (explicit, invertible transforms only).
+- §4.4 records that non-affine transforms do not commute with
+  interpolation, so a `lut` must be applied before resampling, while
+  nearest-neighbour is exempt because it selects rather than averages.
+- §4.5/§4.6 define derived arrays and place provenance out of scope:
+  inherited metadata is dropped on derivation because inheritance has no
+  defined semantics, and dropping asserts nothing that a future provenance
+  model could contradict.
+- dicom-spec §10 applies this: the extension describes a *source DICOM
+  object*, never the array it is attached to, and a derived array drops it
+  entirely rather than editing or filtering it. Producing DICOM from a
+  derived array is a job for a dedicated writer, not metadata inheritance.
+- Pixel-encoding attributes (`RescaleSlope`/`RescaleIntercept`/`RescaleType`,
+  `ModalityLUTSequence`, `PhotometricInterpretation`, `PlanarConfiguration`,
+  `BitsStored`, `HighBit`, `SamplesPerPixel`) are excluded from `tags`:
+  a duckn writer may change the array's encoding, at which point the DICOM
+  copies describe an encoding the array no longer uses.
+
+### Fixed
+- `resample()` produced incorrect values for arrays carrying a `lut`. It
+  resampled raw stored values and carried the transforms forward, which is
+  valid only for affine transforms; interpolating table *indices* and then
+  looking them up is unrelated to interpolating the looked-up values. Such
+  arrays are now materialized before resampling and the spent transforms
+  dropped. Nearest-neighbour keeps the previous behavior, since it
+  commutes with any transform.
+
 ### Added — duckn convention 1.1: `lut` value transform
 - `value_transforms` gains a `lut` type: an explicit stored → real lookup
   table, for value mappings that are not affine. `values[i]` is the real
