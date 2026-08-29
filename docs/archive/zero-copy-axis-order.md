@@ -1,3 +1,9 @@
+> **ARCHIVED — decision record, not normative.**
+> Explains why every duckn store uses `slowest_first` axis order whichever
+> conversion path produced it. The decision was implemented and still
+> describes current behavior, but [`../duckn-spec.md`](../duckn-spec.md) is
+> authoritative for the convention itself.
+
 # Zero-Copy Axis Order: Unifying to `slowest_first`
 
 ## Problem

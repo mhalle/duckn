@@ -172,6 +172,15 @@ See the [ZMP building guide](docs/zmp-guide.md) for details on:
 - Composing multiple ZMPs into a single manifest
 - Querying ZMP metadata with DuckDB
 
+## Documentation
+
+[docs/README.md](docs/README.md) indexes everything below and distinguishes
+the current specifications from the archived design records.
+
+Writing a reader or writer? Start with the
+[implementer's guide](docs/implementers-guide.md) — the rules that are easy
+to get wrong, with the bugs that motivated them.
+
 ## Specifications
 
 - [duckn convention](docs/duckn-spec.md) — core metadata convention

@@ -1,3 +1,13 @@
+> **ARCHIVED — historical plan, not normative.**
+> Written 2026-03-02 as the action plan for the original NRRD ↔ Zarr
+> converter. The converter was built and has since outgrown this document:
+> the `.duckn` extension described here was never adopted, chunking is now
+> automatic rather than single-chunk, the top-level `duckn.legacy` object
+> is not part of the convention, and most of the "out of scope" list has
+> been implemented. Do not implement from this file — see
+> [`../duckn-spec.md`](../duckn-spec.md) and
+> [`../implementers-guide.md`](../implementers-guide.md).
+
 duckn Round-Trip Converter: Specification and Action Plan
 Status: Draft
 Date: 2026-03-02

@@ -24,13 +24,9 @@ from duckn.models import AxisMetadata, DucknMetadata
 
 DOCS = Path(__file__).parent.parent / "docs"
 
-# duckn-converter-prototype.md is a historical design record whose markdown
-# never rendered (its headings and tables are flattened) and which describes
-# a top-level `duckn.legacy` the convention does not define. Whether to
-# repair or retire it is an open question, so it is not checked here.
-UNCHECKED = {"duckn-converter-prototype.md"}
-
-SPEC_FILES = sorted(p for p in DOCS.glob("*.md") if p.name not in UNCHECKED)
+# Non-recursive by design: docs/archive/ holds superseded plans and decision
+# records, which are non-normative and deliberately left as they were found.
+SPEC_FILES = sorted(DOCS.glob("*.md"))
 
 
 def _headings(text: str, level: str) -> set[str]:
