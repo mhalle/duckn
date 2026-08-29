@@ -272,6 +272,68 @@ def _detect_anonymized(ds: Any) -> bool | None:
     return None
 
 
+def _is_lossy_compressed(ds: Any) -> bool | None:
+    """Whether the pixel data has ever been lossy compressed.
+
+    Prefers the explicit ``LossyImageCompression`` attribute ("01" = yes),
+    falling back to the source transfer syntax UID. Returns None when
+    neither says — absent means unknown, not "no".
+    """
+    flag = getattr(ds, "LossyImageCompression", None)
+    if flag is not None:
+        return str(flag).strip() == "01"
+
+    tsuid = _get_transfer_syntax(ds)
+    if tsuid in _LOSSY_TRANSFER_SYNTAXES:
+        return True
+    if tsuid in _LOSSLESS_TRANSFER_SYNTAXES:
+        return False
+    return None
+
+
+def _extract_modality_lut(ds: Any) -> "ValueTransform | None":
+    """Build a ``lut`` value transform from a Modality LUT Sequence.
+
+    ``LUTDescriptor`` is (number of entries, first stored value mapped, bits
+    per entry); a descriptor entry count of 0 means 65536 (PS3.3 C.11.1.1).
+    Returns None when the dataset has no explicit Modality LUT.
+    """
+    seq = getattr(ds, "ModalityLUTSequence", None)
+    if seq is None or len(seq) == 0:
+        return None
+
+    item = seq[0]
+    descriptor = getattr(item, "LUTDescriptor", None)
+    data = getattr(item, "LUTData", None)
+    if descriptor is None or data is None or len(descriptor) < 2:
+        return None
+
+    n_entries = int(descriptor[0]) or 65536
+    first_value = int(descriptor[1])
+    bits_per_entry = int(descriptor[2]) if len(descriptor) > 2 else 16
+
+    if isinstance(data, (bytes, bytearray)):
+        # LUT Data is US or OW; for OW pydicom hands back raw bytes, which
+        # must be unpacked at the declared width rather than iterated.
+        dtype = np.dtype("<u1") if bits_per_entry <= 8 else np.dtype("<u2")
+        values = np.frombuffer(data, dtype=dtype).astype(np.float64).tolist()
+    else:
+        values = [float(v) for v in data]
+    if not values:
+        return None
+    if len(values) != n_entries:
+        warnings.warn(
+            f"Modality LUT declares {n_entries} entries but LUTData has "
+            f"{len(values)}; using the data as given",
+            stacklevel=3,
+        )
+
+    return ValueTransform(
+        name="lut",
+        parameters={"first_value": first_value, "values": values},
+    )
+
+
 def _get_transfer_syntax(ds: Any) -> str | None:
     """Extract Transfer Syntax UID from file meta, if available."""
     meta = getattr(ds, "file_meta", None)
@@ -1272,6 +1334,30 @@ def _load_multiframe(
 # ---------------------------------------------------------------------------
 
 
+# Transfer syntaxes whose pixel data is irreversibly degraded. Used only as
+# a fallback when LossyImageCompression is absent.
+_LOSSY_TRANSFER_SYNTAXES = frozenset({
+    "1.2.840.10008.1.2.4.50",  # JPEG Baseline (Process 1)
+    "1.2.840.10008.1.2.4.51",  # JPEG Extended (Process 2 & 4)
+    "1.2.840.10008.1.2.4.81",  # JPEG-LS Lossy (Near-Lossless)
+    "1.2.840.10008.1.2.4.91",  # JPEG 2000 (lossy allowed)
+    "1.2.840.10008.1.2.4.93",  # JPEG 2000 Part 2 Multi-component (lossy allowed)
+    "1.2.840.10008.1.2.4.101",  # MPEG2 Main Profile / Main Level
+    "1.2.840.10008.1.2.4.102",  # MPEG-4 AVC/H.264 High Profile
+})
+
+_LOSSLESS_TRANSFER_SYNTAXES = frozenset({
+    "1.2.840.10008.1.2",  # Implicit VR Little Endian
+    "1.2.840.10008.1.2.1",  # Explicit VR Little Endian
+    "1.2.840.10008.1.2.1.99",  # Deflated Explicit VR Little Endian
+    "1.2.840.10008.1.2.2",  # Explicit VR Big Endian
+    "1.2.840.10008.1.2.4.57",  # JPEG Lossless, Non-Hierarchical
+    "1.2.840.10008.1.2.4.70",  # JPEG Lossless, First-Order Prediction
+    "1.2.840.10008.1.2.4.80",  # JPEG-LS Lossless
+    "1.2.840.10008.1.2.4.90",  # JPEG 2000 Lossless Only
+    "1.2.840.10008.1.2.5",  # RLE Lossless
+})
+
 # SOP Class UID for Segmentation Storage
 _SEG_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.66.4"
 
@@ -1725,9 +1811,14 @@ def build_duckn_metadata(
     if is_color:
         axes.append(AxisMetadata(kind=AxisKind.RGB_COLOR))
 
-    # Value transforms from RescaleSlope/Intercept
+    # Value transforms: the DICOM Modality LUT stage. An explicit
+    # ModalityLUTSequence and RescaleSlope/Intercept are mutually exclusive
+    # (PS3.3 C.11.1.1.2); the explicit table wins where both appear.
     value_transforms = None
-    if geometry.rescale_slope is not None and geometry.rescale_intercept is not None:
+    modality_lut = _extract_modality_lut(datasets[0])
+    if modality_lut is not None:
+        value_transforms = [modality_lut]
+    elif geometry.rescale_slope is not None and geometry.rescale_intercept is not None:
         value_transforms = [
             ValueTransform(
                 name="linear",
@@ -1738,15 +1829,21 @@ def build_duckn_metadata(
             )
         ]
 
-    # Sample units from RescaleType
+    # Sample units from RescaleType, or the LUT's own declared type
     sample_units = None
     if geometry.rescale_type:
         sample_units = geometry.rescale_type
+    elif modality_lut is not None:
+        lut_type = str(getattr(datasets[0], "ModalityLUTType", "") or "").strip()
+        if lut_type:
+            sample_units = lut_type
 
     # DICOM extension (series-level tags only)
     extensions = None
+    ds0 = datasets[0]
+    ext_kwargs: dict[str, Any] = {"version": "1.0"}
+
     if include_tags:
-        ds0 = datasets[0]
         series_tags = _dataset_to_tags(ds0, _include_binary=include_binary)
         # Remove varying keys — they're in per-sample extensions
         for key in varying_keys:
@@ -1756,13 +1853,21 @@ def build_duckn_metadata(
         if anon is None:
             anon = _detect_anonymized(ds0)
 
-        dicom_ext = DicomExtension(
-            version="1.0",
-            anonymized=anon if anon else None,
-            source_transfer_syntax=_get_transfer_syntax(ds0),
-            tags=series_tags if series_tags else None,
-        )
-        extensions = {"dicom": dicom_ext.model_dump(exclude_none=True, by_alias=True)}
+        ext_kwargs["anonymized"] = anon if anon else None
+        ext_kwargs["source_transfer_syntax"] = _get_transfer_syntax(ds0)
+        ext_kwargs["tags"] = series_tags if series_tags else None
+
+    # Lossiness is recorded even when tags are excluded. The transfer syntax
+    # describes how the source encoded its bytes — provenance, and fairly
+    # dropped along with the tags. That the pixel values are no longer the
+    # acquired ones is a fact about the data itself, and losing it because
+    # someone asked for a smaller store would be a hazard, not a saving.
+    if _is_lossy_compressed(ds0):
+        ext_kwargs["lossy_compressed"] = True
+
+    dumped = DicomExtension(**ext_kwargs).model_dump(exclude_none=True, by_alias=True)
+    if set(dumped) > {"version"}:
+        extensions = {"dicom": dumped}
 
     # Segmentation extension from DICOM SEG
     ds0 = datasets[0]
@@ -1774,7 +1879,9 @@ def build_duckn_metadata(
             extensions["seg"] = seg_ext.model_dump(exclude_none=True)
 
     return DucknMetadata(
-        version="1.0",
+        # Declare the lowest convention version that covers what was written:
+        # the `lut` transform was introduced in 1.1.
+        version="1.1" if modality_lut is not None else "1.0",
         space=geometry.space,
         space_origin=geometry.space_origin,
         sample_units=sample_units,

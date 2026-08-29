@@ -146,6 +146,87 @@ def _compose_linear_transforms(
     return composed_slope, composed_intercept
 
 
+def _transform_parts(vt: Any) -> tuple[Any, dict]:
+    """Normalize a ValueTransform model or raw dict to (name, parameters)."""
+    if hasattr(vt, "name"):
+        return vt.name, (vt.parameters or {})
+    return vt.get("name"), (vt.get("parameters") or {})
+
+
+def has_nonlinear_transforms(transforms: list[Any] | None) -> bool:
+    """True when the chain contains a transform that is not affine.
+
+    An all-linear chain collapses to a single (slope, intercept) pair and
+    takes the fast path; anything else must be applied step by step.
+    """
+    if not transforms:
+        return False
+    return any(_transform_parts(vt)[0] == "lut" for vt in transforms)
+
+
+def _apply_lut(data: np.ndarray, params: dict, work: np.dtype) -> np.ndarray:
+    """Map stored values through an explicit lookup table.
+
+    ``values[i]`` is the real value for stored value ``first_value + i``;
+    values outside the table clamp to its ends (the DICOM Modality LUT rule).
+    """
+    table = np.asarray(params.get("values", []), dtype=work)
+    if table.size == 0:
+        raise ValueError("lut transform has an empty 'values' table")
+
+    idx = np.asarray(data)
+    if not np.issubdtype(idx.dtype, np.integer):
+        # Only reachable if a lut follows another transform, which the
+        # metadata validator rejects — but a raw dict can reach here.
+        idx = np.rint(idx)
+    idx = idx.astype(np.int64, copy=False) - int(params.get("first_value", 0))
+    np.clip(idx, 0, table.size - 1, out=idx)
+    return table[idx]
+
+
+def _apply_value_transforms(
+    data: np.ndarray,
+    transforms: list[Any] | None,
+    transform_dtype: np.dtype | None,
+) -> np.ndarray:
+    """Apply a transform chain in order, supporting non-affine steps.
+
+    Used when :func:`has_nonlinear_transforms` is True; the all-linear case
+    is handled by composing to one (slope, intercept) and calling
+    :func:`_rescale`.
+    """
+    import warnings
+
+    target = transform_dtype if transform_dtype is not None else np.dtype(np.float32)
+    work = (
+        np.dtype(np.float64) if target == np.dtype(np.float64) else np.dtype(np.float32)
+    )
+
+    out = data
+    for vt in transforms or []:
+        name, params = _transform_parts(vt)
+        if name == "lut":
+            out = _apply_lut(out, params, work)
+        elif name == "linear":
+            slope = float(params.get("slope", 1.0))
+            intercept = float(params.get("intercept", 0.0))
+            out = out.astype(work, copy=False) * work.type(slope)
+            if intercept != 0.0:
+                out = out + work.type(intercept)
+        else:
+            warnings.warn(
+                f"Skipping unsupported value_transform name={name!r}",
+                stacklevel=3,
+            )
+
+    if out.dtype != target:
+        if np.issubdtype(target, np.integer):
+            out = np.rint(out).astype(target, copy=False)
+        else:
+            out = out.astype(target, copy=False)
+    return out
+
+
 def _rescale(
     data: np.ndarray,
     slope: float,
@@ -232,9 +313,13 @@ class DucknArray:
         self.transform_dtype = (
             np.dtype(transform_dtype) if transform_dtype is not None else None
         )
-        self._slope, self._intercept = _compose_linear_transforms(
-            metadata.value_transforms
-        )
+        self._nonlinear = has_nonlinear_transforms(metadata.value_transforms)
+        if self._nonlinear:
+            self._slope, self._intercept = 1.0, 0.0
+        else:
+            self._slope, self._intercept = _compose_linear_transforms(
+                metadata.value_transforms
+            )
         self._store_to_close = _store_to_close
 
     @property
@@ -289,12 +374,18 @@ class DucknArray:
 
     @property
     def _is_identity(self) -> bool:
+        if self._nonlinear:
+            return False
         return self._slope == 1.0 and self._intercept == 0.0
 
     def __getitem__(self, key):
         data = self._arr[key]
         if not self.apply_value_transforms:
             return data
+        if self._nonlinear:
+            return _apply_value_transforms(
+                data, self._metadata.value_transforms, self.transform_dtype
+            )
         return _rescale(data, self._slope, self._intercept, self.transform_dtype)
 
     def __array__(self, dtype=None, copy=None):

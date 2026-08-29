@@ -37,10 +37,15 @@ The following DICOM attributes are already captured by Zarr or the duckn convent
 | Spacing Between Slices | `SpacingBetweenSlices` | `axes[i].space_direction` magnitude |
 | Slice Thickness | `SliceThickness` | `axes[i].thickness` or `axes[i].samples[j].thickness` |
 | Rescale Slope, Rescale Intercept | `RescaleSlope`, `RescaleIntercept` | `value_transforms` `linear` |
-| Rescale Type | `RescaleType` | `sample_units` |
+| Modality LUT Sequence | `ModalityLUTSequence` | `value_transforms` `lut` |
+| Rescale Type, Modality LUT Type | `RescaleType`, `ModalityLUTType` | `sample_units` |
 | Pixel Data | `PixelData` | Zarr array data |
 
 See §9 for the full list of excluded fields.
+
+**The Modality LUT stage maps to `value_transforms`; the VOI LUT stage does not.** DICOM's display pipeline has two lookup stages, and they land in different places because they answer different questions. The Modality LUT — whether expressed as `RescaleSlope`/`RescaleIntercept` or as an explicit `ModalityLUTSequence` — converts stored values into real-world values such as Hounsfield units, which is precisely what the convention's `value_transforms` and `sample_units` describe. The two forms are mutually exclusive in DICOM (PS3.3 C.11.1.1.2); where both appear, the explicit table wins.
+
+The VOI LUT stage (`WindowCenter`/`WindowWidth`, `VOILUTFunction`, `VOILUTSequence`) maps real values to display intensities. That is a rendering preference, not a property of the data, so it stays in `tags` as provenance and never becomes a `value_transform` — putting it there would make `sample_units` describe values that are no longer in those units.
 
 ---
 
@@ -97,7 +102,23 @@ The Transfer Syntax UID of the source DICOM file. Useful for understanding the o
 "source_transfer_syntax": "1.2.840.10008.1.2.4.90"
 ```
 
-Omit when unknown or not meaningful.
+Omit when unknown or not meaningful. This records how the *source* encoded its bytes; it says nothing about how the Zarr array is encoded now, which the Zarr codec chain describes. The two are independent and neither should be derived from the other.
+
+#### `lossy_compressed`
+
+`true` when the pixel data has, at any point in its history, been through lossy compression — meaning the values in the array are not the values that were originally acquired.
+
+```json
+"lossy_compressed": true
+```
+
+This is deliberately sticky, following DICOM's own rule for `LossyImageCompression` (PS3.3 C.7.6.1.1.5): once an image has been lossy compressed, the fact survives decompression, re-encoding, and conversion into other formats — including this one. A writer converting a lossy source must set it, and a writer converting a duckn array back to DICOM must carry it into `LossyImageCompression`.
+
+It is a first-class field rather than a tag because it qualifies the data itself, not the file it came from. Anyone measuring from the array needs it, and should not have to search a tag dictionary — or resolve a Transfer Syntax UID against a table of which syntaxes are lossy — to find it.
+
+Omit when unknown. Absent means "not known to be lossy", not "known to be lossless"; `false` asserts the stronger claim and should only be written when the source said so.
+
+Where the source records them, `LossyImageCompressionRatio` and `LossyImageCompressionMethod` belong in `tags` alongside the other provenance attributes.
 
 #### `standard_version`
 
@@ -352,6 +373,21 @@ These are the most commonly anonymized fields. When anonymized, include them wit
 | `SOPInstanceUID` | UI | SOP Instance UID |
 | `InstanceCreationDate` | DA | Instance creation date |
 | `InstanceCreationTime` | TM | Instance creation time |
+
+### 5.10 Image Pixel and Encoding
+
+| Keyword | VR | Description |
+|---|---|---|
+| `PhotometricInterpretation` | CS | Photometric interpretation **of the source encoding** — see the caveat below |
+| `BitsStored` | US | Significant bits per sample; may be narrower than the Zarr dtype |
+| `HighBit` | US | Position of the high bit |
+| `LossyImageCompression` | CS | `"01"` if ever lossy compressed. Also surfaced as the `lossy_compressed` field (§3) |
+| `LossyImageCompressionRatio` | DS | Approximate compression ratio |
+| `LossyImageCompressionMethod` | CS | Compression method (e.g. `"ISO_10918_1"`) |
+
+**Caveat — tags that describe the encoded form.** Several pixel attributes describe how the source *encoded* its pixels, and stop being true once those pixels are decoded into a Zarr array. `PhotometricInterpretation` is the sharp case: JPEG-compressed color is commonly stored as `YBR_FULL_422`, but a decoder hands back RGB, so copying the tag verbatim would describe the array incorrectly. `PlanarConfiguration` is the same class, and is meaningless once the color axis is explicit in the array's `axes`.
+
+Writers should either omit such tags or normalize them to describe the decoded array. `Rows`, `Columns`, `BitsAllocated`, and `PixelRepresentation` are already excluded for this reason — the Zarr shape and dtype are authoritative.
 
 ---
 

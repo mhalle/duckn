@@ -876,6 +876,79 @@ class TestDicomSegExtraction:
         assert seg2.dicom is None  # no coded entries
         assert seg2.designations is None
 
+    def test_lossy_flag_recorded_from_attribute(self):
+        from duckn.dicom_convert import _is_lossy_compressed
+
+        ds = _make_dataset()
+        ds.LossyImageCompression = "01"
+        assert _is_lossy_compressed(ds) is True
+
+        ds.LossyImageCompression = "00"
+        assert _is_lossy_compressed(ds) is False
+
+    def test_lossy_inferred_from_transfer_syntax(self):
+        """Falls back to the UID when the attribute is absent."""
+        from pydicom.uid import JPEGBaseline8Bit
+
+        from duckn.dicom_convert import _is_lossy_compressed
+
+        ds = _make_dataset()
+        ds.file_meta.TransferSyntaxUID = JPEGBaseline8Bit
+        assert _is_lossy_compressed(ds) is True
+
+    def test_lossy_unknown_when_nothing_says(self):
+        """Absent means unknown, not lossless."""
+        from duckn.dicom_convert import _is_lossy_compressed
+
+        ds = _make_dataset()
+        ds.file_meta.TransferSyntaxUID = "1.2.840.10008.1.2.4.999"  # unrecognized
+        assert _is_lossy_compressed(ds) is None
+
+    def test_explicit_attribute_wins_over_transfer_syntax(self):
+        """A decompressed-but-once-lossy image stays flagged (PS3.3 C.7.6.1.1.5)."""
+        from duckn.dicom_convert import _is_lossy_compressed
+
+        ds = _make_dataset()  # stored Explicit VR LE, i.e. uncompressed now
+        ds.LossyImageCompression = "01"
+        assert _is_lossy_compressed(ds) is True
+
+    def test_lossy_survives_tags_disabled(self):
+        geom = DicomImageInfo(
+            shape=(1, 4, 4),
+            dtype=np.dtype(np.uint16),
+            space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
+            space_origin=[0, 0, 0],
+            space_directions=[[0, 0, 1], [0, 1, 0], [1, 0, 0]],
+            slice_thickness=None,
+            rescale_slope=None,
+            rescale_intercept=None,
+            rescale_type=None,
+        )
+        ds = _make_dataset()
+        ds.LossyImageCompression = "01"
+        meta = build_duckn_metadata(geom, [ds], anonymized=None, include_tags=False)
+        assert meta.extensions is not None
+        assert meta.extensions["dicom"]["lossy_compressed"] is True
+        # ...but the tag dictionary and encoding provenance are still excluded
+        assert "tags" not in meta.extensions["dicom"]
+        assert "source_transfer_syntax" not in meta.extensions["dicom"]
+
+    def test_lossless_with_tags_disabled_stays_empty(self):
+        geom = DicomImageInfo(
+            shape=(1, 4, 4),
+            dtype=np.dtype(np.uint16),
+            space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
+            space_origin=[0, 0, 0],
+            space_directions=[[0, 0, 1], [0, 1, 0], [1, 0, 0]],
+            slice_thickness=None,
+            rescale_slope=None,
+            rescale_intercept=None,
+            rescale_type=None,
+        )
+        ds = _make_dataset()
+        meta = build_duckn_metadata(geom, [ds], anonymized=None, include_tags=False)
+        assert meta.extensions is None
+
     def test_terminologies_registry_populated(self):
         """The DICOM path registers schemes like the .seg.nrrd path does."""
         ds = _make_seg_dataset()

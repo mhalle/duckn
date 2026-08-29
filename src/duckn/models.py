@@ -194,6 +194,26 @@ class LinearParameters(BaseModel):
     intercept: float
 
 
+class LutParameters(BaseModel):
+    """Explicit lookup table mapping stored values to real values.
+
+    ``values[i]`` is the real value for stored value ``first_value + i``.
+    Stored values outside the table clamp to its first or last entry, which
+    is the behavior DICOM defines for a Modality LUT.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    values: list[float]
+    first_value: int = 0
+
+    @model_validator(mode="after")
+    def _non_empty(self) -> LutParameters:
+        if not self.values:
+            raise ValueError("lut transform requires a non-empty 'values' table")
+        return self
+
+
 class ValueTransform(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -201,11 +221,15 @@ class ValueTransform(BaseModel):
     parameters: dict[str, Any] | None = None
 
     @model_validator(mode="after")
-    def _validate_linear(self) -> ValueTransform:
+    def _validate_parameters(self) -> ValueTransform:
         if self.name == "linear":
             if self.parameters is None:
                 raise ValueError("linear transform requires parameters with slope and intercept")
             LinearParameters(**self.parameters)
+        elif self.name == "lut":
+            if self.parameters is None:
+                raise ValueError("lut transform requires parameters with a 'values' table")
+            LutParameters(**self.parameters)
         return self
 
 
@@ -341,6 +365,16 @@ class DucknMetadata(BaseModel):
 
     @model_validator(mode="after")
     def _check_consistency(self) -> DucknMetadata:
+        # A lut indexes integer stored values, so it can only be the first
+        # transform in the chain — anything before it would feed it
+        # already-rescaled (typically floating point) values.
+        for i, vt in enumerate(self.value_transforms or []):
+            if vt.name == "lut" and i != 0:
+                raise ValueError(
+                    f"value_transforms[{i}] is a 'lut': a lut indexes stored "
+                    "values and must be the first transform in the chain"
+                )
+
         # space and space_dimension mutually exclusive
         if self.space is not None and self.space_dimension is not None:
             raise ValueError("space and space_dimension are mutually exclusive")
@@ -791,6 +825,13 @@ class DicomExtension(BaseModel):
     version: str
     anonymized: bool | None = None
     source_transfer_syntax: str | None = None
+    # True when the pixel data has ever been lossy compressed. DICOM makes
+    # this sticky (PS3.3 C.7.6.1.1.5): it survives decompression and format
+    # conversion, because it says the values are no longer the acquired
+    # ones. First-class rather than a tag for the same reason
+    # source_transfer_syntax is — a reader should not have to search a tag
+    # dictionary to learn the data is degraded.
+    lossy_compressed: bool | None = None
     standard_version: str | None = None
     schema_url: str | None = Field(None, alias="schema")
     tags: dict[str, Any] | None = None

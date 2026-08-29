@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+### Added — duckn convention 1.1: `lut` value transform
+- `value_transforms` gains a `lut` type: an explicit stored → real lookup
+  table, for value mappings that are not affine. `values[i]` is the real
+  value for stored value `first_value + i`, and values outside the table
+  clamp to its ends (the DICOM Modality LUT rule). A `lut` must be the
+  first transform in a chain, since it indexes stored values; the metadata
+  validator enforces it.
+- DICOM import maps an explicit `ModalityLUTSequence` to a `lut` transform,
+  and `ModalityLUTType` to `sample_units`. The explicit table and
+  `RescaleSlope`/`RescaleIntercept` are mutually exclusive in DICOM
+  (PS3.3 C.11.1.1.2); the table wins where both appear. `LUTData` is
+  unpacked at the width its descriptor declares, since for VR `OW` it
+  arrives as raw bytes that would otherwise be read as 8-bit values.
+- Metadata written by the DICOM importer declares convention version
+  `"1.1"` when it uses a `lut`, and `"1.0"` otherwise — the lowest version
+  that covers what was written.
+- The all-linear transform chain keeps its existing fast path (composed to
+  a single slope/intercept); only chains containing a non-affine step take
+  the new sequential path.
+
+### Added — DICOM lossy-compression provenance
+- `lossy_compressed` is a first-class field of the dicom extension, set
+  from `LossyImageCompression` and falling back to the transfer syntax UID.
+  Following DICOM's own rule (PS3.3 C.7.6.1.1.5) it is sticky: it records
+  that the values are no longer the acquired ones, which survives
+  decompression and conversion. Absent means unknown, not lossless.
+- It is recorded even when tags are excluded. The transfer syntax describes
+  how the source encoded its bytes — provenance, fairly dropped with the
+  tags — but that the pixel values are degraded is a fact about the data,
+  and losing it because someone asked for a smaller store would be a
+  hazard rather than a saving.
+- dicom-spec documents the lossy attributes, and warns that tags describing
+  the *encoded* form (`PhotometricInterpretation`, `PlanarConfiguration`)
+  stop being true once pixels are decoded into a Zarr array.
+
 ### Added
 - `validate_seg_extension(ext, *, shape=None, axes=None)` checks the
   consistency rules of seg spec §5 — unique ids, background label 0,

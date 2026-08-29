@@ -192,11 +192,33 @@ If `value_transforms` is absent, stored values are the real values (in `sample_u
 
 **Defined transforms:**
 
-| Name | Parameters | Formula (stored → real) |
-|------|-----------|-------------------------|
-| `linear` | `slope`, `intercept` | `real = stored * slope + intercept` |
+| Name | Since | Parameters | Formula (stored → real) |
+|------|-------|-----------|-------------------------|
+| `linear` | 1.0 | `slope`, `intercept` | `real = stored * slope + intercept` |
+| `lut` | 1.1 | `values`, `first_value` | `real = values[clamp(stored - first_value, 0, n-1)]` |
 
 Additional transforms may be defined in future versions. A reader that encounters an unknown transform name should treat the value mapping as unknown — the raw stored data remains accessible, but its physical interpretation is undefined.
+
+##### `lut`
+
+An explicit lookup table, for value mappings that are not affine. `values[i]` is the real value for stored value `first_value + i`; `first_value` defaults to 0.
+
+```json
+"value_transforms": [
+  { "name": "lut", "parameters": { "first_value": -1024, "values": [0.0, 1.7, 3.4, 5.1] } }
+]
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `values` | yes | The table of real values, in stored-value order. Must be non-empty |
+| `first_value` | no | The stored value corresponding to `values[0]`. Default 0 |
+
+**Stored values outside the table clamp** to the first or last entry — a stored value below `first_value` maps to `values[0]`, one above `first_value + n - 1` maps to `values[n-1]`. This matches the DICOM Modality LUT rule, which is the primary source of such tables.
+
+A `lut` indexes stored values, so it **must be the first transform in the chain**: anything preceding it would feed it already-rescaled, typically floating-point, values. A `linear` transform may follow one.
+
+Because the table is carried inline in the array's attributes, this transform suits the table sizes that occur in practice — Modality LUTs are typically hundreds to a few thousand entries. A table large enough to burden the attributes (tens of thousands of entries) is better represented as a `linear` approximation, or deferred until a future revision defines an out-of-line form.
 
 #### `intent`
 
@@ -851,6 +873,8 @@ This is a valid use of the convention. It says "these are spatial axes" and noth
 
 - **Extensibility of `kind`:** The kind vocabulary is inherited from NRRD and is expected to be stable. New kinds should be added rarely and with caution, per NRRD's own precedent.
 
-- **Extensibility of `value_transforms`:** Only `linear` is defined in this version. New transform types should be defined in future versions of this convention. A reader that encounters an unknown transform name should treat the value interpretation as unknown, but must still provide access to the raw stored data.
+- **Extensibility of `value_transforms`:** `linear` and `lut` are defined. New transform types should be defined in future versions of this convention, and a file must declare the version that introduced every transform it uses. A reader that encounters an unknown transform name should treat the value interpretation as unknown, but must still provide access to the raw stored data.
+
+- **Why `lut` is a value transform and window/level is not.** Both are lookup-shaped, and DICOM applies them in the same display pipeline, so the split can look arbitrary. It is not: a Modality LUT maps stored values to *real-world* values, which is exactly what `value_transforms` is defined to do and what `sample_units` then describes. A VOI LUT (window/level) maps real values to *display* intensities — it answers "how should this be shown", not "what is this". Admitting it here would make `sample_units` a lie for everything downstream. Display mappings belong in application-specific attributes, per the no-display-hints rule above.
 
 - **No display hints.** This convention describes data semantics, not display preferences. Window/level, colormap, and similar rendering concerns belong in application-specific attributes, not in this convention.
