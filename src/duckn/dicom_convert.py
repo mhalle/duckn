@@ -20,6 +20,7 @@ import zarr
 from .convert import _auto_chunks, _build_compressors
 from .zarr_io import _is_zip_path, open_store
 from .models import (
+    duckn_attrs,
     SEG_EXTENSION_VERSION,
     AxisKind,
     AxisMetadata,
@@ -305,18 +306,34 @@ def _extract_modality_lut(ds: Any) -> "ValueTransform | None":
     item = seq[0]
     descriptor = getattr(item, "LUTDescriptor", None)
     data = getattr(item, "LUTData", None)
-    if descriptor is None or data is None or len(descriptor) < 2:
+    if descriptor is None or data is None:
+        return None
+    # A VM=1 descriptor collapses to a bare int in pydicom, so len() would
+    # raise rather than fail the guard.
+    if isinstance(descriptor, (int, float, str)) or len(descriptor) < 2:
+        warnings.warn(
+            f"Modality LUT has a malformed LUTDescriptor ({descriptor!r}); ignoring it",
+            stacklevel=3,
+        )
         return None
 
     n_entries = int(descriptor[0]) or 65536
     first_value = int(descriptor[1])
-    bits_per_entry = int(descriptor[2]) if len(descriptor) > 2 else 16
 
     if isinstance(data, (bytes, bytearray)):
-        # LUT Data is US or OW; for OW pydicom hands back raw bytes, which
-        # must be unpacked at the declared width rather than iterated.
-        dtype = np.dtype("<u1") if bits_per_entry <= 8 else np.dtype("<u2")
-        values = np.frombuffer(data, dtype=dtype).astype(np.float64).tolist()
+        # LUT Data is US or OW. When pydicom hands back raw bytes the VR is
+        # OW, which is a stream of 16-bit words by definition (PS3.5 Table
+        # 6.2-1) — an 8-bit table is padded into 16-bit entries, so the
+        # declared bit depth is not the storage width and must not be used
+        # as one.
+        if len(data) % 2:
+            warnings.warn(
+                f"Modality LUT data is {len(data)} bytes, not a whole number "
+                "of 16-bit entries; ignoring it",
+                stacklevel=3,
+            )
+            return None
+        values = np.frombuffer(data, dtype=np.dtype("<u2")).astype(np.float64).tolist()
     else:
         values = [float(v) for v in data]
     if not values:
@@ -1829,14 +1846,20 @@ def build_duckn_metadata(
             )
         ]
 
-    # Sample units from RescaleType, or the LUT's own declared type
+    # Sample units. When an explicit Modality LUT is in use it is the
+    # authoritative value mapping, so its own declared type wins over
+    # RescaleType — matching the precedence used for the transform itself.
+    # ModalityLUTType (0028,3004) lives inside the sequence item
+    # (PS3.3 C.11.1.1), not at the top level of the dataset.
     sample_units = None
-    if geometry.rescale_type:
+    if modality_lut is not None:
+        seq = getattr(datasets[0], "ModalityLUTSequence", None)
+        if seq is not None and len(seq) > 0:
+            lut_type = str(getattr(seq[0], "ModalityLUTType", "") or "").strip()
+            if lut_type:
+                sample_units = lut_type
+    if sample_units is None and geometry.rescale_type:
         sample_units = geometry.rescale_type
-    elif modality_lut is not None:
-        lut_type = str(getattr(datasets[0], "ModalityLUTType", "") or "").strip()
-        if lut_type:
-            sample_units = lut_type
 
     # DICOM extension (series-level tags only)
     extensions = None
@@ -1946,7 +1969,7 @@ def dicom_to_zarr(
 
     compressors_list = _build_compressors(compressor, level)
 
-    attrs = {"duckn": meta.model_dump(exclude_none=True)}
+    attrs = duckn_attrs(meta)
 
     # Dimension names
     if volume.ndim == 4:
@@ -2277,7 +2300,7 @@ def dicom_to_zarr_streaming(
     # Build metadata
     meta = build_duckn_metadata(geometry, headers, anonymized, tags, binary_tags)
     compressors_list = _build_compressors(compressor, level)
-    attrs = {"duckn": meta.model_dump(exclude_none=True)}
+    attrs = duckn_attrs(meta)
 
     # Determine if we can do raw byte copy
     tsuid = str(getattr(headers[0].file_meta, "TransferSyntaxUID", ""))

@@ -103,9 +103,13 @@ class TestSlicingApplication:
         store_path = tmp_path / "unknown.zarr"
         _write_test_store(store_path, data, value_transforms=vt)
 
+        # An unrecognized name is not known to be affine, so the chain takes
+        # the sequential path and the warning is raised where the transform
+        # is actually applied — on read, rather than once at open.
+        arr = open_array(store_path)
         with pytest.warns(UserWarning, match="custom-nonlinear"):
-            arr = open_array(store_path)
-        np.testing.assert_allclose(arr[:], np.array([[[2.0, 4.0]]]))
+            values = arr[:]
+        np.testing.assert_allclose(values, np.array([[[2.0, 4.0]]]))
 
 
 class TestToggle:

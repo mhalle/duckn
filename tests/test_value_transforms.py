@@ -150,6 +150,34 @@ class TestDucknArray:
             assert arr.dtype == np.dtype(np.float64)
             np.testing.assert_array_equal(arr[...], [[0.0, 100.0, 200.0, 300.0]])
 
+    def test_scalar_indexing_works(self, tmp_path):
+        """A full integer index yields a 0-d result, which must not break."""
+        path = self._store(tmp_path, [LUT])
+        with open_array(path) as arr:
+            assert float(arr[0, 0]) == 0.0
+            assert float(arr[0, 3]) == 300.0
+            # and agrees with the slice path
+            np.testing.assert_array_equal(arr[0, 0:1], [0.0])
+
+
+class TestUnknownTransformsAreNotDroppedByTheAffinePath:
+    def test_unknown_name_counts_as_nonlinear(self):
+        """Otherwise a future transform type is silently skipped as affine."""
+        assert has_nonlinear_transforms([{"name": "gamma", "parameters": {"g": 2.0}}])
+        assert has_nonlinear_transforms(
+            [{"name": "linear", "parameters": {"slope": 1.0, "intercept": 0.0}},
+             {"name": "gamma", "parameters": {"g": 2.0}}]
+        )
+
+
+class TestLutRequiresIntegerStoredValues:
+    def test_float_stored_values_rejected(self):
+        """Rounding float data would invent an index; NaN has no index at all."""
+        raw = np.array([[0.0, 1.5, np.nan]], dtype=np.float32)
+        vol = Volume(raw=raw, metadata=_meta([LUT]))
+        with pytest.raises(ValueError, match="integer stored values"):
+            _ = vol.data
+
 
 class TestResampleCommutation:
     """Non-affine transforms do not commute with interpolation (spec §4.4)."""
@@ -260,7 +288,73 @@ class TestDicomModalityLut:
         # Iterating the bytes would give [0, 0, 10, 0, 20, 0, 44, 1]
         assert vt.parameters["values"] == [0.0, 10.0, 20.0, 300.0]
 
-    def test_eight_bit_lut_data(self):
+    def test_ow_lut_data_uses_payload_width_not_declared_bits(self):
+        """VR OW is 16-bit words, so an 8-bit table is padded into 16 bits."""
+        pytest.importorskip("pydicom")
+        from pydicom.dataset import Dataset
+        from pydicom.sequence import Sequence
+
+        from duckn.dicom_convert import _extract_modality_lut
+
+        item = Dataset()
+        item.add_new(0x00283002, "US", [4, 0, 8])  # declares 8 bits per entry
+        item.add_new(0x00283006, "OW", np.array([0, 10, 20, 30], "<u2").tobytes())
+        ds = Dataset()
+        ds.ModalityLUTSequence = Sequence([item])
+
+        vt = _extract_modality_lut(ds)
+        # Unpacking at the declared 8 bits would give [0,0,10,0,20,0,30,0].
+        assert vt.parameters["values"] == [0.0, 10.0, 20.0, 30.0]
+
+    def test_modality_lut_type_read_from_the_sequence_item(self):
+        """ModalityLUTType (0028,3004) lives in the item, per PS3.3 C.11.1.1."""
+        pytest.importorskip("pydicom")
+        from pydicom.dataset import Dataset
+        from pydicom.sequence import Sequence
+
+        from duckn.dicom_convert import _extract_modality_lut
+
+        item = Dataset()
+        item.add_new(0x00283002, "US", [3, 0, 16])
+        item.add_new(0x00283006, "US", [1, 2, 3])
+        item.ModalityLUTType = "HU"
+        ds = Dataset()
+        ds.ModalityLUTSequence = Sequence([item])
+        assert _extract_modality_lut(ds) is not None
+        assert str(getattr(ds.ModalityLUTSequence[0], "ModalityLUTType")) == "HU"
+
+    def test_malformed_descriptor_is_skipped_not_crashed(self):
+        pytest.importorskip("pydicom")
+        from pydicom.dataset import Dataset
+        from pydicom.sequence import Sequence
+
+        from duckn.dicom_convert import _extract_modality_lut
+
+        item = Dataset()
+        item.add_new(0x00283002, "US", [3])  # VM=1 collapses to a bare int
+        item.add_new(0x00283006, "US", [1, 2, 3])
+        ds = Dataset()
+        ds.ModalityLUTSequence = Sequence([item])
+        with pytest.warns(UserWarning, match="malformed"):
+            assert _extract_modality_lut(ds) is None
+
+    def test_truncated_ow_payload_is_skipped(self):
+        pytest.importorskip("pydicom")
+        from pydicom.dataset import Dataset
+        from pydicom.sequence import Sequence
+
+        from duckn.dicom_convert import _extract_modality_lut
+
+        item = Dataset()
+        item.add_new(0x00283002, "US", [3, 0, 16])
+        item.add_new(0x00283006, "OW", b"\x01\x00\x02\x00\x03")  # odd length
+        ds = Dataset()
+        ds.ModalityLUTSequence = Sequence([item])
+        with pytest.warns(UserWarning):
+            assert _extract_modality_lut(ds) is None
+
+    def test_eight_bit_entries_are_padded_into_16_bit_words(self):
+        """An 8-bit table sent as OW still occupies 16 bits per entry."""
         pytest.importorskip("pydicom")
         from pydicom.dataset import Dataset
         from pydicom.sequence import Sequence
@@ -269,11 +363,27 @@ class TestDicomModalityLut:
 
         item = Dataset()
         item.add_new(0x00283002, "US", [3, 0, 8])
-        item.add_new(0x00283006, "OW", bytes([1, 2, 3]))
+        item.add_new(0x00283006, "OW", np.array([1, 2, 3], "<u2").tobytes())
         ds = Dataset()
         ds.ModalityLUTSequence = Sequence([item])
 
         assert _extract_modality_lut(ds).parameters["values"] == [1.0, 2.0, 3.0]
+
+    def test_us_lut_data_is_taken_as_values(self):
+        """VR US arrives as a list of ints, not bytes — no unpacking needed."""
+        pytest.importorskip("pydicom")
+        from pydicom.dataset import Dataset
+        from pydicom.sequence import Sequence
+
+        from duckn.dicom_convert import _extract_modality_lut
+
+        item = Dataset()
+        item.add_new(0x00283002, "US", [3, 0, 16])
+        item.add_new(0x00283006, "US", [100, 200, 300])
+        ds = Dataset()
+        ds.ModalityLUTSequence = Sequence([item])
+
+        assert _extract_modality_lut(ds).parameters["values"] == [100.0, 200.0, 300.0]
 
     def test_absent_modality_lut_returns_none(self):
         pytest.importorskip("pydicom")

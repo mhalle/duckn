@@ -153,15 +153,25 @@ def _transform_parts(vt: Any) -> tuple[Any, dict]:
     return vt.get("name"), (vt.get("parameters") or {})
 
 
-def has_nonlinear_transforms(transforms: list[Any] | None) -> bool:
-    """True when the chain contains a transform that is not affine.
+# Transform names known to be affine, and therefore safe to collapse into a
+# single (slope, intercept) pair. Anything else — including a name this
+# version does not implement — must not take that fast path.
+_AFFINE_TRANSFORMS = frozenset({"linear"})
 
-    An all-linear chain collapses to a single (slope, intercept) pair and
-    takes the fast path; anything else must be applied step by step.
+
+def has_nonlinear_transforms(transforms: list[Any] | None) -> bool:
+    """True when the chain contains a transform that is not known to be affine.
+
+    An all-affine chain collapses to a single (slope, intercept) pair and
+    takes the fast path; anything else must be applied step by step. Unknown
+    names count as non-affine so that a future transform type is never
+    silently dropped by the affine path.
     """
     if not transforms:
         return False
-    return any(_transform_parts(vt)[0] == "lut" for vt in transforms)
+    return any(
+        _transform_parts(vt)[0] not in _AFFINE_TRANSFORMS for vt in transforms
+    )
 
 
 def _apply_lut(data: np.ndarray, params: dict, work: np.dtype) -> np.ndarray:
@@ -175,12 +185,19 @@ def _apply_lut(data: np.ndarray, params: dict, work: np.dtype) -> np.ndarray:
         raise ValueError("lut transform has an empty 'values' table")
 
     idx = np.asarray(data)
-    if not np.issubdtype(idx.dtype, np.integer):
-        # Only reachable if a lut follows another transform, which the
-        # metadata validator rejects — but a raw dict can reach here.
-        idx = np.rint(idx)
+    if not (
+        np.issubdtype(idx.dtype, np.integer) or np.issubdtype(idx.dtype, np.bool_)
+    ):
+        # A lut indexes stored values, so the array it applies to must hold
+        # integers. Rounding float data would silently invent an index —
+        # and NaN would land on an arbitrary table entry.
+        raise ValueError(
+            f"lut transform requires integer stored values, got {idx.dtype}"
+        )
     idx = idx.astype(np.int64, copy=False) - int(params.get("first_value", 0))
-    np.clip(idx, 0, table.size - 1, out=idx)
+    # Not in-place: a scalar index (arr[i, j, k]) yields a 0-d result that
+    # np.clip cannot write back through `out=`.
+    idx = np.clip(idx, 0, table.size - 1)
     return table[idx]
 
 

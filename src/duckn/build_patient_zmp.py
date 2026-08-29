@@ -17,6 +17,8 @@ Usage:
 
 from __future__ import annotations
 
+from .models import duckn_attrs
+
 import argparse
 import asyncio
 import io
@@ -84,7 +86,7 @@ def _build_seg_zmp_bytes_sync(crdc_series_uuid: str) -> bytes:
 
     buf = io.BytesIO()
     store = ZMPWritableStore(buf)
-    attrs = {"duckn": duckn_meta.model_dump(exclude_none=True)}
+    attrs = duckn_attrs(duckn_meta)
 
     arr = zarr.open_array(
         store, mode="w",

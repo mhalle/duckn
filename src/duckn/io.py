@@ -13,6 +13,7 @@ from typing import Any, BinaryIO
 import numpy as np
 
 from .models import DucknMetadata
+from .models import duckn_attrs
 from .volume import Volume
 
 
@@ -213,7 +214,7 @@ def _write_zarr(vol, dest, *, chunks, compressor, level, overwrite):
 
     chunks = chunks or _auto_chunks(vol.shape, vol.raw.dtype)
     compressors = _build_compressors(compressor, level)
-    attrs = {"duckn": vol.metadata.model_dump(exclude_none=True)}
+    attrs = duckn_attrs(vol.metadata)
 
     with open_store(dest, mode="w", overwrite=overwrite) as store:
         zarr.create_array(
@@ -235,7 +236,7 @@ def _write_zarr_zip(vol, dest, *, chunks, compressor, level, overwrite):
 
     chunks = chunks or _auto_chunks(vol.shape, vol.raw.dtype)
     compressors = _build_compressors(compressor, level)
-    attrs = {"duckn": vol.metadata.model_dump(exclude_none=True)}
+    attrs = duckn_attrs(vol.metadata)
 
     store = zarr.storage.ZipStore(str(dest), mode="w")
     zarr.create_array(
@@ -263,7 +264,7 @@ def _write_zmp(vol, dest, *, chunks, compressor, level, overwrite):
         output = dest  # BytesIO
 
     chunks = chunks or _auto_chunks(vol.shape, vol.raw.dtype)
-    attrs = {"duckn": vol.metadata.model_dump(exclude_none=True)}
+    attrs = duckn_attrs(vol.metadata)
 
     store = ZMPWritableStore(output)
     arr = zarr.open_array(

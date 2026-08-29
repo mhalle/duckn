@@ -934,6 +934,19 @@ class NiftiExtension(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def duckn_attrs(meta: DucknMetadata) -> dict[str, Any]:
+    """Serialize metadata into a Zarr ``attributes`` object, re-validating it.
+
+    Pydantic runs validators at construction, so a model mutated afterwards
+    (appending to ``value_transforms``, assigning a field) can hold a state
+    no reader will accept. Re-validating the dumped form fails the write
+    instead of producing a store that cannot be opened.
+    """
+    dumped = meta.model_dump(exclude_none=True)
+    DucknMetadata.model_validate(dumped)
+    return {"duckn": dumped}
+
+
 def validate_against_shape(meta: DucknMetadata, shape: tuple[int, ...]) -> None:
     """Validate that metadata is consistent with the given array shape.
 

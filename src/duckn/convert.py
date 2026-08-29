@@ -13,6 +13,7 @@ import numpy as np
 import zarr
 
 from .models import (
+    duckn_attrs,
     AxisKind, AxisMetadata, Centering, DwmriAxisExtension, DwmriExtension,
     DucknMetadata, SegmentationExtension, SpaceName, _SPACE_ABBREVS,
 )
@@ -587,7 +588,7 @@ def nrrd_to_zarr(
     if chunks is None:
         chunks = _auto_chunks(shape, data.dtype)
 
-    attrs = {"duckn": meta.model_dump(exclude_none=True)}
+    attrs = duckn_attrs(meta)
 
     is_zip = _is_zip_path(zarr_path)
     with open_store(zarr_path, mode="w", overwrite=overwrite) as store:
@@ -634,9 +635,9 @@ def zarr_to_nrrd(
     with open_store(zarr_path, mode="r") as store:
         arr = zarr.open_array(store, mode="r")
         data = arr[:]
-        duckn_attrs = arr.attrs.get("duckn", {})
+        stored_attrs = arr.attrs.get("duckn", {})
 
-        meta = DucknMetadata(**duckn_attrs)
+        meta = DucknMetadata(**stored_attrs)
 
         dim_names = arr.metadata.dimension_names
 
