@@ -228,13 +228,15 @@ Sequences may be nested (a sequence item may contain another sequence attribute)
 
 ### 4.5 Binary Data
 
-Binary DICOM attributes (VRs: OB, OW, OF, OD, OL, OV) are stored as base64-encoded strings. Bulk binary data that is represented by the Zarr array itself (pixel data, overlay data) should be excluded from `tags`, but other binary attributes (lookup tables, ICC profiles) should be preserved:
+Binary DICOM attributes (VRs: OB, OW, OF, OD, OL, OV) are stored as base64-encoded strings. Bulk binary data that is represented by the Zarr array itself (pixel data, overlay data) should be excluded from `tags`, but other binary attributes (VOI and palette colour lookup tables, ICC profiles) should be preserved:
 
 ```json
 "ICCProfile": "AAAAAA..."
 ```
 
 The VR determines that the value is binary; consumers can look up the VR from the keyword via PS3.6. No special suffix or annotation is needed.
+
+The **Modality** LUT is the exception: `ModalityLUTSequence`, `LUTDescriptor` and `LUTData` are excluded (§9), because that stage is the array's value mapping and `value_transforms` describes it authoritatively. VOI LUTs and palette colour LUTs have no convention counterpart and are preserved here like any other binary attribute.
 
 ### 4.6 Multi-Valued Attributes
 
