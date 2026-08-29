@@ -258,11 +258,41 @@ Rules:
 - If an extension is used anywhere in the `"duckn"` object — including only on per-axis `extensions` — it must have an entry in the top-level `extensions` with at least a `"version"`. The top-level entry is the declaration; per-axis entries are the data.
 - Each extension object may contain an optional `"schema"` field: a URL pointing to a schema or specification document for the extension. What the URL resolves to is up to the extension author — a JSON Schema for machine validation, a human-readable specification, or both. Readers may use this for validation or surface it to users as documentation. If absent, the reader has only the extension name and version to work with.
 - Extension names must be unique. A registry of well-known extension names may be established separately.
-- Keys at the top level of the `"duckn"` object (outside `"extensions"`) are reserved for this convention. Domain-specific metadata must not be added there.
+- Keys at the top level of the `"duckn"` object (outside `"extensions"`) are reserved for this convention, and the complete set is the one documented in §3.1. Domain-specific metadata must not be added there.
 - A reader that encounters an unknown extension name must ignore it.
 - Extensions may depend on NRRD convention fields such as `measurement_frame` or `space`. These dependencies should be documented in the extension's specification.
 
 Extensions also appear per-axis; see §3.2.
+
+#### `unit_systems`
+
+Since 1.1. A registry of the unit systems referenced by structured unit objects elsewhere in the file, keyed by a short scheme identifier — the same pattern as the seg extension's `terminologies` registry.
+
+It is defined in full by the companion **units specification** (`units-spec.md`), which also covers the structured unit object accepted by `sample_units` and by each axis's `unit`. Only its status as a top-level convention field is fixed here.
+
+```json
+"unit_systems": {
+  "UCUM": { "name": "Unified Code for Units of Measure", "url": "https://ucum.org" }
+}
+```
+
+Omit when no structured units are used.
+
+#### `space_transforms`
+
+Since 1.1. An array of transforms relating this array's coordinate space to other named spaces — a template, an atlas, another acquisition.
+
+It is defined in full by the companion **space transforms specification** (`transform-spec.md`), including the reserved space names and the rules for composing entries. Only its status as a top-level convention field is fixed here.
+
+```json
+"space_transforms": [
+  { "to": { "name": "nifti:mni152" }, "forward": { "identity": true } }
+]
+```
+
+Note that `measurement_frame` is not part of this graph: it maps vector and tensor *component values* into world space rather than relating coordinate spaces, so it is not a valid transform target.
+
+Omit when no such relationships are recorded.
 
 ### 3.2 Per-Axis Fields: The `axes` Array
 

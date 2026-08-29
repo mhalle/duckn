@@ -139,40 +139,6 @@ On write-back, the qform *matrix* is reconstructed from the specification's `spa
 
 Omit when the qform was not present (`qform_code` = 0) or when it equals the `sform_code` (the common case). When omitted, a converter should set the qform code equal to the sform code.
 
-### 4.3 `legacy`
-
-The `legacy` object stores original NIfTI data for provenance. Its contents are informational — the specification fields are always the authoritative source for spatial information.
-
-#### `legacy.tags`
-
-Contains the original NIfTI affine matrices as 4×4 arrays (row-major).
-
-```json
-"legacy": {
-  "tags": {
-    "sform": [
-      [2.0, 0.0, 0.0, -100.0],
-      [0.0, 2.0, 0.0, -100.0],
-      [0.0, 0.0, 3.0, -50.0],
-      [0.0, 0.0, 0.0, 1.0]
-    ],
-    "qform": [
-      [2.0, 0.0, 0.0, -99.0],
-      [0.0, 2.0, 0.0, -99.0],
-      [0.0, 0.0, 3.0, -49.0],
-      [0.0, 0.0, 0.0, 1.0]
-    ]
-  }
-}
-```
-
-| Field | Type | Description |
-|---|---|---|
-| `sform` | 4×4 array of numbers | Original sform affine. Present when `sform_code` > 0. |
-| `qform` | 4×4 array of numbers | Original qform affine. Present when `qform_code` > 0. |
-
-A converter writing back to NIfTI should reconstruct both affines from specification fields, not from these legacy copies. When the qform and sform were identical (the common case from dcm2niix), both matrices will be equal. When they differed — for example, sform in MNI space and qform in scanner space — both originals are available for inspection.
-
 #### `dim_info`
 
 Identifies which array dimensions correspond to MRI frequency encoding, phase encoding, and slice acquisition directions.
@@ -280,7 +246,7 @@ Acquisition timing metadata for the slice dimension.
 
 Omit the entire field when all sub-fields are at their defaults (code unknown, start = 0, end = 0, duration = 0). Omit individual sub-fields that are at default values.
 
-The `slice_dim` in `dim_info` (§4.5) identifies which array dimension these timing parameters apply to.
+The `slice_dim` in `dim_info` (§4.2) identifies which array dimension these timing parameters apply to.
 
 #### `toffset`
 
@@ -328,6 +294,40 @@ The NIfTI auxiliary filename string (up to 23 characters in NIfTI-1, 23 in NIfTI
 Omit when empty.
 
 ---
+
+### 4.3 `legacy`
+
+The `legacy` object stores original NIfTI data for provenance. Its contents are informational — the specification fields are always the authoritative source for spatial information.
+
+#### `legacy.tags`
+
+Contains the original NIfTI affine matrices as 4×4 arrays (row-major).
+
+```json
+"legacy": {
+  "tags": {
+    "sform": [
+      [2.0, 0.0, 0.0, -100.0],
+      [0.0, 2.0, 0.0, -100.0],
+      [0.0, 0.0, 3.0, -50.0],
+      [0.0, 0.0, 0.0, 1.0]
+    ],
+    "qform": [
+      [2.0, 0.0, 0.0, -99.0],
+      [0.0, 2.0, 0.0, -99.0],
+      [0.0, 0.0, 3.0, -49.0],
+      [0.0, 0.0, 0.0, 1.0]
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `sform` | 4×4 array of numbers | Original sform affine. Present when `sform_code` > 0. |
+| `qform` | 4×4 array of numbers | Original qform affine. Present when `qform_code` > 0. |
+
+A converter writing back to NIfTI should reconstruct both affines from specification fields, not from these legacy copies. When the qform and sform were identical (the common case from dcm2niix), both matrices will be equal. When they differed — for example, sform in MNI space and qform in scanner space — both originals are available for inspection.
 
 ## 5. Fields Deliberately Excluded
 
@@ -745,7 +745,7 @@ The "absent means unknown" principle applies: omit keys whose values are at thei
 
 **Why preserve `sform_code` separately.** The duckn specification's `space` field captures the geometric orientation (RAS) but not the semantic distinction between "aligned to scanner," "aligned to atlas," and "in MNI coordinates." For neuroimaging workflows where the distinction between native space and standard space matters, the raw code is needed.
 
-**Why the specification fields are authoritative and the original matrices are legacy.** The specification's `space_origin` and `space_direction` fields are the single source of truth for spatial information. On write-back, both the sform and qform are reconstructed from these fields. The original 4×4 matrices are stored as `legacy_sform` and `legacy_qform` for provenance — they let a human or tool inspect what the source NIfTI file contained, but they do not participate in the spatial mapping. This avoids the classic NIfTI problem of two conflicting affines: once the data enters the specification, there is one spatial mapping, period. The legacy matrices and the two code integers are enough to understand the original file's intent without perpetuating the ambiguity.
+**Why the specification fields are authoritative and the original matrices are legacy.** The specification's `space_origin` and `space_direction` fields are the single source of truth for spatial information. On write-back, both the sform and qform are reconstructed from these fields. The original 4×4 matrices are stored as `legacy.tags.sform` and `legacy.tags.qform` for provenance — they let a human or tool inspect what the source NIfTI file contained, but they do not participate in the spatial mapping. This avoids the classic NIfTI problem of two conflicting affines: once the data enters the specification, there is one spatial mapping, period. The legacy matrices and the two code integers are enough to understand the original file's intent without perpetuating the ambiguity.
 
 **Why `cal_min`/`cal_max` are included despite being display hints.** The duckn specification excludes display preferences by design. However, this extension's purpose is round-trip fidelity, not specification purity. Display calibration values are part of the NIfTI header and are used by viewers (FSLeyes, MRIcron, FreeSurfer) to set initial window/level. Dropping them changes the user experience on round-trip.
 
