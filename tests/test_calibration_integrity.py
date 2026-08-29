@@ -185,6 +185,59 @@ class TestWritersAgreeWithTheirMetadata:
             zarr_to_dicom(src, tmp_path / "g.dcm", overwrite=True)
 
 
+class TestDerivationDropsSourceProvenance:
+    """A derived array no longer re-encodes what its source described."""
+
+    def _vol_with_dicom_ext(self):
+        vol = _ct_volume(np.arange(64, dtype=np.uint16).reshape(4, 4, 4))
+        vol.metadata.extensions = {
+            "dicom": {"version": "1.0", "tags": {"KVP": 120, "Modality": "CT"}},
+            "custom": {"keep": "me"},
+        }
+        return vol
+
+    def test_resample_drops_the_dicom_extension(self):
+        pytest.importorskip("scipy")
+        from duckn.resample import resample
+
+        out = resample(self._vol_with_dicom_ext(), factor=2.0, order=1)
+        assert "dicom" not in (out.metadata.extensions or {})
+
+    def test_resample_keeps_extensions_it_does_not_own(self):
+        """Only format provenance is dropped; other extensions are not ours."""
+        pytest.importorskip("scipy")
+        from duckn.resample import resample
+
+        out = resample(self._vol_with_dicom_ext(), factor=2.0, order=1)
+        assert (out.metadata.extensions or {}).get("custom") == {"keep": "me"}
+
+    def test_source_array_is_untouched(self):
+        pytest.importorskip("scipy")
+        from duckn.resample import resample
+
+        vol = self._vol_with_dicom_ext()
+        resample(vol, factor=2.0, order=1)
+        assert "dicom" in vol.metadata.extensions
+
+
+class TestCastNormalizeChangesQuantity:
+    def test_normalize_clears_sample_units(self):
+        """Values rescaled into a dtype range are no longer in HU."""
+        from duckn.cast import cast
+
+        out = cast(_ct_volume(np.arange(8, dtype=np.uint16).reshape(2, 2, 2)),
+                   "uint8", normalize=True)
+        assert out.metadata.value_transforms is None
+        assert out.metadata.sample_units is None
+
+    def test_plain_cast_keeps_units(self):
+        """A dtype change without normalizing is an encoding change only."""
+        from duckn.cast import cast
+
+        out = cast(_ct_volume(), "int32")
+        assert out.metadata.sample_units == "HU"
+
+
 class TestPerInstanceRescaleVariation:
     """One value_transform cannot describe a series that disagrees."""
 

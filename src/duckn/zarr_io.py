@@ -138,9 +138,10 @@ def _compose_linear_transforms(
             composed_slope = slope * composed_slope
             composed_intercept = slope * composed_intercept + intercept
         else:
-            warnings.warn(
-                f"Skipping unsupported value_transform name={name!r}",
-                stacklevel=3,
+            # Unreachable in normal use: a non-affine or unknown name sends
+            # the chain down the sequential path, which reports it there.
+            raise ValueError(
+                f"unsupported value_transform {name!r} in an affine chain"
             )
 
     return composed_slope, composed_intercept
@@ -231,9 +232,15 @@ def _apply_value_transforms(
             if intercept != 0.0:
                 out = out + work.type(intercept)
         else:
-            warnings.warn(
-                f"Skipping unsupported value_transform name={name!r}",
-                stacklevel=3,
+            # Returning a partly transformed array under the calibrated
+            # contract would misreport the data — the values would look
+            # plausible and be in no defined units (duckn-spec §4.2). The
+            # stored values remain available via the raw accessors.
+            raise ValueError(
+                f"unsupported value_transform {name!r}: the value mapping is "
+                "undefined, so calibrated values cannot be produced. Read the "
+                "stored values instead (apply_value_transforms=False, or "
+                "Volume.raw)."
             )
 
     if out.dtype != target:

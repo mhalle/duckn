@@ -78,6 +78,12 @@ def cast(
         result = data.astype(target)
 
     new_meta = deepcopy(vol.metadata)
+    if normalize:
+        # Normalizing rescales into the target dtype's range, which changes
+        # the *quantity*, not just its encoding — the values are no longer
+        # in the source's units, so claiming them would be false
+        # (duckn-spec §4.1).
+        new_meta.sample_units = None
     # Calibrated values are baked into the result — clear value_transforms
     # so vol.data on the result doesn't double-apply.
     new_meta.value_transforms = None

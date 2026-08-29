@@ -42,6 +42,12 @@ class Interpolation(IntEnum):
     CUBIC = 3
 
 
+# Extensions that describe a *source file* rather than this array. They do
+# not survive derivation (duckn-spec §4.5); recording what an array was
+# derived from is the `provenance` extension's job, not theirs.
+_SOURCE_PROVENANCE_EXTENSIONS = frozenset({"dicom", "nifti", "fits"})
+
+
 def _compute_zoom_factors(
     vol: Volume,
     spacing: float | None,
@@ -211,6 +217,18 @@ def resample(
     # would apply the chain a second time on the next read.
     if materialize:
         new_meta.value_transforms = None
+
+    # A resampled array is derived with respect to whatever its source
+    # format described, so format-specific provenance does not survive
+    # (spec §4.5). What that metadata says about an acquisition is no
+    # longer true of this array's values or its grid.
+    if new_meta.extensions:
+        kept = {
+            name: ext
+            for name, ext in new_meta.extensions.items()
+            if name not in _SOURCE_PROVENANCE_EXTENSIONS
+        }
+        new_meta.extensions = kept or None
     spatial_idx = 0
     for i, ax in enumerate(new_meta.axes):
         if ax.space_direction is not None:

@@ -389,9 +389,11 @@ These are the most commonly anonymized fields. When anonymized, include them wit
 
 `LossyImageCompression` itself is surfaced as the extension-level `lossy_compressed` field (§3.1) rather than as a tag.
 
-**Pixel encoding attributes are not recommended tags.** Attributes describing how the source encoded its pixels — `PhotometricInterpretation`, `PlanarConfiguration`, `BitsStored`, `HighBit`, `SamplesPerPixel`, `RescaleSlope`/`RescaleIntercept`, `ModalityLUTSequence` — describe the *source encoding*, not the array they would be attached to, and the duckn convention already describes the array's encoding authoritatively (§2). Carrying them yields metadata that is redundant at best and false at worst: `PhotometricInterpretation` is the sharp case, since JPEG-compressed color is commonly stored as `YBR_FULL_422` while a decoder hands back RGB.
+**Value-mapping attributes are excluded; pixel-description attributes are not.** The line runs through whether the duckn convention has an authoritative counterpart. `RescaleSlope`/`RescaleIntercept`/`RescaleType` and the Modality LUT attributes do — `value_transforms` and `sample_units` describe the array's value mapping as written — so carrying the DICOM copies is redundant while the array is unchanged and false once a writer materializes or re-encodes it. They are excluded (§9).
 
-They are listed in §9 and discussed in §10.
+`BitsStored`, `HighBit`, `PhotometricInterpretation`, `PlanarConfiguration` and `SamplesPerPixel` have no such counterpart: they record things the Zarr dtype does not say, such as 12 significant bits in a 16-bit container or an inverted display polarity, and a DICOM writer needs them to reconstruct a faithful object. They stay, with the caveat below.
+
+**Caveat — they describe the source encoding.** A decoder may hand back a different layout than the source stored: JPEG-compressed color is commonly `YBR_FULL_422` in the tag while `pixel_array` returns RGB, and `BitsStored` ceases to describe an array that has been materialized to floating point. Writers should normalize such tags to the decoded array where they can, and readers must treat the convention fields as authoritative for anything the two both appear to describe (§2).
 
 ---
 
@@ -732,7 +734,6 @@ A CT volume that includes coded anatomy using DICOM's standard sequence pattern:
 | Image Orientation (Patient) | Losslessly captured by `axes[i].space_direction` |
 | Rows, Columns, Number of Frames | Losslessly captured by Zarr `shape` |
 | Bits Allocated, Bits Stored, High Bit, Pixel Representation | Losslessly captured by Zarr `data_type` |
-| Photometric Interpretation, Planar Configuration, Samples per Pixel | Describe the source pixel encoding; the array's layout is given by `shape`, `data_type`, and the `axes` color `kind` |
 | Rescale Slope, Rescale Intercept, Rescale Type | Captured by `value_transforms` and `sample_units`, which are authoritative for the array as written |
 | Modality LUT Sequence, LUT Descriptor, LUT Data | Captured by the `lut` value transform |
 | Overlay Data | Separate array if needed |

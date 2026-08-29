@@ -94,6 +94,10 @@ _BINARY_VRS = frozenset({"OB", "OW", "OF", "OD", "OL", "OV", "UN"})
 
 # Tags to skip: bulk binary data represented by the Zarr array itself,
 # and geometry fields already captured by convention fields
+# Attributes that describe the source's *encoding* rather than the data.
+# duckn's own fields describe the array authoritatively, and a duckn writer
+# may change the encoding (materialize, re-encode), at which point these
+# would describe an encoding the array no longer uses (dicom-spec §9).
 _SKIP_KEYWORDS = frozenset({
     "PixelData",
     "OverlayData",
@@ -104,6 +108,19 @@ _SKIP_KEYWORDS = frozenset({
     "PixelRepresentation",
     "ImagePositionPatient",
     "ImageOrientationPatient",
+    # The value mapping. Unlike the pixel-description attributes, which
+    # still describe the array and are used to reconstruct a faithful
+    # DICOM, these have an authoritative duckn counterpart in
+    # value_transforms/sample_units — and a duckn writer may change the
+    # encoding, leaving the DICOM copies describing one the array no
+    # longer uses (dicom-spec §9).
+    "RescaleSlope",
+    "RescaleIntercept",
+    "RescaleType",
+    "ModalityLUTSequence",
+    "ModalityLUTType",
+    "LUTDescriptor",
+    "LUTData",
 })
 
 
