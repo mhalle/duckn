@@ -79,6 +79,112 @@ class TestAdapterRoundTripPreservesQuantity:
         assert float(np.max(np.abs(rt.data - vol.data))) == 0.0
 
 
+class TestWritersAgreeWithTheirMetadata:
+    """A file must not declare units over values that are not in them."""
+
+    LINEAR = [{"name": "linear", "parameters": {"slope": 1.0, "intercept": -1024.0}}]
+    LUT = [{"name": "lut", "parameters": {"first_value": 1000, "values": [-24.0, -23.0, -22.0, -21.0]}}]
+
+    def _store(self, tmp_path, name, transforms):
+        import zarr
+
+        raw = np.arange(1000, 1008, dtype=np.uint16).reshape(2, 2, 2)
+        path = tmp_path / name
+        arr = zarr.create_array(
+            store=str(path), shape=raw.shape, dtype="uint16",
+            chunks=raw.shape, zarr_format=3,
+        )
+        arr[:] = raw
+        arr.attrs["duckn"] = {
+            "version": "1.1",
+            "space": "left-posterior-superior",
+            "space_origin": [0.0, 0.0, 0.0],
+            "sample_units": "HU",
+            "value_transforms": transforms,
+            "axes": [
+                {"kind": "space", "space_direction": v, "unit": "mm"}
+                for v in ([0, 0, 1.0], [0, 1.0, 0], [1.0, 0, 0])
+            ],
+        }
+        return path
+
+    def test_nrrd_materializes(self, tmp_path):
+        """NRRD cannot carry a transform, so it must write calibrated values."""
+        nrrd = pytest.importorskip("nrrd")
+        from duckn.convert import zarr_to_nrrd
+
+        src = self._store(tmp_path, "a.zarr", self.LINEAR)
+        zarr_to_nrrd(src, tmp_path / "a.nrrd", overwrite=True)
+        values, header = nrrd.read(str(tmp_path / "a.nrrd"), index_order="C")
+        np.testing.assert_allclose(values.ravel()[:3], [-24.0, -23.0, -22.0])
+        assert header.get("sample units") == "HU"
+
+    def test_nifti_preserves_a_single_linear_via_scl(self, tmp_path):
+        nib = pytest.importorskip("nibabel")
+        from duckn.nifti_convert import zarr_to_nifti
+
+        src = self._store(tmp_path, "b.zarr", self.LINEAR)
+        zarr_to_nifti(src, tmp_path / "b.nii", overwrite=True)
+        img = nib.load(str(tmp_path / "b.nii"))
+        assert float(img.dataobj.slope) == 1.0
+        assert float(img.dataobj.inter) == -1024.0
+        np.testing.assert_allclose(img.get_fdata().ravel()[:3], [-24.0, -23.0, -22.0])
+
+    def test_nifti_materializes_a_lut(self, tmp_path):
+        """scl_slope/inter cannot express a table, so write the values."""
+        nib = pytest.importorskip("nibabel")
+        from duckn.nifti_convert import zarr_to_nifti
+
+        src = self._store(tmp_path, "c.zarr", self.LUT)
+        zarr_to_nifti(src, tmp_path / "c.nii", overwrite=True)
+        img = nib.load(str(tmp_path / "c.nii"))
+        np.testing.assert_allclose(img.get_fdata().ravel()[:3], [-24.0, -23.0, -22.0])
+
+    def test_dicom_derives_rescale_from_value_transforms(self, tmp_path):
+        pydicom = pytest.importorskip("pydicom")
+        from duckn.dicom_convert import zarr_to_dicom
+
+        src = self._store(tmp_path, "d.zarr", self.LINEAR)
+        zarr_to_dicom(src, tmp_path / "d.dcm", overwrite=True)
+        ds = pydicom.dcmread(str(tmp_path / "d.dcm"))
+        assert float(ds.RescaleSlope) == 1.0
+        assert float(ds.RescaleIntercept) == -1024.0
+        assert str(ds.RescaleType) == "HU"
+
+    def test_dicom_writes_a_representable_lut_as_a_sequence(self, tmp_path):
+        pydicom = pytest.importorskip("pydicom")
+        from duckn.dicom_convert import zarr_to_dicom
+
+        lut = [{"name": "lut", "parameters": {"first_value": 1000, "values": [10.0, 20.0, 30.0, 40.0]}}]
+        src = self._store(tmp_path, "e.zarr", lut)
+        zarr_to_dicom(src, tmp_path / "e.dcm", overwrite=True)
+        ds = pydicom.dcmread(str(tmp_path / "e.dcm"))
+        assert "ModalityLUTSequence" in ds
+        # mutually exclusive with a linear rescale (PS3.3 C.11.1.1.2)
+        assert "RescaleSlope" not in ds
+
+    def test_dicom_refuses_an_unrepresentable_lut(self, tmp_path):
+        """LUT Data is unsigned, so negative HU has no representation."""
+        pytest.importorskip("pydicom")
+        from duckn.dicom_convert import zarr_to_dicom
+
+        src = self._store(tmp_path, "f.zarr", self.LUT)
+        with pytest.raises(ValueError, match=r"\[0, 65535\]"):
+            zarr_to_dicom(src, tmp_path / "f.dcm", overwrite=True)
+
+    def test_dicom_refuses_a_chain_it_cannot_express(self, tmp_path):
+        pytest.importorskip("pydicom")
+        from duckn.dicom_convert import zarr_to_dicom
+
+        chain = [
+            {"name": "linear", "parameters": {"slope": 2.0, "intercept": 0.0}},
+            {"name": "linear", "parameters": {"slope": 1.0, "intercept": -100.0}},
+        ]
+        src = self._store(tmp_path, "g.zarr", chain)
+        with pytest.raises(ValueError, match="Modality LUT"):
+            zarr_to_dicom(src, tmp_path / "g.dcm", overwrite=True)
+
+
 class TestPerInstanceRescaleVariation:
     """One value_transform cannot describe a series that disagrees."""
 

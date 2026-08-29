@@ -244,6 +244,26 @@ def _apply_value_transforms(
     return out
 
 
+def materialize(
+    data: np.ndarray,
+    transforms: list[Any] | None,
+    transform_dtype: np.dtype | None = None,
+) -> np.ndarray:
+    """Apply a whole transform chain, returning calibrated values.
+
+    Dispatches to the affine fast path or the sequential one. Writers use
+    this when the destination format cannot carry the transforms: the
+    calibrated values go to the file and the transforms are dropped, per
+    the materialize policy in duckn-spec §4.3.
+    """
+    if not transforms:
+        return data
+    if has_nonlinear_transforms(transforms):
+        return _apply_value_transforms(data, transforms, transform_dtype)
+    slope, intercept = _compose_linear_transforms(transforms)
+    return _rescale(data, slope, intercept, transform_dtype)
+
+
 def _rescale(
     data: np.ndarray,
     slope: float,

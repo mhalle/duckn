@@ -2537,6 +2537,52 @@ def zarr_to_dicom(
         dicom_ext = meta.extensions["dicom"]
         stored_tags = dicom_ext.get("tags", {})
 
+    # The value mapping must be written from `value_transforms`, which is
+    # authoritative — not left to whatever rescale tags a dicom extension
+    # happens to carry, which describe the *source's* encoding and may not
+    # match what is written here. DICOM's Modality LUT stage represents an
+    # affine mapping as RescaleSlope/Intercept and an explicit table as a
+    # Modality LUT Sequence, so both duckn transform types round-trip.
+    modality_lut_tags: dict[str, Any] = {}
+    if meta.value_transforms:
+        transforms = meta.value_transforms
+        names = [vt.name for vt in transforms]
+        if names == ["linear"]:
+            params = transforms[0].parameters or {}
+            modality_lut_tags["RescaleSlope"] = float(params.get("slope", 1.0))
+            modality_lut_tags["RescaleIntercept"] = float(params.get("intercept", 0.0))
+        elif names == ["lut"]:
+            params = transforms[0].parameters or {}
+            raw_values = list(params.get("values", []))
+            # LUT Data is US/OW: unsigned 16-bit integers. A table holding
+            # negative or fractional real values (HU, for instance) has no
+            # Modality LUT representation, and rounding or wrapping it into
+            # one would write different numbers than the array means.
+            bad = [
+                v for v in raw_values
+                if v != int(v) or not (0 <= int(v) <= 65535)
+            ]
+            if bad:
+                raise ValueError(
+                    "lut values must be integers in [0, 65535] to be written as "
+                    f"a DICOM Modality LUT; found {bad[:3]}"
+                    f"{'...' if len(bad) > 3 else ''}. Materialize the array "
+                    "first (duckn-spec §4.3) so the values need no transform."
+                )
+            modality_lut_tags["_ModalityLUT"] = (
+                int(params.get("first_value", 0)),
+                [int(v) for v in raw_values],
+            )
+        else:
+            raise ValueError(
+                f"value_transforms {names} cannot be represented in a DICOM "
+                "Modality LUT, which carries either a linear rescale or a "
+                "single explicit table. Materialize the array first "
+                "(duckn-spec §4.3) so the values need no transform."
+            )
+        if meta.sample_units:
+            modality_lut_tags["RescaleType"] = str(meta.sample_units)
+
     # Detect modality from stored tags
     modality = stored_tags.get("Modality", "OT")
 
@@ -2601,6 +2647,28 @@ def zarr_to_dicom(
             _restore_tag(ds, keyword, value)
         except Exception:
             continue
+
+    # Write the value mapping from value_transforms, after the stored tags
+    # so it overrides any stale rescale the source header carried.
+    if modality_lut_tags:
+        lut_spec = modality_lut_tags.pop("_ModalityLUT", None)
+        for keyword, value in modality_lut_tags.items():
+            setattr(ds, keyword, value)
+        if lut_spec is not None:
+            first_value, values = lut_spec
+            item = Dataset()
+            item.add_new(0x00283002, "US", [len(values) % 65536, first_value, 16])
+            item.add_new(
+                0x00283006, "OW", np.asarray(values, dtype="<u2").tobytes()
+            )
+            if meta.sample_units:
+                item.ModalityLUTType = str(meta.sample_units)
+            ds.ModalityLUTSequence = Sequence([item])
+            # A Modality LUT Sequence and a linear rescale are mutually
+            # exclusive (PS3.3 C.11.1.1.2).
+            for keyword in ("RescaleSlope", "RescaleIntercept", "RescaleType"):
+                if keyword in ds:
+                    delattr(ds, keyword)
 
     # SOP Class
     if is_color:

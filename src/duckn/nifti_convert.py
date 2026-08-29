@@ -507,6 +507,23 @@ def zarr_to_nifti(
         duckn_attrs = arr.attrs.get("duckn", {})
         meta = DucknMetadata(**duckn_attrs)
 
+    # NIfTI carries exactly one affine value mapping, in scl_slope/scl_inter.
+    # A chain that is a single linear transform round-trips through it
+    # exactly; anything else — a lut, several stacked transforms — has no
+    # representation, so the calibrated values are written and the chain is
+    # dropped (duckn-spec §4.3). Writing stored values and recording only
+    # part of the chain would leave the file's values silently misscaled.
+    scl_transform = None
+    if meta.value_transforms:
+        transforms = meta.value_transforms
+        if len(transforms) == 1 and transforms[0].name == "linear":
+            scl_transform = transforms[0]
+        else:
+            from .zarr_io import materialize
+
+            data = materialize(data, transforms)
+            meta = meta.model_copy(update={"value_transforms": None})
+
     ndim = data.ndim
 
     # --- Parse NIfTI extension if present ---
@@ -615,13 +632,12 @@ def zarr_to_nifti(
 
         hdr.set_qform(qform_affine, code=qform_code_out)
 
-    # --- Restore value_transforms → scl_slope/scl_inter ---
-    if meta.value_transforms:
-        for vt in meta.value_transforms:
-            if vt.name == "linear" and vt.parameters:
-                hdr["scl_slope"] = vt.parameters.get("slope", 0.0)
-                hdr["scl_inter"] = vt.parameters.get("intercept", 0.0)
-                break
+    # --- Restore the single linear transform → scl_slope/scl_inter ---
+    # Only set when the whole chain was that one transform; any other chain
+    # was materialized above and must leave these unset.
+    if scl_transform is not None and scl_transform.parameters:
+        hdr["scl_slope"] = scl_transform.parameters.get("slope", 0.0)
+        hdr["scl_inter"] = scl_transform.parameters.get("intercept", 0.0)
 
     # --- Restore xyzt_units ---
     spatial_unit_code = 2  # default mm

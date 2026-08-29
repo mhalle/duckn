@@ -641,6 +641,16 @@ def zarr_to_nrrd(
 
         dim_names = arr.metadata.dimension_names
 
+    if meta.value_transforms:
+        # NRRD has no way to carry a value transform, so writing the stored
+        # values would leave a file whose `sample units` describe values it
+        # does not contain. Write the calibrated values instead and drop the
+        # transforms (duckn-spec §4.3, materialize).
+        from .zarr_io import materialize
+
+        data = materialize(data, meta.value_transforms)
+        meta = meta.model_copy(update={"value_transforms": None})
+
     header = _metadata_to_header(meta, dim_names=dim_names)
     header["encoding"] = encoding
 
