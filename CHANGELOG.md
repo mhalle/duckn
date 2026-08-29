@@ -2,6 +2,59 @@
 
 ## Unreleased
 
+### Fixed — calibration integrity across readers, writers, and adapters
+- `to_sitk`/`to_vtk`/`to_nifti` emit calibrated values (since 0.1.7), but
+  the matching `from_*` wrapped those values as `Volume.raw` while keeping
+  the caller's `value_transforms` — so a round trip applied the chain
+  twice and shifted a CT volume by exactly its intercept, 1024 HU,
+  silently. The `from_*` side now drops the transforms per §4.3.
+- `RescaleSlope`/`RescaleIntercept`/`RescaleType` were read from the first
+  instance and asserted over the whole stacked array. Per-instance
+  variation is real (PET, NM), and every other slice was silently wrong by
+  the difference. All three extraction sites now require agreement and
+  otherwise warn and record no calibration — uncalibrated values are
+  wrong-looking, where a misapplied intercept is plausibly wrong.
+- `zarr_to_nrrd` wrote stored values under a `sample units` header with
+  nothing recording the rescale. NRRD's `old min`/`old max` is not a
+  substitute: it records the range the data spanned *before* a
+  quantization step rather than stating a mapping, so the forward
+  direction is implicit in the storage type rather than in the metadata,
+  encoding a transform into it would mean synthesizing an original range
+  the data never had, it cannot express a `lut`, and most readers treat it
+  as informational. The writer materializes instead. This also settles a
+  disagreement where `io._write_nrrd` already wrote calibrated values, so
+  one volume produced two different files depending on the entry point.
+- `zarr_to_nifti` took the first `linear` transform and stopped, silently
+  discarding a stacked transform or a `lut`. A single linear chain still
+  round-trips exactly through `scl_slope`/`scl_inter`; anything else is
+  materialized.
+- `zarr_to_dicom` never derived the value mapping from `value_transforms`;
+  rescale reached the output only when a dicom extension happened to carry
+  the source's tags. It now writes the mapping from the transforms, which
+  are authoritative, using DICOM's own forms — `RescaleSlope`/`Intercept`
+  for an affine chain, a Modality LUT Sequence for a table (mutually
+  exclusive, PS3.3 C.11.1.1.2) — and refuses where DICOM cannot represent
+  one, since LUT Data is unsigned 16-bit and a table of negative
+  Hounsfield units has no Modality LUT form.
+- Unknown transform names now fail the calibrated read (§4.2) rather than
+  returning a partially applied chain that looks plausible and is in no
+  defined units. Stored values remain reachable.
+- `resample()` drops the `dicom`/`nifti`/`fits` extensions, which describe
+  a source the resampled array no longer re-encodes (§4.5).
+- `cast(normalize=True)` cleared `value_transforms` but kept
+  `sample_units`, leaving values spanning 0–255 still claiming HU.
+- Metadata is re-validated on write (`models.duckn_attrs`), so a model
+  mutated after construction fails the write instead of producing a store
+  no reader will open.
+
+### Changed
+- Only the value-mapping attributes are excluded from the dicom
+  extension's `tags`. `BitsStored`, `HighBit`, `PhotometricInterpretation`,
+  `PlanarConfiguration` and `SamplesPerPixel` stay: they record what the
+  Zarr dtype does not, a DICOM writer needs them to reconstruct, and
+  unlike the rescale attributes they have no authoritative duckn
+  counterpart.
+
 ### Added — value interpretation and derived-data rules (spec)
 - duckn convention §4 "Value Interpretation" defines the model the code has
   been converging on: `sample_units` names the *quantity*, `value_transforms`

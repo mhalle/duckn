@@ -642,10 +642,14 @@ def zarr_to_nrrd(
         dim_names = arr.metadata.dimension_names
 
     if meta.value_transforms:
-        # NRRD has no way to carry a value transform, so writing the stored
-        # values would leave a file whose `sample units` describe values it
-        # does not contain. Write the calibrated values instead and drop the
-        # transforms (duckn-spec §4.3, materialize).
+        # NRRD's only value-mapping field is `old min`/`old max`, and it is
+        # not a transform: it records the range the data spanned *before* a
+        # quantization step, leaving the forward mapping implicit in the
+        # storage type's range. Encoding a duckn transform into it would
+        # mean synthesizing an "original" range the data never had — and it
+        # cannot express a lut at all, nor do most readers apply it. So the
+        # calibrated values are written and the transforms dropped
+        # (duckn-spec §4.3, materialize).
         from .zarr_io import materialize
 
         data = materialize(data, meta.value_transforms)
