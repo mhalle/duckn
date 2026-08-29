@@ -1,6 +1,35 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-08-29
+
+A correctness release. The theme is a single rule applied throughout —
+**metadata must agree with the bytes it describes** — which turned out to
+be violated in every format writer, in the adapter round trips, and in the
+segmentation specification's relationship to its own implementation.
+
+**If you are upgrading, read this first:**
+
+- **Stores written by 0.1.x are migrated on read.** The seg extension goes
+  0.5 → 0.6 with a breaking layout change; a shim converts the old shapes
+  automatically, so existing stores keep working. Without it they would
+  have become unreadable, and the `metadata.dicom` variant would have
+  loaded fine while silently exporting no classification.
+- **Adapter round trips were wrong and are now right.** `from_sitk`,
+  `from_vtk` and `from_nifti` were re-applying value transforms that
+  `to_*` had already applied, shifting a CT volume by exactly its
+  intercept — 1024 HU — with no error. If you have data that made that
+  round trip, it is off by the intercept.
+- **Writers that silently mislabeled values now either calibrate or
+  refuse.** NRRD wrote stored values under a `sample units` header, NIfTI
+  discarded all but the first transform, and DICOM never derived a rescale
+  at all. Files produced by those paths declared units their values were
+  not in.
+- **`duckn.io` transposed NRRD arrays** relative to their header geometry.
+  Round trips through `duckn.io` alone looked correct because the read and
+  write errors cancelled.
+
+Convention version is now 1.1 (adds the `lut` value transform). Extension
+versions are independent; `seg` is 0.6.
 
 ### Fixed — calibration integrity across readers, writers, and adapters
 - `to_sitk`/`to_vtk`/`to_nifti` emit calibrated values (since 0.1.7), but
