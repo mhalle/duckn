@@ -78,6 +78,11 @@ def from_sitk(
     # Convert from external convention back to duckn space
     if metadata is not None:
         new_meta = deepcopy(metadata)
+        # The incoming array holds calibrated values — `to_*` writes
+        # `vol.data`, and these formats have no notion of a duckn value
+        # transform. Carrying the transforms forward would apply them a
+        # second time on the next read (duckn-spec §4.3, materialize).
+        new_meta.value_transforms = None
         flip = _get_target_flip(metadata, convention=convention)
     else:
         from .models import AxisKind, AxisMetadata, Centering, SpaceName

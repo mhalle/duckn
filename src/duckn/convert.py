@@ -13,6 +13,7 @@ import numpy as np
 import zarr
 
 from .models import (
+    duckn_attrs,
     AxisKind, AxisMetadata, Centering, DwmriAxisExtension, DwmriExtension,
     DucknMetadata, SegmentationExtension, SpaceName, _SPACE_ABBREVS,
 )
@@ -587,7 +588,7 @@ def nrrd_to_zarr(
     if chunks is None:
         chunks = _auto_chunks(shape, data.dtype)
 
-    attrs = {"duckn": meta.model_dump(exclude_none=True)}
+    attrs = duckn_attrs(meta)
 
     is_zip = _is_zip_path(zarr_path)
     with open_store(zarr_path, mode="w", overwrite=overwrite) as store:
@@ -634,11 +635,25 @@ def zarr_to_nrrd(
     with open_store(zarr_path, mode="r") as store:
         arr = zarr.open_array(store, mode="r")
         data = arr[:]
-        duckn_attrs = arr.attrs.get("duckn", {})
+        stored_attrs = arr.attrs.get("duckn", {})
 
-        meta = DucknMetadata(**duckn_attrs)
+        meta = DucknMetadata(**stored_attrs)
 
         dim_names = arr.metadata.dimension_names
+
+    if meta.value_transforms:
+        # NRRD's only value-mapping field is `old min`/`old max`, and it is
+        # not a transform: it records the range the data spanned *before* a
+        # quantization step, leaving the forward mapping implicit in the
+        # storage type's range. Encoding a duckn transform into it would
+        # mean synthesizing an "original" range the data never had — and it
+        # cannot express a lut at all, nor do most readers apply it. So the
+        # calibrated values are written and the transforms dropped
+        # (duckn-spec §4.3, materialize).
+        from .zarr_io import materialize
+
+        data = materialize(data, meta.value_transforms)
+        meta = meta.model_copy(update={"value_transforms": None})
 
     header = _metadata_to_header(meta, dim_names=dim_names)
     header["encoding"] = encoding

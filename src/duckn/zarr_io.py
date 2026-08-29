@@ -138,12 +138,137 @@ def _compose_linear_transforms(
             composed_slope = slope * composed_slope
             composed_intercept = slope * composed_intercept + intercept
         else:
-            warnings.warn(
-                f"Skipping unsupported value_transform name={name!r}",
-                stacklevel=3,
+            # Unreachable in normal use: a non-affine or unknown name sends
+            # the chain down the sequential path, which reports it there.
+            raise ValueError(
+                f"unsupported value_transform {name!r} in an affine chain"
             )
 
     return composed_slope, composed_intercept
+
+
+def _transform_parts(vt: Any) -> tuple[Any, dict]:
+    """Normalize a ValueTransform model or raw dict to (name, parameters)."""
+    if hasattr(vt, "name"):
+        return vt.name, (vt.parameters or {})
+    return vt.get("name"), (vt.get("parameters") or {})
+
+
+# Transform names known to be affine, and therefore safe to collapse into a
+# single (slope, intercept) pair. Anything else — including a name this
+# version does not implement — must not take that fast path.
+_AFFINE_TRANSFORMS = frozenset({"linear"})
+
+
+def has_nonlinear_transforms(transforms: list[Any] | None) -> bool:
+    """True when the chain contains a transform that is not known to be affine.
+
+    An all-affine chain collapses to a single (slope, intercept) pair and
+    takes the fast path; anything else must be applied step by step. Unknown
+    names count as non-affine so that a future transform type is never
+    silently dropped by the affine path.
+    """
+    if not transforms:
+        return False
+    return any(
+        _transform_parts(vt)[0] not in _AFFINE_TRANSFORMS for vt in transforms
+    )
+
+
+def _apply_lut(data: np.ndarray, params: dict, work: np.dtype) -> np.ndarray:
+    """Map stored values through an explicit lookup table.
+
+    ``values[i]`` is the real value for stored value ``first_value + i``;
+    values outside the table clamp to its ends (the DICOM Modality LUT rule).
+    """
+    table = np.asarray(params.get("values", []), dtype=work)
+    if table.size == 0:
+        raise ValueError("lut transform has an empty 'values' table")
+
+    idx = np.asarray(data)
+    if not (
+        np.issubdtype(idx.dtype, np.integer) or np.issubdtype(idx.dtype, np.bool_)
+    ):
+        # A lut indexes stored values, so the array it applies to must hold
+        # integers. Rounding float data would silently invent an index —
+        # and NaN would land on an arbitrary table entry.
+        raise ValueError(
+            f"lut transform requires integer stored values, got {idx.dtype}"
+        )
+    idx = idx.astype(np.int64, copy=False) - int(params.get("first_value", 0))
+    # Not in-place: a scalar index (arr[i, j, k]) yields a 0-d result that
+    # np.clip cannot write back through `out=`.
+    idx = np.clip(idx, 0, table.size - 1)
+    return table[idx]
+
+
+def _apply_value_transforms(
+    data: np.ndarray,
+    transforms: list[Any] | None,
+    transform_dtype: np.dtype | None,
+) -> np.ndarray:
+    """Apply a transform chain in order, supporting non-affine steps.
+
+    Used when :func:`has_nonlinear_transforms` is True; the all-linear case
+    is handled by composing to one (slope, intercept) and calling
+    :func:`_rescale`.
+    """
+    import warnings
+
+    target = transform_dtype if transform_dtype is not None else np.dtype(np.float32)
+    work = (
+        np.dtype(np.float64) if target == np.dtype(np.float64) else np.dtype(np.float32)
+    )
+
+    out = data
+    for vt in transforms or []:
+        name, params = _transform_parts(vt)
+        if name == "lut":
+            out = _apply_lut(out, params, work)
+        elif name == "linear":
+            slope = float(params.get("slope", 1.0))
+            intercept = float(params.get("intercept", 0.0))
+            out = out.astype(work, copy=False) * work.type(slope)
+            if intercept != 0.0:
+                out = out + work.type(intercept)
+        else:
+            # Returning a partly transformed array under the calibrated
+            # contract would misreport the data — the values would look
+            # plausible and be in no defined units (duckn-spec §4.2). The
+            # stored values remain available via the raw accessors.
+            raise ValueError(
+                f"unsupported value_transform {name!r}: the value mapping is "
+                "undefined, so calibrated values cannot be produced. Read the "
+                "stored values instead (apply_value_transforms=False, or "
+                "Volume.raw)."
+            )
+
+    if out.dtype != target:
+        if np.issubdtype(target, np.integer):
+            out = np.rint(out).astype(target, copy=False)
+        else:
+            out = out.astype(target, copy=False)
+    return out
+
+
+def materialize(
+    data: np.ndarray,
+    transforms: list[Any] | None,
+    transform_dtype: np.dtype | None = None,
+) -> np.ndarray:
+    """Apply a whole transform chain, returning calibrated values.
+
+    Dispatches to the affine fast path or the sequential one. Writers use
+    this when the destination format cannot carry the transforms: the
+    calibrated values go to the file and the transforms are dropped, per
+    the materialize policy in duckn-spec §4.3.
+    """
+    if not transforms:
+        return data
+    if has_nonlinear_transforms(transforms):
+        return _apply_value_transforms(data, transforms, transform_dtype)
+    slope, intercept = _compose_linear_transforms(transforms)
+    return _rescale(data, slope, intercept, transform_dtype)
 
 
 def _rescale(
@@ -232,9 +357,13 @@ class DucknArray:
         self.transform_dtype = (
             np.dtype(transform_dtype) if transform_dtype is not None else None
         )
-        self._slope, self._intercept = _compose_linear_transforms(
-            metadata.value_transforms
-        )
+        self._nonlinear = has_nonlinear_transforms(metadata.value_transforms)
+        if self._nonlinear:
+            self._slope, self._intercept = 1.0, 0.0
+        else:
+            self._slope, self._intercept = _compose_linear_transforms(
+                metadata.value_transforms
+            )
         self._store_to_close = _store_to_close
 
     @property
@@ -289,12 +418,18 @@ class DucknArray:
 
     @property
     def _is_identity(self) -> bool:
+        if self._nonlinear:
+            return False
         return self._slope == 1.0 and self._intercept == 0.0
 
     def __getitem__(self, key):
         data = self._arr[key]
         if not self.apply_value_transforms:
             return data
+        if self._nonlinear:
+            return _apply_value_transforms(
+                data, self._metadata.value_transforms, self.transform_dtype
+            )
         return _rescale(data, self._slope, self._intercept, self.transform_dtype)
 
     def __array__(self, dtype=None, copy=None):

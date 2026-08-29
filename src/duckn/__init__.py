@@ -105,12 +105,13 @@ SegmentationExtension, Segment
 
 from .convert import nrrd_to_zarr, nrrd_to_zarr_zerocopy, zarr_to_nrrd, zarr_to_nrrd_zerocopy
 from .models import (
+    SEG_EXTENSION_VERSION,
     AxisKind,
     AxisMetadata,
     Centering,
     CodedEntry,
     ConversionParameter,
-    Identifier,
+    Designation,
     DicomClassification,
     DicomExtension,
     DwmriAcquisition,
@@ -134,7 +135,9 @@ from .models import (
     UnitObject,
     UnitSystemEntry,
     ValueTransform,
+    effective_label_values,
     validate_against_shape,
+    validate_seg_extension,
 )
 from .zarr_io import (
     DucknArray,
@@ -147,12 +150,13 @@ from .zarr_io import (
 )
 
 __all__ = [  # noqa: RUF022
+    "SEG_EXTENSION_VERSION",
     "AxisKind",
     "AxisMetadata",
     "Centering",
     "CodedEntry",
     "ConversionParameter",
-    "Identifier",
+    "Designation",
     "DicomClassification",
     "DicomExtension",
     "DwmriAcquisition",
@@ -190,7 +194,9 @@ __all__ = [  # noqa: RUF022
     "read_duckn_metadata",
     "read_metadata",
     "UNCOMPRESSED_TRANSFER_SYNTAXES",
+    "effective_label_values",
     "validate_against_shape",
+    "validate_seg_extension",
     "zarr_to_nifti",
     "zarr_to_nrrd",
     "zarr_to_nrrd_zerocopy",

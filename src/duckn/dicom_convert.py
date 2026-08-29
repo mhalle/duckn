@@ -20,10 +20,13 @@ import zarr
 from .convert import _auto_chunks, _build_compressors
 from .zarr_io import _is_zip_path, open_store
 from .models import (
+    duckn_attrs,
+    SEG_EXTENSION_VERSION,
     AxisKind,
     AxisMetadata,
     Centering,
     CodedEntry,
+    Designation,
     DicomClassification,
     DicomExtension,
     DucknMetadata,
@@ -32,6 +35,7 @@ from .models import (
     SegmentationExtension,
     SourceRepresentation,
     SpaceName,
+    TerminologyEntry,
     ValueTransform,
 )
 
@@ -90,6 +94,10 @@ _BINARY_VRS = frozenset({"OB", "OW", "OF", "OD", "OL", "OV", "UN"})
 
 # Tags to skip: bulk binary data represented by the Zarr array itself,
 # and geometry fields already captured by convention fields
+# Attributes that describe the source's *encoding* rather than the data.
+# duckn's own fields describe the array authoritatively, and a duckn writer
+# may change the encoding (materialize, re-encode), at which point these
+# would describe an encoding the array no longer uses (dicom-spec §9).
 _SKIP_KEYWORDS = frozenset({
     "PixelData",
     "OverlayData",
@@ -100,6 +108,19 @@ _SKIP_KEYWORDS = frozenset({
     "PixelRepresentation",
     "ImagePositionPatient",
     "ImageOrientationPatient",
+    # The value mapping. Unlike the pixel-description attributes, which
+    # still describe the array and are used to reconstruct a faithful
+    # DICOM, these have an authoritative duckn counterpart in
+    # value_transforms/sample_units — and a duckn writer may change the
+    # encoding, leaving the DICOM copies describing one the array no
+    # longer uses (dicom-spec §9).
+    "RescaleSlope",
+    "RescaleIntercept",
+    "RescaleType",
+    "ModalityLUTSequence",
+    "ModalityLUTType",
+    "LUTDescriptor",
+    "LUTData",
 })
 
 
@@ -269,6 +290,117 @@ def _detect_anonymized(ds: Any) -> bool | None:
     return None
 
 
+def _uniform_rescale_value(datasets: list[Any], keyword: str, cast: Any) -> Any:
+    """Read an attribute that must be identical across every instance.
+
+    duckn describes the stacked array with one `value_transforms` chain, so
+    a per-instance value mapping cannot be represented. Rather than adopt
+    the first instance's and silently misreport the rest, warn and return
+    None — the stored values are then presented uncalibrated, which is
+    wrong-looking rather than plausibly-wrong.
+    """
+    values = []
+    for ds in datasets:
+        raw = getattr(ds, keyword, None)
+        values.append(None if raw is None else cast(raw))
+
+    present = [v for v in values if v is not None]
+    if not present:
+        return None
+
+    unique = set(present)
+    if len(unique) > 1 or len(present) != len(values):
+        warnings.warn(
+            f"{keyword} varies across the series ({sorted(unique)!r}"
+            f"{', and is absent on some instances' if len(present) != len(values) else ''})"
+            "; it cannot be represented as a single value transform, so no "
+            "calibration is recorded. The per-instance values are preserved "
+            "in the dicom extension.",
+            stacklevel=3,
+        )
+        return None
+
+    return present[0]
+
+
+def _is_lossy_compressed(ds: Any) -> bool | None:
+    """Whether the pixel data has ever been lossy compressed.
+
+    Prefers the explicit ``LossyImageCompression`` attribute ("01" = yes),
+    falling back to the source transfer syntax UID. Returns None when
+    neither says — absent means unknown, not "no".
+    """
+    flag = getattr(ds, "LossyImageCompression", None)
+    if flag is not None:
+        return str(flag).strip() == "01"
+
+    tsuid = _get_transfer_syntax(ds)
+    if tsuid in _LOSSY_TRANSFER_SYNTAXES:
+        return True
+    if tsuid in _LOSSLESS_TRANSFER_SYNTAXES:
+        return False
+    return None
+
+
+def _extract_modality_lut(ds: Any) -> "ValueTransform | None":
+    """Build a ``lut`` value transform from a Modality LUT Sequence.
+
+    ``LUTDescriptor`` is (number of entries, first stored value mapped, bits
+    per entry); a descriptor entry count of 0 means 65536 (PS3.3 C.11.1.1).
+    Returns None when the dataset has no explicit Modality LUT.
+    """
+    seq = getattr(ds, "ModalityLUTSequence", None)
+    if seq is None or len(seq) == 0:
+        return None
+
+    item = seq[0]
+    descriptor = getattr(item, "LUTDescriptor", None)
+    data = getattr(item, "LUTData", None)
+    if descriptor is None or data is None:
+        return None
+    # A VM=1 descriptor collapses to a bare int in pydicom, so len() would
+    # raise rather than fail the guard.
+    if isinstance(descriptor, (int, float, str)) or len(descriptor) < 2:
+        warnings.warn(
+            f"Modality LUT has a malformed LUTDescriptor ({descriptor!r}); ignoring it",
+            stacklevel=3,
+        )
+        return None
+
+    n_entries = int(descriptor[0]) or 65536
+    first_value = int(descriptor[1])
+
+    if isinstance(data, (bytes, bytearray)):
+        # LUT Data is US or OW. When pydicom hands back raw bytes the VR is
+        # OW, which is a stream of 16-bit words by definition (PS3.5 Table
+        # 6.2-1) — an 8-bit table is padded into 16-bit entries, so the
+        # declared bit depth is not the storage width and must not be used
+        # as one.
+        if len(data) % 2:
+            warnings.warn(
+                f"Modality LUT data is {len(data)} bytes, not a whole number "
+                "of 16-bit entries; ignoring it",
+                stacklevel=3,
+            )
+            return None
+        values = np.frombuffer(data, dtype=np.dtype("<u2")).astype(np.float64).tolist()
+    else:
+        values = [float(v) for v in data]
+    if not values:
+        return None
+    if len(values) != n_entries:
+        warnings.warn(
+            f"Modality LUT declares {n_entries} entries but LUTData has "
+            f"{len(values)}; using the data as given",
+            stacklevel=3,
+        )
+
+    return ValueTransform(
+        name="lut",
+        parameters={"first_value": first_value, "values": values},
+    )
+
+
 def _get_transfer_syntax(ds: Any) -> str | None:
     """Extract Transfer Syntax UID from file meta, if available."""
     meta = getattr(ds, "file_meta", None)
@@ -371,21 +503,13 @@ def _compute_geometry(
     if st is not None:
         slice_thickness = float(st)
 
-    # Rescale
-    rescale_slope = None
-    rs = getattr(ds0, "RescaleSlope", None)
-    if rs is not None:
-        rescale_slope = float(rs)
-
-    rescale_intercept = None
-    ri = getattr(ds0, "RescaleIntercept", None)
-    if ri is not None:
-        rescale_intercept = float(ri)
-
-    rescale_type = None
-    rt = getattr(ds0, "RescaleType", None)
-    if rt is not None:
-        rescale_type = str(rt)
+    # Rescale. A single value_transform is asserted over the whole stacked
+    # array, so every instance must agree — per-slice rescale variation is
+    # real (PET and NM especially), and silently adopting slice 0's mapping
+    # would misreport every other slice.
+    rescale_slope = _uniform_rescale_value(datasets, "RescaleSlope", float)
+    rescale_intercept = _uniform_rescale_value(datasets, "RescaleIntercept", float)
+    rescale_type = _uniform_rescale_value(datasets, "RescaleType", str)
 
     # Dtype
     bits = int(ds0.BitsAllocated)
@@ -538,18 +662,10 @@ def _load_2d_series(
     dtype = np.dtype(_dtype_map.get((bits, signed), np.uint16))
 
     # Rescale
-    rescale_slope = None
-    rs = getattr(ds0, "RescaleSlope", None)
-    if rs is not None:
-        rescale_slope = float(rs)
-    rescale_intercept = None
-    ri = getattr(ds0, "RescaleIntercept", None)
-    if ri is not None:
-        rescale_intercept = float(ri)
-    rescale_type = None
-    rt = getattr(ds0, "RescaleType", None)
-    if rt is not None:
-        rescale_type = str(rt)
+    # Must be identical across the series — see _uniform_rescale_value.
+    rescale_slope = _uniform_rescale_value(datasets, "RescaleSlope", float)
+    rescale_intercept = _uniform_rescale_value(datasets, "RescaleIntercept", float)
+    rescale_type = _uniform_rescale_value(datasets, "RescaleType", str)
 
     # Stack pixel data — always pad to 3D (1, rows, cols)
     if len(datasets) == 1:
@@ -1269,8 +1385,44 @@ def _load_multiframe(
 # ---------------------------------------------------------------------------
 
 
+# Transfer syntaxes whose pixel data is irreversibly degraded. Used only as
+# a fallback when LossyImageCompression is absent.
+_LOSSY_TRANSFER_SYNTAXES = frozenset({
+    "1.2.840.10008.1.2.4.50",  # JPEG Baseline (Process 1)
+    "1.2.840.10008.1.2.4.51",  # JPEG Extended (Process 2 & 4)
+    "1.2.840.10008.1.2.4.81",  # JPEG-LS Lossy (Near-Lossless)
+    "1.2.840.10008.1.2.4.91",  # JPEG 2000 (lossy allowed)
+    "1.2.840.10008.1.2.4.93",  # JPEG 2000 Part 2 Multi-component (lossy allowed)
+    "1.2.840.10008.1.2.4.101",  # MPEG2 Main Profile / Main Level
+    "1.2.840.10008.1.2.4.102",  # MPEG-4 AVC/H.264 High Profile
+})
+
+_LOSSLESS_TRANSFER_SYNTAXES = frozenset({
+    "1.2.840.10008.1.2",  # Implicit VR Little Endian
+    "1.2.840.10008.1.2.1",  # Explicit VR Little Endian
+    "1.2.840.10008.1.2.1.99",  # Deflated Explicit VR Little Endian
+    "1.2.840.10008.1.2.2",  # Explicit VR Big Endian
+    "1.2.840.10008.1.2.4.57",  # JPEG Lossless, Non-Hierarchical
+    "1.2.840.10008.1.2.4.70",  # JPEG Lossless, First-Order Prediction
+    "1.2.840.10008.1.2.4.80",  # JPEG-LS Lossless
+    "1.2.840.10008.1.2.4.90",  # JPEG 2000 Lossless Only
+    "1.2.840.10008.1.2.5",  # RLE Lossless
+})
+
 # SOP Class UID for Segmentation Storage
 _SEG_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.66.4"
+
+# Coding scheme designator → human-readable name, for the terminologies registry.
+_KNOWN_CODING_SCHEMES: dict[str, str] = {
+    "SCT": "SNOMED Clinical Terms",
+    "SRT": "DICOM SR Coding Scheme",
+    "DCM": "DICOM Controlled Terminology",
+    "LN": "LOINC",
+    "UCUM": "Unified Code for Units of Measure",
+    "FMA": "Foundational Model of Anatomy",
+    "NCIt": "NCI Thesaurus",
+    "RADLEX": "RadLex",
+}
 
 
 def _coded_entry_from_sequence(seq: Any) -> CodedEntry | None:
@@ -1278,10 +1430,10 @@ def _coded_entry_from_sequence(seq: Any) -> CodedEntry | None:
     if seq is None or len(seq) == 0:
         return None
     item = seq[0]
-    scheme = str(getattr(item, "CodingSchemeDesignator", ""))
-    code = str(getattr(item, "CodeValue", ""))
-    meaning = str(getattr(item, "CodeMeaning", ""))
-    if not scheme or not code or not meaning:
+    scheme = str(getattr(item, "CodingSchemeDesignator", "") or "")
+    code = str(getattr(item, "CodeValue", "") or "")
+    meaning = str(getattr(item, "CodeMeaning", "") or "")
+    if not scheme or not code:
         return None
     return CodedEntry(scheme=scheme, code=code, meaning=meaning)
 
@@ -1402,13 +1554,57 @@ def _extract_seg_extension(ds: Any) -> SegmentationExtension | None:
         if color is not None:
             seg_kwargs["color"] = color
         if dicom_class is not None:
-            seg_kwargs["metadata"] = {"dicom": dicom_class.model_dump(exclude_none=True)}
+            seg_kwargs["dicom"] = dicom_class
+
+        # The property type code is the primary concept: surface it as a
+        # designation so ontology lookup does not require DICOM knowledge.
+        if seg_type_entry is not None:
+            modifier = None
+            if type_modifier is not None:
+                modifier = Designation(
+                    scheme=type_modifier.scheme,
+                    code=type_modifier.code,
+                    meaning=type_modifier.meaning,
+                )
+            seg_kwargs["designations"] = [
+                Designation(
+                    scheme=seg_type_entry.scheme,
+                    code=seg_type_entry.code,
+                    meaning=seg_type_entry.meaning,
+                    modifier=modifier,
+                )
+            ]
 
         segments.append(Segment(**seg_kwargs))
 
+    # Register the coding systems the segments actually reference, matching
+    # what the .seg.nrrd path does (spec §3.1).
+    schemes: set[str] = set()
+    for seg in segments:
+        for des in seg.designations or []:
+            schemes.add(des.scheme)
+            if des.modifier is not None:
+                schemes.add(des.modifier.scheme)
+        if seg.dicom is not None:
+            for entry in (
+                seg.dicom.category,
+                seg.dicom.type,
+                seg.dicom.type_modifier,
+                seg.dicom.anatomic_region,
+                seg.dicom.anatomic_region_modifier,
+            ):
+                if entry is not None:
+                    schemes.add(entry.scheme)
+
+    terminologies = (
+        {s: TerminologyEntry(name=_KNOWN_CODING_SCHEMES.get(s)) for s in sorted(schemes)}
+        or None
+    )
+
     return SegmentationExtension(
-        version="0.5",
+        version=SEG_EXTENSION_VERSION,
         source_representation=source_rep,
+        terminologies=terminologies,
         segments=segments,
     )
 
@@ -1666,9 +1862,14 @@ def build_duckn_metadata(
     if is_color:
         axes.append(AxisMetadata(kind=AxisKind.RGB_COLOR))
 
-    # Value transforms from RescaleSlope/Intercept
+    # Value transforms: the DICOM Modality LUT stage. An explicit
+    # ModalityLUTSequence and RescaleSlope/Intercept are mutually exclusive
+    # (PS3.3 C.11.1.1.2); the explicit table wins where both appear.
     value_transforms = None
-    if geometry.rescale_slope is not None and geometry.rescale_intercept is not None:
+    modality_lut = _extract_modality_lut(datasets[0])
+    if modality_lut is not None:
+        value_transforms = [modality_lut]
+    elif geometry.rescale_slope is not None and geometry.rescale_intercept is not None:
         value_transforms = [
             ValueTransform(
                 name="linear",
@@ -1679,15 +1880,27 @@ def build_duckn_metadata(
             )
         ]
 
-    # Sample units from RescaleType
+    # Sample units. When an explicit Modality LUT is in use it is the
+    # authoritative value mapping, so its own declared type wins over
+    # RescaleType — matching the precedence used for the transform itself.
+    # ModalityLUTType (0028,3004) lives inside the sequence item
+    # (PS3.3 C.11.1.1), not at the top level of the dataset.
     sample_units = None
-    if geometry.rescale_type:
+    if modality_lut is not None:
+        seq = getattr(datasets[0], "ModalityLUTSequence", None)
+        if seq is not None and len(seq) > 0:
+            lut_type = str(getattr(seq[0], "ModalityLUTType", "") or "").strip()
+            if lut_type:
+                sample_units = lut_type
+    if sample_units is None and geometry.rescale_type:
         sample_units = geometry.rescale_type
 
     # DICOM extension (series-level tags only)
     extensions = None
+    ds0 = datasets[0]
+    ext_kwargs: dict[str, Any] = {"version": "1.0"}
+
     if include_tags:
-        ds0 = datasets[0]
         series_tags = _dataset_to_tags(ds0, _include_binary=include_binary)
         # Remove varying keys — they're in per-sample extensions
         for key in varying_keys:
@@ -1697,13 +1910,21 @@ def build_duckn_metadata(
         if anon is None:
             anon = _detect_anonymized(ds0)
 
-        dicom_ext = DicomExtension(
-            version="1.0",
-            anonymized=anon if anon else None,
-            source_transfer_syntax=_get_transfer_syntax(ds0),
-            tags=series_tags if series_tags else None,
-        )
-        extensions = {"dicom": dicom_ext.model_dump(exclude_none=True, by_alias=True)}
+        ext_kwargs["anonymized"] = anon if anon else None
+        ext_kwargs["source_transfer_syntax"] = _get_transfer_syntax(ds0)
+        ext_kwargs["tags"] = series_tags if series_tags else None
+
+    # Lossiness is recorded even when tags are excluded. The transfer syntax
+    # describes how the source encoded its bytes — provenance, and fairly
+    # dropped along with the tags. That the pixel values are no longer the
+    # acquired ones is a fact about the data itself, and losing it because
+    # someone asked for a smaller store would be a hazard, not a saving.
+    if _is_lossy_compressed(ds0):
+        ext_kwargs["lossy_compressed"] = True
+
+    dumped = DicomExtension(**ext_kwargs).model_dump(exclude_none=True, by_alias=True)
+    if set(dumped) > {"version"}:
+        extensions = {"dicom": dumped}
 
     # Segmentation extension from DICOM SEG
     ds0 = datasets[0]
@@ -1715,7 +1936,9 @@ def build_duckn_metadata(
             extensions["seg"] = seg_ext.model_dump(exclude_none=True)
 
     return DucknMetadata(
-        version="1.0",
+        # Declare the lowest convention version that covers what was written:
+        # the `lut` transform was introduced in 1.1.
+        version="1.1" if modality_lut is not None else "1.0",
         space=geometry.space,
         space_origin=geometry.space_origin,
         sample_units=sample_units,
@@ -1780,7 +2003,7 @@ def dicom_to_zarr(
 
     compressors_list = _build_compressors(compressor, level)
 
-    attrs = {"duckn": meta.model_dump(exclude_none=True)}
+    attrs = duckn_attrs(meta)
 
     # Dimension names
     if volume.ndim == 4:
@@ -2027,18 +2250,10 @@ def geometry_from_headers(
     if st is not None:
         slice_thickness = float(st)
 
-    rescale_slope = None
-    rs = getattr(ds0, "RescaleSlope", None)
-    if rs is not None:
-        rescale_slope = float(rs)
-    rescale_intercept = None
-    ri = getattr(ds0, "RescaleIntercept", None)
-    if ri is not None:
-        rescale_intercept = float(ri)
-    rescale_type = None
-    rt = getattr(ds0, "RescaleType", None)
-    if rt is not None:
-        rescale_type = str(rt)
+    # Must be identical across the series — see _uniform_rescale_value.
+    rescale_slope = _uniform_rescale_value(datasets, "RescaleSlope", float)
+    rescale_intercept = _uniform_rescale_value(datasets, "RescaleIntercept", float)
+    rescale_type = _uniform_rescale_value(datasets, "RescaleType", str)
 
     # Per-slice samples with origins
     samples = [{"origin": pos.tolist()} for pos in positions]
@@ -2111,7 +2326,7 @@ def dicom_to_zarr_streaming(
     # Build metadata
     meta = build_duckn_metadata(geometry, headers, anonymized, tags, binary_tags)
     compressors_list = _build_compressors(compressor, level)
-    attrs = {"duckn": meta.model_dump(exclude_none=True)}
+    attrs = duckn_attrs(meta)
 
     # Determine if we can do raw byte copy
     tsuid = str(getattr(headers[0].file_meta, "TransferSyntaxUID", ""))
@@ -2339,6 +2554,52 @@ def zarr_to_dicom(
         dicom_ext = meta.extensions["dicom"]
         stored_tags = dicom_ext.get("tags", {})
 
+    # The value mapping must be written from `value_transforms`, which is
+    # authoritative — not left to whatever rescale tags a dicom extension
+    # happens to carry, which describe the *source's* encoding and may not
+    # match what is written here. DICOM's Modality LUT stage represents an
+    # affine mapping as RescaleSlope/Intercept and an explicit table as a
+    # Modality LUT Sequence, so both duckn transform types round-trip.
+    modality_lut_tags: dict[str, Any] = {}
+    if meta.value_transforms:
+        transforms = meta.value_transforms
+        names = [vt.name for vt in transforms]
+        if names == ["linear"]:
+            params = transforms[0].parameters or {}
+            modality_lut_tags["RescaleSlope"] = float(params.get("slope", 1.0))
+            modality_lut_tags["RescaleIntercept"] = float(params.get("intercept", 0.0))
+        elif names == ["lut"]:
+            params = transforms[0].parameters or {}
+            raw_values = list(params.get("values", []))
+            # LUT Data is US/OW: unsigned 16-bit integers. A table holding
+            # negative or fractional real values (HU, for instance) has no
+            # Modality LUT representation, and rounding or wrapping it into
+            # one would write different numbers than the array means.
+            bad = [
+                v for v in raw_values
+                if v != int(v) or not (0 <= int(v) <= 65535)
+            ]
+            if bad:
+                raise ValueError(
+                    "lut values must be integers in [0, 65535] to be written as "
+                    f"a DICOM Modality LUT; found {bad[:3]}"
+                    f"{'...' if len(bad) > 3 else ''}. Materialize the array "
+                    "first (duckn-spec §4.3) so the values need no transform."
+                )
+            modality_lut_tags["_ModalityLUT"] = (
+                int(params.get("first_value", 0)),
+                [int(v) for v in raw_values],
+            )
+        else:
+            raise ValueError(
+                f"value_transforms {names} cannot be represented in a DICOM "
+                "Modality LUT, which carries either a linear rescale or a "
+                "single explicit table. Materialize the array first "
+                "(duckn-spec §4.3) so the values need no transform."
+            )
+        if meta.sample_units:
+            modality_lut_tags["RescaleType"] = str(meta.sample_units)
+
     # Detect modality from stored tags
     modality = stored_tags.get("Modality", "OT")
 
@@ -2403,6 +2664,28 @@ def zarr_to_dicom(
             _restore_tag(ds, keyword, value)
         except Exception:
             continue
+
+    # Write the value mapping from value_transforms, after the stored tags
+    # so it overrides any stale rescale the source header carried.
+    if modality_lut_tags:
+        lut_spec = modality_lut_tags.pop("_ModalityLUT", None)
+        for keyword, value in modality_lut_tags.items():
+            setattr(ds, keyword, value)
+        if lut_spec is not None:
+            first_value, values = lut_spec
+            item = Dataset()
+            item.add_new(0x00283002, "US", [len(values) % 65536, first_value, 16])
+            item.add_new(
+                0x00283006, "OW", np.asarray(values, dtype="<u2").tobytes()
+            )
+            if meta.sample_units:
+                item.ModalityLUTType = str(meta.sample_units)
+            ds.ModalityLUTSequence = Sequence([item])
+            # A Modality LUT Sequence and a linear rescale are mutually
+            # exclusive (PS3.3 C.11.1.1.2).
+            for keyword in ("RescaleSlope", "RescaleIntercept", "RescaleType"):
+                if keyword in ds:
+                    delattr(ds, keyword)
 
     # SOP Class
     if is_color:
@@ -2624,7 +2907,6 @@ def zarr_to_dicom_seg(
         raise ValueError(f"Expected 3D labelmap, got {data.ndim}D")
 
     n_slices, rows, cols = data.shape
-    data = data.astype(np.uint16 if data.max() > 255 else np.uint8)
 
     # Decompose geometry
     if not meta.axes or len(meta.axes) < 3:
@@ -2650,6 +2932,91 @@ def zarr_to_dicom_seg(
     if meta.extensions and "seg" in meta.extensions:
         seg_ext = SegmentationExtension(**meta.extensions["seg"])
         segments = seg_ext.segments
+
+    # --- Plan segment numbering ------------------------------------------
+    # In a LABELMAP segmentation each voxel value *is* a segment number, and
+    # DICOM requires segment numbers to start at 1 and increase monotonically
+    # (PS3.3 C.8.20.2.1). duckn label values are arbitrary — sparse atlas ids,
+    # values not starting at 1 — so build a label → segment-number map and
+    # remap the voxel data to match it.
+    present = {int(v) for v in np.unique(data)} - {0}
+
+    plan: list[tuple[Segment, int]] = []
+    reference_only: list[str] = []
+    for seg in segments:
+        if isinstance(seg.label_value, int):
+            labels = [seg.label_value]
+        elif isinstance(seg.label_value, list):
+            labels = [v for v in seg.label_value if isinstance(v, int)]
+        else:
+            labels = []
+
+        if not labels:
+            # Defined purely as a union of other segments by id: it owns no
+            # voxels of its own, so it has no row of its own here.
+            reference_only.append(seg.id)
+            continue
+        if len(labels) > 1:
+            raise ValueError(
+                f"segment {seg.id!r} owns multiple label values {labels}: "
+                "label-union (overlapping) segments cannot be represented in a "
+                "DICOM LABELMAP segmentation, where each voxel carries exactly "
+                "one segment number"
+            )
+        if seg.layer not in (None, 0):
+            raise ValueError(
+                f"segment {seg.id!r} is on layer {seg.layer}: layered "
+                "(overlapping) segmentations cannot be represented in a DICOM "
+                "LABELMAP segmentation"
+            )
+        plan.append((seg, labels[0]))
+
+    claimed: dict[int, str] = {}
+    for seg, label in plan:
+        if label in claimed:
+            raise ValueError(
+                f"segments {claimed[label]!r} and {seg.id!r} both claim label "
+                f"value {label} in the same layer"
+            )
+        claimed[label] = seg.id
+
+    if not plan:
+        if reference_only:
+            raise ValueError(
+                "every segment is defined only by reference to other segments "
+                f"({', '.join(reference_only)}); none owns voxel data to export"
+            )
+        # No segment metadata at all: synthesize one segment per label present
+        # so the required Segment Sequence is never empty.
+        plan = [
+            (Segment(id=f"Segment_{v}", name=f"Segment {v}", label_value=v), v)
+            for v in sorted(present)
+        ]
+
+    if not plan:
+        raise ValueError(
+            "segmentation is empty: a DICOM Segmentation requires at least one "
+            "segment (Segment Sequence is Type 1)"
+        )
+
+    label_to_number = {label: i + 1 for i, (_, label) in enumerate(plan)}
+
+    undescribed = sorted(present - set(label_to_number))
+    if undescribed:
+        warnings.warn(
+            f"label values {undescribed} appear in the voxel data but are not "
+            "described by any segment; they are written as background (0)",
+            stacklevel=2,
+        )
+
+    if label_to_number != {v: v for v in label_to_number} or undescribed:
+        uniq, inverse = np.unique(data, return_inverse=True)
+        lut = np.array(
+            [label_to_number.get(int(v), 0) for v in uniq], dtype=np.uint32
+        )
+        data = lut[inverse].reshape(data.shape)
+
+    data = data.astype(np.uint16 if len(plan) > 255 else np.uint8)
 
     # Build DICOM dataset
     ds = Dataset()
@@ -2694,29 +3061,58 @@ def zarr_to_dicom_seg(
     ds.SharedFunctionalGroupsSequence = Sequence([shared_fg])
 
     # Segment Sequence
+    def _code_item(entry: CodedEntry, seg: Segment, field: str) -> Dataset:
+        item = Dataset()
+        item.CodeValue = entry.code
+        item.CodingSchemeDesignator = entry.scheme
+        # CodeMeaning is Type 1. It is a property of the *code*, so the only
+        # honest fallback is the segment's own name — never its id, which
+        # would publish an identifier as if it were the concept's meaning.
+        meaning = entry.meaning or seg.name
+        if not meaning:
+            raise ValueError(
+                f"segment {seg.id!r}: dicom.{field} ({entry.scheme}:{entry.code}) "
+                "has no 'meaning' and the segment has no 'name'; DICOM requires "
+                "CodeMeaning for every coded entry"
+            )
+        item.CodeMeaning = meaning
+        return item
+
     seg_sequence = []
-    for seg in segments:
+    for seg, source_label in plan:
         seg_item = Dataset()
-        seg_item.SegmentNumber = seg.label_value if isinstance(seg.label_value, int) else seg.label_value[0]
+        seg_item.SegmentNumber = label_to_number[source_label]
         seg_item.SegmentLabel = seg.name or seg.id
         seg_item.SegmentAlgorithmType = "AUTOMATIC"
         seg_item.SegmentAlgorithmName = "duckn"
 
         # Restore DICOM classification if present
-        dicom_class = (seg.metadata or {}).get("dicom", {})
-        if dicom_class:
-            for attr, seq_name in [
-                ("category", "SegmentedPropertyCategoryCodeSequence"),
-                ("type", "SegmentedPropertyTypeCodeSequence"),
-                ("anatomic_region", "AnatomicRegionSequence"),
-            ]:
-                entry = dicom_class.get(attr)
-                if entry:
-                    code_item = Dataset()
-                    code_item.CodeValue = entry.get("code") or entry.get("id", "")
-                    code_item.CodingSchemeDesignator = entry.get("scheme", "SCT")
-                    code_item.CodeMeaning = entry.get("meaning") or entry.get("name", "")
-                    setattr(seg_item, seq_name, Sequence([code_item]))
+        dicom_class = seg.dicom
+        if dicom_class is not None:
+            if dicom_class.category is not None:
+                seg_item.SegmentedPropertyCategoryCodeSequence = Sequence(
+                    [_code_item(dicom_class.category, seg, "category")]
+                )
+            if dicom_class.type is not None:
+                type_item = _code_item(dicom_class.type, seg, "type")
+                if dicom_class.type_modifier is not None:
+                    type_item.SegmentedPropertyTypeModifierCodeSequence = Sequence(
+                        [_code_item(dicom_class.type_modifier, seg, "type_modifier")]
+                    )
+                seg_item.SegmentedPropertyTypeCodeSequence = Sequence([type_item])
+            if dicom_class.anatomic_region is not None:
+                anat_item = _code_item(dicom_class.anatomic_region, seg, "anatomic_region")
+                if dicom_class.anatomic_region_modifier is not None:
+                    anat_item.AnatomicRegionModifierSequence = Sequence(
+                        [
+                            _code_item(
+                                dicom_class.anatomic_region_modifier,
+                                seg,
+                                "anatomic_region_modifier",
+                            )
+                        ]
+                    )
+                seg_item.AnatomicRegionSequence = Sequence([anat_item])
 
         seg_sequence.append(seg_item)
 

@@ -7,12 +7,17 @@ from pathlib import Path
 import nrrd
 import pytest
 
-from duckn.models import SegmentationExtension
+from duckn.models import SEG_EXTENSION_VERSION, SegmentationExtension
 from duckn.seg_nrrd import parse_seg_keyvalues, serialize_seg_extension
 
 DATA_DIR = Path(__file__).parent / "data" / "real-world"
 
 SEG_NRRD_FILES = sorted(DATA_DIR.glob("*.seg.nrrd"))
+
+
+def _slicer(obj) -> dict:
+    """The metadata.slicer dict of a segment or extension."""
+    return (obj.metadata or {}).get("slicer", {})
 
 
 # ---------------------------------------------------------------------------
@@ -40,7 +45,7 @@ def test_minimal_segment():
     assert len(ext.segments) == 1
     assert ext.segments[0].id == "S1"
     assert ext.segments[0].label_value == 1
-    assert ext.version == "1.0"
+    assert ext.version == SEG_EXTENSION_VERSION
 
 
 def test_global_fields():
@@ -55,8 +60,8 @@ def test_global_fields():
     ext, remaining = parse_seg_keyvalues(kv)
     assert ext is not None
     assert ext.source_representation == "binary-labelmap"
-    assert ext.contained_representations == ["binary-labelmap", "closed-surface"]
-    assert ext.reference_extent_offset == [0, 0, 0]
+    assert _slicer(ext)["contained_representations"] == ["binary-labelmap", "closed-surface"]
+    assert _slicer(ext)["reference_extent_offset"] == [0, 0, 0]
 
 
 def test_source_representation_preferred_over_master():
@@ -84,10 +89,11 @@ def test_conversion_parameters():
     }
     ext, _ = parse_seg_keyvalues(kv)
     assert ext is not None
-    assert "Smoothing factor" in ext.conversion_parameters
-    assert ext.conversion_parameters["Smoothing factor"].value == "0.5"
-    assert ext.conversion_parameters["Smoothing factor"].description == "Range: 0.0 to 1.0."
-    assert ext.conversion_parameters["Joint smoothing"].value == "0"
+    params = _slicer(ext)["conversion_parameters"]
+    assert "Smoothing factor" in params
+    assert params["Smoothing factor"]["value"] == "0.5"
+    assert params["Smoothing factor"]["description"] == "Range: 0.0 to 1.0."
+    assert params["Joint smoothing"]["value"] == "0"
 
 
 def test_conversion_parameters_escaped_newlines():
@@ -98,7 +104,8 @@ def test_conversion_parameters_escaped_newlines():
         "Segment0_LabelValue": "1",
     }
     ext, _ = parse_seg_keyvalues(kv)
-    assert ext.conversion_parameters["End capping"].description == "Line1.\nLine2."
+    params = _slicer(ext)["conversion_parameters"]
+    assert params["End capping"]["description"] == "Line1.\nLine2."
 
 
 def test_segment_fields():
@@ -117,9 +124,9 @@ def test_segment_fields():
     seg = ext.segments[0]
     assert seg.id == "Seg1"
     assert seg.name == "Liver"
-    assert seg.name_auto_generated is False
+    assert _slicer(seg)["name_auto_generated"] is False
     assert seg.color == [0.5, 0.6, 0.7]
-    assert seg.color_auto_generated is True
+    assert _slicer(seg)["color_auto_generated"] is True
     assert seg.label_value == 3
     assert seg.layer == 2
     assert seg.extent == [10, 20, 30, 40, 50, 60]
@@ -151,7 +158,7 @@ def test_tags_and_terminology():
     seg = ext.segments[0]
 
     # Tags (non-terminology)
-    assert seg.tags == {"Status": "inprogress"}
+    assert _slicer(seg)["tags"] == {"Status": "inprogress"}
 
     # DICOM classification
     assert seg.dicom is not None
@@ -375,8 +382,9 @@ def test_serialize_conversion_parameters():
     ext, _ = parse_seg_keyvalues(kv)
     flat = serialize_seg_extension(ext)
     ext2, _ = parse_seg_keyvalues(flat)
-    assert ext2.conversion_parameters["End capping"].description == "Line1.\nLine2."
-    assert ext2.conversion_parameters["Factor"].value == "0.5"
+    params = _slicer(ext2)["conversion_parameters"]
+    assert params["End capping"]["description"] == "Line1.\nLine2."
+    assert params["Factor"]["value"] == "0.5"
 
 
 def test_serialize_segment_fields():
@@ -396,9 +404,9 @@ def test_serialize_segment_fields():
     ext2, _ = parse_seg_keyvalues(flat)
     seg = ext2.segments[0]
     assert seg.name == "Liver"
-    assert seg.name_auto_generated is False
+    assert _slicer(seg)["name_auto_generated"] is False
     assert seg.color == [0.5, 0.6, 0.7]
-    assert seg.color_auto_generated is True
+    assert _slicer(seg)["color_auto_generated"] is True
     assert seg.label_value == 3
     assert seg.layer == 2
     assert seg.extent == [10, 20, 30, 40, 50, 60]
@@ -418,7 +426,7 @@ def test_serialize_tags_and_dicom():
     flat = serialize_seg_extension(ext)
     ext2, _ = parse_seg_keyvalues(flat)
     seg = ext2.segments[0]
-    assert seg.tags == {"Status": "inprogress"}
+    assert _slicer(seg)["tags"] == {"Status": "inprogress"}
     assert seg.dicom.category.code == "85756007"
     assert seg.designations[0].scheme == "SCT"
 
@@ -495,6 +503,121 @@ def test_real_world_byte_exact_with_legacy(seg_file: Path):
             assert flat.get(key) == keyvalues[key], (
                 f"{key} mismatch:\n  orig: {keyvalues[key]!r}\n  got:  {flat.get(key)!r}"
             )
+
+
+def test_source_representation_key_spelling_preserved():
+    """A file using the modern Source spelling must not come back as Master."""
+    kv = {
+        "Segmentation_SourceRepresentation": "Binary labelmap",
+        "Segment0_ID": "S1",
+        "Segment0_LabelValue": "1",
+    }
+    ext, _ = parse_seg_keyvalues(kv)
+    flat = serialize_seg_extension(ext)
+    assert flat["Segmentation_SourceRepresentation"] == "Binary labelmap"
+    assert "Segmentation_MasterRepresentation" not in flat
+
+
+def test_unmodelled_seg_keys_survive_round_trip():
+    """Keys the model doesn't represent are consumed on parse — don't lose them."""
+    kv = {
+        "Segment0_ID": "S1",
+        "Segment0_LabelValue": "1",
+        "Segment0_MysteryField": "keep me",
+        "Segmentation_UnknownThing": "keep me too",
+    }
+    ext, remaining = parse_seg_keyvalues(kv)
+    assert remaining == {}  # consumed, so serialization is the only way back
+    flat = serialize_seg_extension(ext)
+    assert flat["Segment0_MysteryField"] == "keep me"
+    assert flat["Segmentation_UnknownThing"] == "keep me too"
+
+
+def test_designation_modifier_survives_without_dicom_type_modifier():
+    """Laterality lives on the designation in §7.1-shaped data."""
+    ext = SegmentationExtension(
+        version=SEG_EXTENSION_VERSION,
+        segments=[
+            {
+                "id": "S1",
+                "name": "Right kidney",
+                "label_value": 1,
+                "designations": [
+                    {
+                        "scheme": "SCT",
+                        "code": "64033007",
+                        "meaning": "Kidney",
+                        "modifier": {"scheme": "SCT", "code": "24028007", "meaning": "Right"},
+                    }
+                ],
+                "dicom": {
+                    "category": {"scheme": "SCT", "code": "123037004", "meaning": "Body structure"},
+                    "type": {"scheme": "SCT", "code": "64033007", "meaning": "Kidney"},
+                },
+            }
+        ],
+    )
+    flat = serialize_seg_extension(ext)
+    assert "24028007" in flat["Segment0_Tags"]
+
+    ext2, _ = parse_seg_keyvalues(flat)
+    assert ext2.segments[0].designations[0].modifier.code == "24028007"
+
+
+def test_two_part_coded_entry_keeps_the_code():
+    """meaning is optional, so scheme^code must not be discarded."""
+    kv = {
+        "Segment0_ID": "S1",
+        "Segment0_LabelValue": "1",
+        "Segment0_Tags": "TerminologyEntry:ctx~SCT^123037004~SCT^64033007~^^~ctx2~^^~^^|",
+    }
+    ext, _ = parse_seg_keyvalues(kv)
+    seg = ext.segments[0]
+    assert seg.dicom.category.code == "123037004"
+    assert seg.dicom.category.meaning is None
+    assert seg.designations[0].code == "64033007"
+
+
+def test_missing_label_value_does_not_claim_background():
+    """0 is background; a segment without LabelValue must not claim it."""
+    kv = {
+        "Segment0_ID": "S1",
+        "Segment1_ID": "S2",
+        "Segment1_LabelValue": "7",
+    }
+    with pytest.warns(UserWarning, match="LabelValue"):
+        ext, _ = parse_seg_keyvalues(kv)
+    assert ext.segments[0].label_value == 1
+    assert ext.segments[1].label_value == 7
+
+
+def test_non_labelmap_master_representation_is_readable():
+    """A Closed surface .seg.nrrd should parse, not raise."""
+    kv = {
+        "Segmentation_MasterRepresentation": "Closed surface",
+        "Segment0_ID": "S1",
+        "Segment0_LabelValue": "1",
+    }
+    ext, _ = parse_seg_keyvalues(kv)
+    assert ext.source_representation == "closed-surface"
+
+
+def test_tag_key_prefix_is_symmetric():
+    """A tag without the Segmentation. prefix must not gain one."""
+    kv = {
+        "Segment0_ID": "S1",
+        "Segment0_LabelValue": "1",
+        "Segment0_Tags": "Segmentation.Status:done|Vendor.Reviewer:mh|",
+    }
+    ext, _ = parse_seg_keyvalues(kv)
+    tags = _slicer(ext.segments[0])["tags"]
+    assert tags == {"Status": "done", "Vendor.Reviewer": "mh"}
+
+    ext.segments[0].name = "modified"  # force fresh generation, not legacy replay
+    flat = serialize_seg_extension(ext)
+    assert "Segmentation.Status:done" in flat["Segment0_Tags"]
+    assert "Vendor.Reviewer:mh" in flat["Segment0_Tags"]
+    assert "Segmentation.Vendor.Reviewer" not in flat["Segment0_Tags"]
 
 
 def test_legacy_dropped_when_model_modified():

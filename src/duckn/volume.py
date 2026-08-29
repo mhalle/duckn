@@ -46,21 +46,30 @@ class Volume:
     # Pre-composed slope/intercept, populated in __post_init__.
     _slope: float = field(init=False, repr=False, default=1.0)
     _intercept: float = field(init=False, repr=False, default=0.0)
+    _nonlinear: bool = field(init=False, repr=False, default=False)
 
     def __post_init__(self) -> None:
-        from .zarr_io import _compose_linear_transforms
+        from .zarr_io import _compose_linear_transforms, has_nonlinear_transforms
 
-        self._slope, self._intercept = _compose_linear_transforms(
-            self.metadata.value_transforms
-        )
+        self._nonlinear = has_nonlinear_transforms(self.metadata.value_transforms)
+        if self._nonlinear:
+            self._slope, self._intercept = 1.0, 0.0
+        else:
+            self._slope, self._intercept = _compose_linear_transforms(
+                self.metadata.value_transforms
+            )
 
     @cached_property
     def data(self) -> np.ndarray:
         """Calibrated view of ``raw`` (transforms applied, cached)."""
-        from .zarr_io import _rescale
+        from .zarr_io import _apply_value_transforms, _rescale
 
         if not self.metadata.value_transforms:
             return self.raw
+        if self._nonlinear:
+            return _apply_value_transforms(
+                self.raw, self.metadata.value_transforms, None
+            )
         return _rescale(self.raw, self._slope, self._intercept, None)
 
     def add_transform(
@@ -113,7 +122,7 @@ class Volume:
     @property
     def dtype(self) -> np.dtype:
         """Effective dtype users see via ``vol.data``."""
-        if (
+        if not self._nonlinear and (
             not self.metadata.value_transforms
             or (self._slope == 1.0 and self._intercept == 0.0)
         ):

@@ -13,6 +13,7 @@ from typing import Any, BinaryIO
 import numpy as np
 
 from .models import DucknMetadata
+from .models import duckn_attrs
 from .volume import Volume
 
 
@@ -116,7 +117,12 @@ def _read_nrrd(source: str | Path) -> Volume:
 
     import nrrd
 
-    data, header = nrrd.read(str(source))
+    # C order, matching _header_to_metadata's axis ordering. pynrrd defaults
+    # to Fortran order, which would pair the header's geometry with a
+    # transposed array — wrong in a way that only shows up against a
+    # standards-compliant reader, since a Fortran read and a Fortran write
+    # cancel each other out on an io-to-io round trip.
+    data, header = nrrd.read(str(source), index_order="C")
     meta, _ = _header_to_metadata(header, data.ndim)
     return Volume(raw=data, metadata=meta)
 
@@ -213,7 +219,7 @@ def _write_zarr(vol, dest, *, chunks, compressor, level, overwrite):
 
     chunks = chunks or _auto_chunks(vol.shape, vol.raw.dtype)
     compressors = _build_compressors(compressor, level)
-    attrs = {"duckn": vol.metadata.model_dump(exclude_none=True)}
+    attrs = duckn_attrs(vol.metadata)
 
     with open_store(dest, mode="w", overwrite=overwrite) as store:
         zarr.create_array(
@@ -235,7 +241,7 @@ def _write_zarr_zip(vol, dest, *, chunks, compressor, level, overwrite):
 
     chunks = chunks or _auto_chunks(vol.shape, vol.raw.dtype)
     compressors = _build_compressors(compressor, level)
-    attrs = {"duckn": vol.metadata.model_dump(exclude_none=True)}
+    attrs = duckn_attrs(vol.metadata)
 
     store = zarr.storage.ZipStore(str(dest), mode="w")
     zarr.create_array(
@@ -263,7 +269,7 @@ def _write_zmp(vol, dest, *, chunks, compressor, level, overwrite):
         output = dest  # BytesIO
 
     chunks = chunks or _auto_chunks(vol.shape, vol.raw.dtype)
-    attrs = {"duckn": vol.metadata.model_dump(exclude_none=True)}
+    attrs = duckn_attrs(vol.metadata)
 
     store = ZMPWritableStore(output)
     arr = zarr.open_array(
@@ -298,7 +304,11 @@ def _write_nrrd(vol, dest, *, overwrite):
         raise FileExistsError(f"{dest} exists")
 
     header = _metadata_to_header(vol.metadata)
-    nrrd.write(str(dest), vol.data, header)
+    # NRRD cannot carry a value transform, so the calibrated values are
+    # written and `sample units` describes them (duckn-spec §4.3).
+    # index_order="C" pairs them with the geometry _metadata_to_header
+    # emitted; see _read_nrrd.
+    nrrd.write(str(dest), vol.data, header, index_order="C")
 
 
 def _write_nifti(vol, dest, *, overwrite):

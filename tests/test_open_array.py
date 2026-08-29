@@ -94,7 +94,8 @@ class TestSlicingApplication:
         # Composed: 3*(2x+1)+4 = 6x+7
         np.testing.assert_allclose(arr[:], np.array([[[13.0, 19.0]]]))
 
-    def test_unknown_transform_warns_and_skips(self, tmp_path):
+    def test_unknown_transform_fails_the_calibrated_read(self, tmp_path):
+        """§4.2: a partly applied chain must not be presented as calibrated."""
         data = np.array([[[1.0, 2.0]]], dtype=np.float32)
         vt = [
             ValueTransform(name="linear", parameters={"slope": 2.0, "intercept": 0.0}),
@@ -103,9 +104,19 @@ class TestSlicingApplication:
         store_path = tmp_path / "unknown.zarr"
         _write_test_store(store_path, data, value_transforms=vt)
 
-        with pytest.warns(UserWarning, match="custom-nonlinear"):
-            arr = open_array(store_path)
-        np.testing.assert_allclose(arr[:], np.array([[[2.0, 4.0]]]))
+        arr = open_array(store_path)
+        with pytest.raises(ValueError, match="custom-nonlinear"):
+            _ = arr[:]
+
+    def test_unknown_transform_still_allows_raw_access(self, tmp_path):
+        """The stored values remain well defined and must stay reachable."""
+        data = np.array([[[1.0, 2.0]]], dtype=np.float32)
+        vt = [ValueTransform(name="custom-nonlinear", parameters={"k": 1.0})]
+        store_path = tmp_path / "unknown_raw.zarr"
+        _write_test_store(store_path, data, value_transforms=vt)
+
+        arr = open_array(store_path, apply_value_transforms=False)
+        np.testing.assert_allclose(arr[:], data)
 
 
 class TestToggle:

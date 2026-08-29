@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import re
+import warnings
 from typing import Any
 
 from .models import (
+    SEG_EXTENSION_VERSION,
     CodedEntry,
     ConversionParameter,
     Designation,
@@ -73,12 +75,17 @@ def _parse_conversion_parameters(raw: str) -> dict[str, ConversionParameter]:
 
 
 def _parse_coded_entry(triplet: str) -> CodedEntry | None:
-    """Parse ``scheme^code^meaning``.  Returns None if all empty."""
+    """Parse ``scheme^code^meaning``.  Returns None without scheme + code.
+
+    The meaning is optional (§4.1), so a two-part ``scheme^code`` is
+    accepted rather than discarding the code along with it.
+    """
     parts = triplet.split("^", 2)
-    if len(parts) < 3:
+    if len(parts) < 2:
         return None
-    scheme, code, meaning = parts[0].strip(), parts[1].strip(), parts[2].strip()
-    if not scheme and not code and not meaning:
+    scheme, code = parts[0].strip(), parts[1].strip()
+    meaning = parts[2].strip() if len(parts) > 2 else ""
+    if not scheme or not code:
         return None
     return CodedEntry(scheme=scheme, code=code, meaning=meaning)
 
@@ -131,13 +138,13 @@ def _parse_terminology_entry(
             modifier = Designation(
                 scheme=type_modifier.scheme,
                 code=type_modifier.code,
-                meaning=type_modifier.meaning or "",
+                meaning=type_modifier.meaning,
             )
         designations = [
             Designation(
                 scheme=type_entry.scheme,
                 code=type_entry.code,
-                meaning=type_entry.meaning or "",
+                meaning=type_entry.meaning,
                 modifier=modifier,
             )
         ]
@@ -170,10 +177,12 @@ def _parse_tags(
         if key == "TerminologyEntry":
             dicom, designations, schemes = _parse_terminology_entry(value)
             all_schemes |= schemes
+        elif key.startswith("Segmentation."):
+            tags[key.removeprefix("Segmentation.")] = value
         else:
-            # Strip "Segmentation." prefix from tag keys
-            tag_key = key.removeprefix("Segmentation.")
-            tags[tag_key] = value
+            # A tag without the prefix keeps its key verbatim, so that
+            # serialization can put back exactly what it found.
+            tags[key] = value
 
     return tags or None, dicom, designations, all_schemes
 
@@ -202,13 +211,24 @@ def _parse_segment(
     if label_raw is not None:
         kwargs["label_value"] = _parse_label_value(label_raw)
     else:
-        kwargs["label_value"] = 0
-    if layer_raw is not None:
+        # Slicer omits LabelValue only for segments with no binary labelmap
+        # representation. 0 is the background value, so claiming it would
+        # claim every unwritten voxel; use the 1-based ordinal instead.
+        kwargs["label_value"] = index + 1
+        warnings.warn(
+            f"segment {seg_id!r} has no {prefix}LabelValue; "
+            f"assigning label value {index + 1}",
+            stacklevel=3,
+        )
+    if layer_raw is not None and int(layer_raw) != 0:
+        # Layer 0 is the implicit default. Carrying it explicitly would claim
+        # a `list` axis that an ordinary 3D .seg.nrrd does not have (§5 rule 2).
         kwargs["layer"] = int(layer_raw)
     if extent_raw is not None:
         kwargs["extent"] = _parse_int_list(extent_raw)
 
     schemes: set[str] = set()
+    slicer_meta: dict[str, Any] = {}
 
     if tags_raw is not None:
         tags, dicom, designations, tag_schemes = _parse_tags(tags_raw)
@@ -218,12 +238,15 @@ def _parse_segment(
         if dicom is not None:
             kwargs["dicom"] = dicom
         if tags is not None:
-            kwargs["tags"] = tags
+            slicer_meta["tags"] = tags
 
     if name_auto is not None:
-        kwargs["name_auto_generated"] = _parse_bool(name_auto)
+        slicer_meta["name_auto_generated"] = _parse_bool(name_auto)
     if color_auto is not None:
-        kwargs["color_auto_generated"] = _parse_bool(color_auto)
+        slicer_meta["color_auto_generated"] = _parse_bool(color_auto)
+
+    if slicer_meta:
+        kwargs["metadata"] = {"slicer": slicer_meta}
 
     return Segment(**kwargs), schemes
 
@@ -265,7 +288,8 @@ def parse_seg_keyvalues(
             remaining[key] = keyvalues[key]
 
     # --- Global fields ---
-    ext_kwargs: dict[str, Any] = {"version": "1.0"}
+    ext_kwargs: dict[str, Any] = {"version": SEG_EXTENSION_VERSION}
+    slicer_meta: dict[str, Any] = {}
 
     master_rep = keyvalues.get("Segmentation_MasterRepresentation")
     source_rep = keyvalues.get("Segmentation_SourceRepresentation")
@@ -277,17 +301,22 @@ def parse_seg_keyvalues(
     if contained_raw is not None:
         reps = [_normalize_representation(r) for r in contained_raw.split("|") if r.strip()]
         if reps:
-            ext_kwargs["contained_representations"] = reps
+            slicer_meta["contained_representations"] = reps
 
     conv_raw = keyvalues.get("Segmentation_ConversionParameters")
     if conv_raw is not None:
         params = _parse_conversion_parameters(conv_raw)
         if params:
-            ext_kwargs["conversion_parameters"] = params
+            slicer_meta["conversion_parameters"] = {
+                name: p.model_dump(exclude_none=True) for name, p in params.items()
+            }
 
     ref_offset_raw = keyvalues.get("Segmentation_ReferenceImageExtentOffset")
     if ref_offset_raw is not None:
-        ext_kwargs["reference_extent_offset"] = _parse_int_list(ref_offset_raw)
+        slicer_meta["reference_extent_offset"] = _parse_int_list(ref_offset_raw)
+
+    if slicer_meta:
+        ext_kwargs["metadata"] = {"slicer": slicer_meta}
 
     # --- Per-segment ---
     all_schemes: set[str] = set()
@@ -324,6 +353,12 @@ _REPR_TITLE: dict[str, str] = {
     "planar-contour": "Planar contour",
 }
 
+# 3D Slicer renamed Master → Source around 5.3; both spell the same field.
+_REPRESENTATION_KEYS = (
+    "Segmentation_MasterRepresentation",
+    "Segmentation_SourceRepresentation",
+)
+
 
 def _denormalize_representation(kebab: str) -> str:
     """``"binary-labelmap"`` → ``"Binary labelmap"``."""
@@ -334,19 +369,16 @@ def _coded_entry_triplet(entry: CodedEntry | None) -> str:
     """CodedEntry → ``"scheme^code^meaning"`` (or ``"^^"`` for None)."""
     if entry is None:
         return "^^"
-    return f"{entry.scheme}^{entry.code}^{entry.meaning}"
+    return f"{entry.scheme}^{entry.code}^{entry.meaning or ''}"
 
 
-def _serialize_conversion_parameters(
-    params: dict[str, ConversionParameter],
-) -> str:
-    """Dict of ConversionParameter → ``&``-delimited string."""
+def _serialize_conversion_parameters(params: dict[str, Any]) -> str:
+    """Dict of ``{value, description}`` dicts → ``&``-delimited string."""
     parts: list[str] = []
     for name, param in params.items():
-        desc = ""
-        if param.description is not None:
-            desc = param.description.replace("\n", "\\n")
-        parts.append(f"{name}|{param.value}|{desc}")
+        desc = param.get("description")
+        desc = desc.replace("\n", "\\n") if desc is not None else ""
+        parts.append(f"{name}|{param.get('value', '')}|{desc}")
     return "&".join(parts) + "&"
 
 
@@ -366,7 +398,13 @@ def _serialize_terminology_entry(
 
     if dicom and dicom.type:
         type_entry = _coded_entry_triplet(dicom.type)
-        type_modifier = _coded_entry_triplet(dicom.type_modifier)
+        # The DICOM classification is authoritative for the type, but it may
+        # carry no modifier while the designation does. Falling back keeps
+        # post-coordinated laterality (§4.1) from being dropped on write.
+        modifier = dicom.type_modifier
+        if modifier is None and designation is not None and designation.modifier is not None:
+            modifier = designation.modifier
+        type_modifier = _coded_entry_triplet(modifier)
     elif designation:
         type_entry = _coded_entry_triplet(
             CodedEntry(scheme=designation.scheme, code=designation.code, meaning=designation.meaning)
@@ -381,13 +419,22 @@ def _serialize_terminology_entry(
     return f"{ctx1}~{category}~{type_entry}~{type_modifier}~{ctx2}~{anatomic_region}~{anatomic_region_modifier}"
 
 
+def _slicer_metadata(obj: Segment | SegmentationExtension) -> dict[str, Any]:
+    """The ``metadata.slicer`` dict of a segment or extension (may be empty)."""
+    return (obj.metadata or {}).get("slicer") or {}
+
+
 def _serialize_tags(seg: Segment) -> str:
     """Build the ``|``-delimited Tags value for a segment."""
     pairs: list[str] = []
 
-    if seg.tags:
-        for key, val in seg.tags.items():
-            pairs.append(f"Segmentation.{key}:{val}")
+    for key, val in _slicer_metadata(seg).get("tags", {}).items():
+        # Slicer's own tags are stored with the "Segmentation." prefix
+        # stripped; anything else kept its key verbatim on parse (and
+        # "TerminologyEntry" is reconstructed below, not carried as a tag).
+        if key == "TerminologyEntry":
+            continue
+        pairs.append(f"Segmentation.{key}:{val}" if "." not in key else f"{key}:{val}")
 
     designation = seg.designations[0] if seg.designations else None
     term_val = _serialize_terminology_entry(seg.dicom, designation)
@@ -402,42 +449,55 @@ def _serialize_tags(seg: Segment) -> str:
 def _generate_from_model(ext: SegmentationExtension) -> dict[str, str]:
     """Generate flat key/value pairs from model data (no legacy)."""
     kv: dict[str, str] = {}
+    ext_slicer = _slicer_metadata(ext)
 
     if ext.source_representation is not None:
         kv["Segmentation_MasterRepresentation"] = _denormalize_representation(
             str(ext.source_representation)
         )
 
-    if ext.contained_representations:
+    contained = ext_slicer.get("contained_representations")
+    if contained:
         kv["Segmentation_ContainedRepresentationNames"] = (
-            "|".join(_denormalize_representation(r) for r in ext.contained_representations) + "|"
+            "|".join(_denormalize_representation(r) for r in contained) + "|"
         )
 
-    if ext.conversion_parameters:
-        kv["Segmentation_ConversionParameters"] = _serialize_conversion_parameters(
-            ext.conversion_parameters
-        )
+    conv_params = ext_slicer.get("conversion_parameters")
+    if conv_params:
+        kv["Segmentation_ConversionParameters"] = _serialize_conversion_parameters(conv_params)
 
-    if ext.reference_extent_offset is not None:
-        kv["Segmentation_ReferenceImageExtentOffset"] = " ".join(
-            str(x) for x in ext.reference_extent_offset
-        )
+    ref_offset = ext_slicer.get("reference_extent_offset")
+    if ref_offset is not None:
+        kv["Segmentation_ReferenceImageExtentOffset"] = " ".join(str(x) for x in ref_offset)
 
     for i, seg in enumerate(ext.segments):
         p = f"Segment{i}_"
+        seg_slicer = _slicer_metadata(seg)
         kv[f"{p}ID"] = seg.id
         if seg.name is not None:
             kv[f"{p}Name"] = seg.name
-        if seg.name_auto_generated is not None:
-            kv[f"{p}NameAutoGenerated"] = "1" if seg.name_auto_generated else "0"
+        name_auto = seg_slicer.get("name_auto_generated")
+        if name_auto is not None:
+            kv[f"{p}NameAutoGenerated"] = "1" if name_auto else "0"
         if seg.color is not None:
             kv[f"{p}Color"] = " ".join(str(c) for c in seg.color)
-        if seg.color_auto_generated is not None:
-            kv[f"{p}ColorAutoGenerated"] = "1" if seg.color_auto_generated else "0"
-        if isinstance(seg.label_value, list):
-            kv[f"{p}LabelValue"] = " ".join(str(v) for v in seg.label_value)
+        color_auto = seg_slicer.get("color_auto_generated")
+        if color_auto is not None:
+            kv[f"{p}ColorAutoGenerated"] = "1" if color_auto else "0"
+        lv = seg.label_value
+        if isinstance(lv, str) or (
+            isinstance(lv, list) and any(isinstance(v, str) for v in lv)
+        ):
+            # Resolving first would silently flatten a hierarchy that
+            # .seg.nrrd has no way to express, so refuse instead.
+            raise ValueError(
+                f"segment {seg.id!r}: string label_value references cannot be "
+                "represented in .seg.nrrd"
+            )
+        if isinstance(lv, list):
+            kv[f"{p}LabelValue"] = " ".join(str(v) for v in lv)
         else:
-            kv[f"{p}LabelValue"] = str(seg.label_value)
+            kv[f"{p}LabelValue"] = str(lv)
         if seg.layer is not None:
             kv[f"{p}Layer"] = str(seg.layer)
         if seg.extent is not None:
@@ -487,10 +547,16 @@ def serialize_seg_extension(ext: SegmentationExtension) -> dict[str, str]:
         # Model was modified — generate fresh
         return generated
 
-    # Model unchanged — replay original strings, filling in any
-    # keys that exist in generated but not in legacy (shouldn't happen
-    # for unmodified data, but just in case).
-    result: dict[str, str] = {}
+    # Model unchanged — replay the original strings verbatim. Starting from
+    # the legacy dict (rather than from the generated keys) also preserves
+    # the original Master/Source spelling and any Segment*/Segmentation_*
+    # keys this model does not represent, which would otherwise be consumed
+    # on parse and dropped here.
+    result = dict(legacy_kv)
     for key, val in generated.items():
-        result[key] = legacy_kv.get(key, val)
+        if key in result:
+            continue
+        if key in _REPRESENTATION_KEYS and any(k in result for k in _REPRESENTATION_KEYS):
+            continue  # the original used the other spelling
+        result[key] = val
     return result

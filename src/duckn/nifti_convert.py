@@ -507,6 +507,23 @@ def zarr_to_nifti(
         duckn_attrs = arr.attrs.get("duckn", {})
         meta = DucknMetadata(**duckn_attrs)
 
+    # NIfTI carries exactly one affine value mapping, in scl_slope/scl_inter.
+    # A chain that is a single linear transform round-trips through it
+    # exactly; anything else — a lut, several stacked transforms — has no
+    # representation, so the calibrated values are written and the chain is
+    # dropped (duckn-spec §4.3). Writing stored values and recording only
+    # part of the chain would leave the file's values silently misscaled.
+    scl_transform = None
+    if meta.value_transforms:
+        transforms = meta.value_transforms
+        if len(transforms) == 1 and transforms[0].name == "linear":
+            scl_transform = transforms[0]
+        else:
+            from .zarr_io import materialize
+
+            data = materialize(data, transforms)
+            meta = meta.model_copy(update={"value_transforms": None})
+
     ndim = data.ndim
 
     # --- Parse NIfTI extension if present ---
@@ -589,18 +606,38 @@ def zarr_to_nifti(
         hdr.set_sform(sform_affine, code=sform_code)
         hdr.set_qform(qform_affine, code=qform_code_out)
     else:
-        # Default: both get the reconstructed affine (pixdim-based spacing).
-        # Original transforms are preserved in nifti.legacy.tags for reference.
+        # Default: the sform is reconstructed from the convention fields
+        # (pixdim-based spacing). The convention stores a single geometry, so
+        # a qform that differed from the sform on import survives only in
+        # legacy — restore it rather than overwriting it with a copy of the
+        # sform, which would silently discard it.
+        #
+        # Only when the reconstructed geometry still matches what was
+        # imported, though: if the store's geometry has since been edited,
+        # the stored qform is stale, and a qform contradicting the sform is
+        # worse than no separate qform at all.
         hdr.set_sform(affine, code=sform_code)
-        hdr.set_qform(affine, code=qform_code_out)
 
-    # --- Restore value_transforms → scl_slope/scl_inter ---
-    if meta.value_transforms:
-        for vt in meta.value_transforms:
-            if vt.name == "linear" and vt.parameters:
-                hdr["scl_slope"] = vt.parameters.get("slope", 0.0)
-                hdr["scl_inter"] = vt.parameters.get("intercept", 0.0)
-                break
+        qform_affine = affine
+        if legacy_tags is not None and legacy_tags.qform is not None:
+            # The affine was derived from the sform on import, or from the
+            # qform for a qform-only file.
+            imported = (
+                legacy_tags.sform if legacy_tags.sform is not None else legacy_tags.qform
+            )
+            if imported is not None and np.allclose(
+                np.array(imported, dtype=np.float64), affine, atol=1e-6
+            ):
+                qform_affine = np.array(legacy_tags.qform, dtype=np.float64)
+
+        hdr.set_qform(qform_affine, code=qform_code_out)
+
+    # --- Restore the single linear transform → scl_slope/scl_inter ---
+    # Only set when the whole chain was that one transform; any other chain
+    # was materialized above and must leave these unset.
+    if scl_transform is not None and scl_transform.parameters:
+        hdr["scl_slope"] = scl_transform.parameters.get("slope", 0.0)
+        hdr["scl_inter"] = scl_transform.parameters.get("intercept", 0.0)
 
     # --- Restore xyzt_units ---
     spatial_unit_code = 2  # default mm

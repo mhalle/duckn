@@ -23,7 +23,7 @@ The purpose of a DWI file format is to record all the information necessary to u
 
 ### What this extension does not cover
 
-Diffusion *tensor* volumes — where the voxel values are the six independent components of the estimated symmetric tensor — do not use this extension. Those are fully described by the specification's `kind: "3D-symmetric-matrix"` axis, `measurement_frame`, `sample_units: "mm²/s"`, and `intent: "diffusion-tensor"`. See specification §6.3 for an example.
+Diffusion *tensor* volumes — where the voxel values are the six independent components of the estimated symmetric tensor — do not use this extension. Those are fully described by the specification's `kind: "3D-symmetric-matrix"` axis, `measurement_frame`, `sample_units: "mm²/s"`, and `intent: "diffusion-tensor"`. See specification §7.3 for an example.
 
 This extension is for the *raw acquisition*: the 4D volume of signal intensities measured under different diffusion-sensitizing gradient configurations, from which tensors or other models are subsequently estimated.
 
@@ -425,7 +425,7 @@ Important caveats for DICOM conversion:
 | Canon/Toshiba | (0018,9087) | Image comments or (0018,9089) | Classic format may omit b=0; enhanced format uses public tags |
 | UIH | (0065,1009) | (0065,1037) | |
 
-When DICOM source data is preserved via the `dicom` extension (see dicom-extension.md), the original DICOM tags are available in `extensions.dicom.tags`. The `dwmri` extension's structured fields are the preferred interface for DWI processing; the DICOM tags serve as provenance.
+When DICOM source data is preserved via the `dicom` extension (see dicom-spec.md), the original DICOM tags are available in `extensions.dicom.tags`. The `dwmri` extension's structured fields are the preferred interface for DWI processing; the DICOM tags serve as provenance.
 
 ### 7.3 Mapping from FSL bvec/bval
 
@@ -1026,7 +1026,7 @@ Here `gradient_frame: "world"` indicates the gradient directions have been trans
 
 **Why `"list"` and `"vector"` are both accepted.** The NRRD convention uses `kind: "list"` for the DWI axis. However, ITK's NRRD writer historically emits `kind: "vector"` for non-scalar data. Both identify a non-spatial, non-resamplable axis. Requiring only `"list"` would reject ITK-generated files that are otherwise valid. Accepting both follows the NA-MIC convention's pragmatic compatibility stance.
 
-**Relationship to the convention's diffusion tensor example.** The specification (§6.3) shows a diffusion tensor volume with `kind: "3D-symmetric-matrix"`, `intent: "diffusion-tensor"`, `sample_units: "mm²/s"`, and `measurement_frame`. That is the *output* of tensor estimation. This extension describes the *input*: the raw DWI signal volumes from which tensors are computed. The two are complementary and may coexist in the same Zarr group (one array for the DWI, another for the estimated tensors).
+**Relationship to the convention's diffusion tensor example.** The specification (§7.3) shows a diffusion tensor volume with `kind: "3D-symmetric-matrix"`, `intent: "diffusion-tensor"`, `sample_units: "mm²/s"`, and `measurement_frame`. That is the *output* of tensor estimation. This extension describes the *input*: the raw DWI signal volumes from which tensors are computed. The two are complementary and may coexist in the same Zarr group (one array for the DWI, another for the estimated tensors).
 
 **Why `gradient_frame` exists.** The gradient coordinate frame is the single largest source of errors in DWI processing. NRRD uses an explicit measurement frame (gradients in a named frame, transformed to world space by a matrix). FSL bvecs are in image-voxel space and must be rotated with the image. MRtrix stores gradients in scanner/world space directly. DICOM standard tags use patient (LPS) space, but vendor-specific tags may use image space (GE) or scanner space (Siemens). When data is converted between formats, the coordinate frame of the gradients can be silently reinterpreted, causing incorrect tensor orientations. The `gradient_frame` field makes this explicit. The default `"measurement"` matches the NRRD convention. Writers converting from other formats can set it to `"image"` or `"world"` to preserve the original representation without risk of incorrect transformation.
 

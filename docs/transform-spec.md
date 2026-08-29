@@ -337,7 +337,7 @@ All matrices in the duckn convention use **row-major (C) order**: each inner JSO
 - `affine` matrices in `space_transforms`
 - `measurement_frame` at the convention level
 
-```json
+```text
 [[a00, a01, a02, t0],
  [a10, a11, a12, t1],
  [a20, a21, a22, t2]]
