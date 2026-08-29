@@ -168,7 +168,10 @@ Fields that describe *this* array — `axes`, `space`, `space_origin`,
 computed for the derived array and remain authoritative.
 
 Recording what an array was derived *from* is the
-[`provenance`](provenance-extension.md) extension's job, not the convention's.
+[`provenance`](provenance-extension.md) extension's job, not the
+convention's. That extension is drafted but not yet implemented, so a
+derived array currently carries no record of its origin — if your pipeline
+needs one, you have to keep it yourself for now.
 
 ---
 
