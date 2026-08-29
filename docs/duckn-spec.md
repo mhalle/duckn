@@ -509,9 +509,15 @@ Two related cautions. Commutation for affine transforms holds for *interpolation
 
 ### 4.5 Derived Arrays
 
-An array is **derived** when it is not a faithful re-encoding of its source: its values or its sampling grid differ. Rechunking, recompression, and re-encoding under §4.3 leave an array underived; resampling, cropping, filtering, registration, arithmetic, and segmentation all produce derived arrays.
+Derivation is a property of a **relationship**, not of an array. An array is **derived with respect to a given source** when it is not a faithful re-encoding of that source — when its values or its sampling grid differ from it. The same array can be a faithful re-encoding of one thing and derived from another, so the question is always "derived from *what*".
 
-**Metadata inherited from a source does not survive derivation.** Fields that describe *this* array — `axes`, `space`, `sample_units`, and the `value_transforms` that match the values actually written — are computed for the derived array and remain authoritative. Anything carried over because the source happened to have it, including format-specific provenance held in extensions, must be dropped rather than propagated.
+That distinction matters in practice. A segmentation is derived with respect to the image it segments: it was computed from that image and shares neither its values nor, necessarily, its grid. But a duckn array converted from an existing segmentation *file* is a faithful re-encoding of that file, and metadata describing the file it came from is perfectly valid on it. Whether an operation was "a segmentation" or "a conversion" is not the test; the test is whether this array faithfully re-encodes the particular source whose metadata is in question.
+
+Rechunking, recompression, and re-encoding under §4.3 leave an array a faithful re-encoding of its source. Resampling, cropping, filtering, registration, arithmetic, and computing one array from another do not.
+
+**Resolution levels of one image are an exception.** The levels of a multi-resolution pyramid are alternative samplings of a single logical image rather than separate derived arrays, and each level legitimately carries the same descriptive metadata with its `space_direction` scaled to its own sampling. A pyramid is one array in this section's sense; whatever it was built from is its source.
+
+**Metadata inherited from a source does not survive derivation with respect to that source.** Fields that describe *this* array — `axes`, `space`, `space_origin`, `measurement_frame`, `dimension_names`, `intent`, `sample_units`, and the `value_transforms` that match the values actually written — are computed for the derived array and remain authoritative. Anything carried over because the source happened to have it, including format-specific provenance held in extensions, must be dropped rather than propagated.
 
 The reason is that inheritance has no defined semantics. There is no general rule for which of a source's attributes survive an arbitrary operation: some are unaffected, some are invalidated, some are ambiguous, and an array derived from several sources may inherit contradictory values with no principled way to choose. A convention that cannot say what inherited metadata means after an operation should not carry it.
 
@@ -523,16 +529,17 @@ This convention describes a single array: what its values mean, how its axes are
 
 That is the domain of provenance standards, several of which are mature and array-agnostic: W3C PROV, RO-Crate, BIDS derivatives, NIDM, and, within its own scope, DICOM's derivation model. Duplicating them here would produce a weaker parallel vocabulary bound to one file format.
 
-Recording derivation properly is nonetheless a real and unmet need for imaging data, and one that affects fidelity: a consumer of a derived array generally cannot tell what was done to it, and the operation may bear directly on whether the values support the measurement being made of them. This convention does not solve that. It is left as known future work, to be taken up deliberately — and preferably in concert with the efforts above rather than in isolation.
+Recording derivation properly is nonetheless a real need for imaging data, and one that affects fidelity: a consumer of a derived array generally cannot tell what was done to it, and the operation may bear directly on whether the values support the measurement being made of them. The `provenance` extension addresses this as an extension rather than as convention metadata, which is the layering this section intends — the convention describes an array, and an extension may describe how it came to be.
 
-The conservative rule in §4.5 is chosen so that this deferral costs nothing. Dropping inherited metadata makes no claim about the relationship between a derived array and its source, so it cannot conflict with any provenance model layered on later. Retaining would have forced this convention to define that relationship in order to say what the retained metadata meant.
+The conservative rule in §4.5 is what makes that layering work. Dropping inherited metadata makes no claim about the relationship between a derived array and its source, so it cannot conflict with whatever a provenance extension says about it. Retaining would have forced this convention to define that relationship in order to say what the retained metadata meant.
 
-An extension, or a writer with specific knowledge of both formats involved, may record such relationships. This convention neither provides nor prohibits that.
+A consequence worth stating: an array carrying no provenance extension records nothing about its own origin. Facts that would qualify its values — that they descend from lossy-compressed data, or from an interpolating resample — are not preserved by the convention itself. That is a real limitation, and the reason to record derivation somewhere rather than nowhere.
 
 ---
 
 ## 5. Consistency Rules
 
+- A `lut` transform's `values` must be non-empty, and a `lut` may appear only as the first entry in `value_transforms` (§4.4).
 - If `space` is present, it implies a space dimension. All `space_direction` vectors, the `space_origin` vector, `measurement_frame` rows (and columns), and any `space_dimension` (if present instead of `space`) must have this number of components.
 - The length of `axes` must equal the number of dimensions (`len(shape)`).
 - Where a `kind` specifies a required axis size, the corresponding element of `shape` must match.

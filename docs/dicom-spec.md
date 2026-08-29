@@ -120,7 +120,7 @@ This follows DICOM's own rule for `LossyImageCompression` (PS3.3 C.7.6.1.1.5): t
 
 It is a first-class field rather than a tag because a consumer should not have to search a tag dictionary — or resolve a Transfer Syntax UID against a table of which syntaxes are lossy — to learn that the values are degraded.
 
-Note that this stickiness does not extend across *derivation*. Like the rest of this extension, the field describes a source DICOM object, and a derived array drops it along with everything else (§10). Lossy compression is one of many operations that can degrade values — interpolation, filtering, quantization, and model inference among them — and singling it out for inheritance would privilege it for no better reason than that DICOM happens to have standardized a flag for it.
+Note that this stickiness does not extend across *derivation*. Like the rest of this extension, the field describes a source DICOM object, and an array derived from it drops the field along with everything else (§10). A resampled array descended from a lossy source therefore has the field absent, which reads as "not known to be lossy" — the degradation warning is not carried forward. Recording that across a derivation is a job for the `provenance` extension, not this one. Lossy compression is one of many operations that can degrade values — interpolation, filtering, quantization, and model inference among them — and singling it out for inheritance would privilege it for no better reason than that DICOM happens to have standardized a flag for it.
 
 Omit when unknown. Absent means "not known to be lossy", not "known to be lossless"; `false` asserts the stronger claim and should only be written when the source said so.
 
@@ -756,9 +756,11 @@ Consequently, a reader must never consult this extension to interpret the array'
 
 ### 10.2 Derived arrays
 
-An array is **derived** when it is no longer a faithful re-encoding of its source: its values or its sampling grid differ (duckn convention §4.5). Resampling, cropping, filtering, registration, intensity normalization, and segmentation all produce derived arrays.
+An array is **derived with respect to a source** when it is no longer a faithful re-encoding of that source: its values or its sampling grid differ (duckn convention §4.5). The question this section asks is always whether the array still faithfully re-encodes *the DICOM object this extension describes*.
 
-**The default for a derived array is to drop this extension entirely** — `tags`, `legacy`, and the extension-level fields alike. Not to edit it, not to filter it, not to carry a subset forward.
+That distinction matters here more than anywhere. Converting a DICOM Segmentation object into a duckn array is a faithful re-encoding of that SEG object, so a `dicom` extension describing it is correct and belongs there — even though the array is a segmentation, and is derived with respect to the *image* that was segmented. Resampling that array afterwards is what makes it derived with respect to the SEG object, and only then does this section apply.
+
+**The default for an array derived from the DICOM object described here is to drop this extension entirely** — `tags` and the extension-level fields alike. Not to edit it, not to filter it, not to carry a subset forward.
 
 Three reasons, in increasing order of severity.
 

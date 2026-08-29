@@ -273,6 +273,39 @@ def _detect_anonymized(ds: Any) -> bool | None:
     return None
 
 
+def _uniform_rescale_value(datasets: list[Any], keyword: str, cast: Any) -> Any:
+    """Read an attribute that must be identical across every instance.
+
+    duckn describes the stacked array with one `value_transforms` chain, so
+    a per-instance value mapping cannot be represented. Rather than adopt
+    the first instance's and silently misreport the rest, warn and return
+    None — the stored values are then presented uncalibrated, which is
+    wrong-looking rather than plausibly-wrong.
+    """
+    values = []
+    for ds in datasets:
+        raw = getattr(ds, keyword, None)
+        values.append(None if raw is None else cast(raw))
+
+    present = [v for v in values if v is not None]
+    if not present:
+        return None
+
+    unique = set(present)
+    if len(unique) > 1 or len(present) != len(values):
+        warnings.warn(
+            f"{keyword} varies across the series ({sorted(unique)!r}"
+            f"{', and is absent on some instances' if len(present) != len(values) else ''})"
+            "; it cannot be represented as a single value transform, so no "
+            "calibration is recorded. The per-instance values are preserved "
+            "in the dicom extension.",
+            stacklevel=3,
+        )
+        return None
+
+    return present[0]
+
+
 def _is_lossy_compressed(ds: Any) -> bool | None:
     """Whether the pixel data has ever been lossy compressed.
 
@@ -453,21 +486,13 @@ def _compute_geometry(
     if st is not None:
         slice_thickness = float(st)
 
-    # Rescale
-    rescale_slope = None
-    rs = getattr(ds0, "RescaleSlope", None)
-    if rs is not None:
-        rescale_slope = float(rs)
-
-    rescale_intercept = None
-    ri = getattr(ds0, "RescaleIntercept", None)
-    if ri is not None:
-        rescale_intercept = float(ri)
-
-    rescale_type = None
-    rt = getattr(ds0, "RescaleType", None)
-    if rt is not None:
-        rescale_type = str(rt)
+    # Rescale. A single value_transform is asserted over the whole stacked
+    # array, so every instance must agree — per-slice rescale variation is
+    # real (PET and NM especially), and silently adopting slice 0's mapping
+    # would misreport every other slice.
+    rescale_slope = _uniform_rescale_value(datasets, "RescaleSlope", float)
+    rescale_intercept = _uniform_rescale_value(datasets, "RescaleIntercept", float)
+    rescale_type = _uniform_rescale_value(datasets, "RescaleType", str)
 
     # Dtype
     bits = int(ds0.BitsAllocated)
@@ -620,18 +645,10 @@ def _load_2d_series(
     dtype = np.dtype(_dtype_map.get((bits, signed), np.uint16))
 
     # Rescale
-    rescale_slope = None
-    rs = getattr(ds0, "RescaleSlope", None)
-    if rs is not None:
-        rescale_slope = float(rs)
-    rescale_intercept = None
-    ri = getattr(ds0, "RescaleIntercept", None)
-    if ri is not None:
-        rescale_intercept = float(ri)
-    rescale_type = None
-    rt = getattr(ds0, "RescaleType", None)
-    if rt is not None:
-        rescale_type = str(rt)
+    # Must be identical across the series — see _uniform_rescale_value.
+    rescale_slope = _uniform_rescale_value(datasets, "RescaleSlope", float)
+    rescale_intercept = _uniform_rescale_value(datasets, "RescaleIntercept", float)
+    rescale_type = _uniform_rescale_value(datasets, "RescaleType", str)
 
     # Stack pixel data — always pad to 3D (1, rows, cols)
     if len(datasets) == 1:
@@ -2216,18 +2233,10 @@ def geometry_from_headers(
     if st is not None:
         slice_thickness = float(st)
 
-    rescale_slope = None
-    rs = getattr(ds0, "RescaleSlope", None)
-    if rs is not None:
-        rescale_slope = float(rs)
-    rescale_intercept = None
-    ri = getattr(ds0, "RescaleIntercept", None)
-    if ri is not None:
-        rescale_intercept = float(ri)
-    rescale_type = None
-    rt = getattr(ds0, "RescaleType", None)
-    if rt is not None:
-        rescale_type = str(rt)
+    # Must be identical across the series — see _uniform_rescale_value.
+    rescale_slope = _uniform_rescale_value(datasets, "RescaleSlope", float)
+    rescale_intercept = _uniform_rescale_value(datasets, "RescaleIntercept", float)
+    rescale_type = _uniform_rescale_value(datasets, "RescaleType", str)
 
     # Per-slice samples with origins
     samples = [{"origin": pos.tolist()} for pos in positions]
