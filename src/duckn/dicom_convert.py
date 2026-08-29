@@ -20,10 +20,12 @@ import zarr
 from .convert import _auto_chunks, _build_compressors
 from .zarr_io import _is_zip_path, open_store
 from .models import (
+    SEG_EXTENSION_VERSION,
     AxisKind,
     AxisMetadata,
     Centering,
     CodedEntry,
+    Designation,
     DicomClassification,
     DicomExtension,
     DucknMetadata,
@@ -1278,10 +1280,10 @@ def _coded_entry_from_sequence(seq: Any) -> CodedEntry | None:
     if seq is None or len(seq) == 0:
         return None
     item = seq[0]
-    scheme = str(getattr(item, "CodingSchemeDesignator", ""))
-    code = str(getattr(item, "CodeValue", ""))
-    meaning = str(getattr(item, "CodeMeaning", ""))
-    if not scheme or not code or not meaning:
+    scheme = str(getattr(item, "CodingSchemeDesignator", "") or "")
+    code = str(getattr(item, "CodeValue", "") or "")
+    meaning = str(getattr(item, "CodeMeaning", "") or "")
+    if not scheme or not code:
         return None
     return CodedEntry(scheme=scheme, code=code, meaning=meaning)
 
@@ -1402,12 +1404,31 @@ def _extract_seg_extension(ds: Any) -> SegmentationExtension | None:
         if color is not None:
             seg_kwargs["color"] = color
         if dicom_class is not None:
-            seg_kwargs["metadata"] = {"dicom": dicom_class.model_dump(exclude_none=True)}
+            seg_kwargs["dicom"] = dicom_class
+
+        # The property type code is the primary concept: surface it as a
+        # designation so ontology lookup does not require DICOM knowledge.
+        if seg_type_entry is not None:
+            modifier = None
+            if type_modifier is not None:
+                modifier = Designation(
+                    scheme=type_modifier.scheme,
+                    code=type_modifier.code,
+                    meaning=type_modifier.meaning,
+                )
+            seg_kwargs["designations"] = [
+                Designation(
+                    scheme=seg_type_entry.scheme,
+                    code=seg_type_entry.code,
+                    meaning=seg_type_entry.meaning,
+                    modifier=modifier,
+                )
+            ]
 
         segments.append(Segment(**seg_kwargs))
 
     return SegmentationExtension(
-        version="0.5",
+        version=SEG_EXTENSION_VERSION,
         source_representation=source_rep,
         segments=segments,
     )
@@ -2624,7 +2645,6 @@ def zarr_to_dicom_seg(
         raise ValueError(f"Expected 3D labelmap, got {data.ndim}D")
 
     n_slices, rows, cols = data.shape
-    data = data.astype(np.uint16 if data.max() > 255 else np.uint8)
 
     # Decompose geometry
     if not meta.axes or len(meta.axes) < 3:
@@ -2650,6 +2670,91 @@ def zarr_to_dicom_seg(
     if meta.extensions and "seg" in meta.extensions:
         seg_ext = SegmentationExtension(**meta.extensions["seg"])
         segments = seg_ext.segments
+
+    # --- Plan segment numbering ------------------------------------------
+    # In a LABELMAP segmentation each voxel value *is* a segment number, and
+    # DICOM requires segment numbers to start at 1 and increase monotonically
+    # (PS3.3 C.8.20.2.1). duckn label values are arbitrary — sparse atlas ids,
+    # values not starting at 1 — so build a label → segment-number map and
+    # remap the voxel data to match it.
+    present = {int(v) for v in np.unique(data)} - {0}
+
+    plan: list[tuple[Segment, int]] = []
+    reference_only: list[str] = []
+    for seg in segments:
+        if isinstance(seg.label_value, int):
+            labels = [seg.label_value]
+        elif isinstance(seg.label_value, list):
+            labels = [v for v in seg.label_value if isinstance(v, int)]
+        else:
+            labels = []
+
+        if not labels:
+            # Defined purely as a union of other segments by id: it owns no
+            # voxels of its own, so it has no row of its own here.
+            reference_only.append(seg.id)
+            continue
+        if len(labels) > 1:
+            raise ValueError(
+                f"segment {seg.id!r} owns multiple label values {labels}: "
+                "label-union (overlapping) segments cannot be represented in a "
+                "DICOM LABELMAP segmentation, where each voxel carries exactly "
+                "one segment number"
+            )
+        if seg.layer not in (None, 0):
+            raise ValueError(
+                f"segment {seg.id!r} is on layer {seg.layer}: layered "
+                "(overlapping) segmentations cannot be represented in a DICOM "
+                "LABELMAP segmentation"
+            )
+        plan.append((seg, labels[0]))
+
+    claimed: dict[int, str] = {}
+    for seg, label in plan:
+        if label in claimed:
+            raise ValueError(
+                f"segments {claimed[label]!r} and {seg.id!r} both claim label "
+                f"value {label} in the same layer"
+            )
+        claimed[label] = seg.id
+
+    if not plan:
+        if reference_only:
+            raise ValueError(
+                "every segment is defined only by reference to other segments "
+                f"({', '.join(reference_only)}); none owns voxel data to export"
+            )
+        # No segment metadata at all: synthesize one segment per label present
+        # so the required Segment Sequence is never empty.
+        plan = [
+            (Segment(id=f"Segment_{v}", name=f"Segment {v}", label_value=v), v)
+            for v in sorted(present)
+        ]
+
+    if not plan:
+        raise ValueError(
+            "segmentation is empty: a DICOM Segmentation requires at least one "
+            "segment (Segment Sequence is Type 1)"
+        )
+
+    label_to_number = {label: i + 1 for i, (_, label) in enumerate(plan)}
+
+    undescribed = sorted(present - set(label_to_number))
+    if undescribed:
+        warnings.warn(
+            f"label values {undescribed} appear in the voxel data but are not "
+            "described by any segment; they are written as background (0)",
+            stacklevel=2,
+        )
+
+    if label_to_number != {v: v for v in label_to_number} or undescribed:
+        uniq, inverse = np.unique(data, return_inverse=True)
+        lut = np.array(
+            [label_to_number.get(int(v), 0) for v in uniq], dtype=np.uint32
+        )
+        data = lut[inverse].reshape(data.shape)
+
+    data = data.astype(np.uint16 if len(plan) > 255 else np.uint8)
 
     # Build DICOM dataset
     ds = Dataset()
@@ -2694,29 +2799,58 @@ def zarr_to_dicom_seg(
     ds.SharedFunctionalGroupsSequence = Sequence([shared_fg])
 
     # Segment Sequence
+    def _code_item(entry: CodedEntry, seg: Segment, field: str) -> Dataset:
+        item = Dataset()
+        item.CodeValue = entry.code
+        item.CodingSchemeDesignator = entry.scheme
+        # CodeMeaning is Type 1. It is a property of the *code*, so the only
+        # honest fallback is the segment's own name — never its id, which
+        # would publish an identifier as if it were the concept's meaning.
+        meaning = entry.meaning or seg.name
+        if not meaning:
+            raise ValueError(
+                f"segment {seg.id!r}: dicom.{field} ({entry.scheme}:{entry.code}) "
+                "has no 'meaning' and the segment has no 'name'; DICOM requires "
+                "CodeMeaning for every coded entry"
+            )
+        item.CodeMeaning = meaning
+        return item
+
     seg_sequence = []
-    for seg in segments:
+    for seg, source_label in plan:
         seg_item = Dataset()
-        seg_item.SegmentNumber = seg.label_value if isinstance(seg.label_value, int) else seg.label_value[0]
+        seg_item.SegmentNumber = label_to_number[source_label]
         seg_item.SegmentLabel = seg.name or seg.id
         seg_item.SegmentAlgorithmType = "AUTOMATIC"
         seg_item.SegmentAlgorithmName = "duckn"
 
         # Restore DICOM classification if present
-        dicom_class = (seg.metadata or {}).get("dicom", {})
-        if dicom_class:
-            for attr, seq_name in [
-                ("category", "SegmentedPropertyCategoryCodeSequence"),
-                ("type", "SegmentedPropertyTypeCodeSequence"),
-                ("anatomic_region", "AnatomicRegionSequence"),
-            ]:
-                entry = dicom_class.get(attr)
-                if entry:
-                    code_item = Dataset()
-                    code_item.CodeValue = entry.get("code") or entry.get("id", "")
-                    code_item.CodingSchemeDesignator = entry.get("scheme", "SCT")
-                    code_item.CodeMeaning = entry.get("meaning") or entry.get("name", "")
-                    setattr(seg_item, seq_name, Sequence([code_item]))
+        dicom_class = seg.dicom
+        if dicom_class is not None:
+            if dicom_class.category is not None:
+                seg_item.SegmentedPropertyCategoryCodeSequence = Sequence(
+                    [_code_item(dicom_class.category, seg, "category")]
+                )
+            if dicom_class.type is not None:
+                type_item = _code_item(dicom_class.type, seg, "type")
+                if dicom_class.type_modifier is not None:
+                    type_item.SegmentedPropertyTypeModifierCodeSequence = Sequence(
+                        [_code_item(dicom_class.type_modifier, seg, "type_modifier")]
+                    )
+                seg_item.SegmentedPropertyTypeCodeSequence = Sequence([type_item])
+            if dicom_class.anatomic_region is not None:
+                anat_item = _code_item(dicom_class.anatomic_region, seg, "anatomic_region")
+                if dicom_class.anatomic_region_modifier is not None:
+                    anat_item.AnatomicRegionModifierSequence = Sequence(
+                        [
+                            _code_item(
+                                dicom_class.anatomic_region_modifier,
+                                seg,
+                                "anatomic_region_modifier",
+                            )
+                        ]
+                    )
+                seg_item.AnatomicRegionSequence = Sequence([anat_item])
 
         seg_sequence.append(seg_item)
 

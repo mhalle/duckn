@@ -156,7 +156,7 @@ duckn metadata can live in any Zarr store — a directory on disk, a `.zarr.zip`
 Domain-specific metadata lives inside `duckn.extensions`. Extensions depend on duckn semantics (coordinate systems, axis structure) to be interpretable. Defined extensions:
 
 - **dwmri** — Diffusion-weighted MRI (gradients, b-values, acquisition parameters)
-- **slicerseg** — 3D Slicer segmentation (segments, terminologies, label maps)
+- **seg** — 3D Slicer segmentation (segments, terminologies, label maps)
 - **nifti** — NIfTI provenance (sform/qform codes, intent, legacy affines)
 - **dicom** — DICOM provenance (tags, transfer syntax, anonymization status)
 

@@ -32,7 +32,7 @@ from duckn.dicom_convert import (
     dicom_to_zarr,
     zarr_to_dicom,
 )
-from duckn.models import DucknMetadata, SegmentationExtension, SpaceName
+from duckn.models import SEG_EXTENSION_VERSION, DucknMetadata, SegmentationExtension, SpaceName
 
 
 # ---------------------------------------------------------------------------
@@ -768,7 +768,7 @@ class TestEndToEnd:
 
 
 # ---------------------------------------------------------------------------
-# DICOM SEG → slicerseg extension
+# DICOM SEG → seg extension
 # ---------------------------------------------------------------------------
 
 
@@ -845,7 +845,7 @@ class TestDicomSegExtraction:
         ds = _make_seg_dataset()
         ext = _extract_seg_extension(ds)
         assert ext is not None
-        assert ext.version == "0.5"
+        assert ext.version == SEG_EXTENSION_VERSION
         assert ext.source_representation == "binary-labelmap"
         assert len(ext.segments) == 2
 
@@ -857,20 +857,24 @@ class TestDicomSegExtraction:
         assert seg1.color is not None
         assert len(seg1.color) == 3
 
-        # DICOM classification (now in metadata.dicom)
-        assert seg1.metadata is not None
-        assert "dicom" in seg1.metadata
-        dicom = seg1.metadata["dicom"]
-        assert dicom["category"]["scheme"] == "SCT"
-        assert dicom["category"]["code"] == "123037004"
-        assert dicom["type"]["code"] == "10200004"
-        assert dicom["anatomic_region"]["code"] == "10200004"
+        # DICOM classification
+        assert seg1.dicom is not None
+        assert seg1.dicom.category.scheme == "SCT"
+        assert seg1.dicom.category.code == "123037004"
+        assert seg1.dicom.type.code == "10200004"
+        assert seg1.dicom.anatomic_region.code == "10200004"
+
+        # The property type code surfaces as the primary designation
+        assert seg1.designations is not None
+        assert seg1.designations[0].scheme == "SCT"
+        assert seg1.designations[0].code == "10200004"
 
         seg2 = ext.segments[1]
         assert seg2.id == "Tumor"
         assert seg2.label_value == 1  # BINARY: all segments have label_value=1
         assert seg2.layer == 1  # 0-based layer index
-        assert seg2.metadata is None  # no coded entries
+        assert seg2.dicom is None  # no coded entries
+        assert seg2.designations is None
 
     def test_fractional_seg(self):
         ds = _make_seg_dataset()

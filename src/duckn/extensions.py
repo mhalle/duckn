@@ -29,8 +29,24 @@ class SegmentView:
         return self._data.get("id")
 
     @property
-    def label_value(self) -> int | None:
+    def label_value(self) -> int | str | list[int | str] | None:
+        """Raw label value: an int, a segment-id reference, or a list of both."""
         return self._data.get("label_value")
+
+    @property
+    def label_values(self) -> list[int]:
+        """The integer label values this segment owns directly.
+
+        Excludes string entries, which reference other segments by id.
+        """
+        lv = self._data.get("label_value")
+        if isinstance(lv, bool):
+            return []
+        if isinstance(lv, int):
+            return [lv]
+        if isinstance(lv, list):
+            return [v for v in lv if isinstance(v, int) and not isinstance(v, bool)]
+        return []
 
     @property
     def layer(self) -> int | None:
@@ -41,12 +57,16 @@ class SegmentView:
         return self._data.get("color")
 
     @property
-    def identifiers(self) -> dict:
-        return self._data.get("identifiers", {})
+    def designations(self) -> list[dict]:
+        return self._data.get("designations") or []
+
+    @property
+    def dicom(self) -> dict:
+        return self._data.get("dicom") or {}
 
     @property
     def metadata(self) -> dict:
-        return self._data.get("metadata", {})
+        return self._data.get("metadata") or {}
 
     @property
     def raw(self) -> dict:
@@ -92,24 +112,29 @@ class SegAccessor:
         for seg in self.segments:
             if name is not None and seg.name == name:
                 return seg
-            if label_value is not None:
-                lv = seg.label_value
-                if lv == label_value or lv == [label_value]:
-                    return seg
+            if label_value is not None and label_value in seg.label_values:
+                return seg
             if snomed is not None:
-                sct = seg.identifiers.get("snomedct", {})
-                if sct.get("id") == snomed:
-                    return seg
-                dicom = seg.metadata.get("dicom", {})
-                type_entry = dicom.get("type", {})
-                if type_entry.get("code") == snomed:
+                for des in seg.designations:
+                    scheme = str(des.get("scheme", "")).upper()
+                    if scheme in ("SCT", "SNOMEDCT", "SNOMED") and des.get("code") == snomed:
+                        return seg
+                type_entry = seg.dicom.get("type") or {}
+                if type_entry.get("scheme", "SCT").upper() in (
+                    "SCT",
+                    "SNOMEDCT",
+                    "SNOMED",
+                ) and type_entry.get("code") == snomed:
                     return seg
         return None
 
     def label_for(self, name: str) -> int | None:
-        """Get the label value for a segment name."""
+        """Get the (first) integer label value for a segment name."""
         seg = self.segment(name=name)
-        return seg.label_value if seg else None
+        if seg is None:
+            return None
+        labels = seg.label_values
+        return labels[0] if labels else None
 
     def name_for(self, label_value: int) -> str | None:
         """Get the name for a label value."""
@@ -123,8 +148,20 @@ class SegAccessor:
 
     @property
     def label_values(self) -> list:
-        """List all label values (int or list[int])."""
+        """The raw label value of each segment (int, str, or list)."""
         return [s.label_value for s in self.segments]
+
+    @property
+    def terminologies(self) -> dict:
+        """The coding-system registry, keyed by scheme."""
+        return self._data.get("terminologies") or {}
+
+    def concept_url(self, scheme: str, code: str) -> str | None:
+        """Resolve a concept URL from the registry's ``url_template``."""
+        template = (self.terminologies.get(scheme) or {}).get("url_template")
+        if not template:
+            return None
+        return template.replace("{code}", code)
 
     @property
     def raw(self) -> dict:

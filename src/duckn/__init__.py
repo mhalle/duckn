@@ -105,12 +105,13 @@ SegmentationExtension, Segment
 
 from .convert import nrrd_to_zarr, nrrd_to_zarr_zerocopy, zarr_to_nrrd, zarr_to_nrrd_zerocopy
 from .models import (
+    SEG_EXTENSION_VERSION,
     AxisKind,
     AxisMetadata,
     Centering,
     CodedEntry,
     ConversionParameter,
-    Identifier,
+    Designation,
     DicomClassification,
     DicomExtension,
     DwmriAcquisition,
@@ -147,12 +148,13 @@ from .zarr_io import (
 )
 
 __all__ = [  # noqa: RUF022
+    "SEG_EXTENSION_VERSION",
     "AxisKind",
     "AxisMetadata",
     "Centering",
     "CodedEntry",
     "ConversionParameter",
-    "Identifier",
+    "Designation",
     "DicomClassification",
     "DicomExtension",
     "DwmriAcquisition",

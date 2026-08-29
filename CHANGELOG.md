@@ -1,5 +1,91 @@
 # Changelog
 
+## Unreleased
+
+### Changed (breaking) — seg extension 0.5 → 0.6
+- Reconciled the segmentation spec and implementation around a single
+  identity model: `designations` (array of `{scheme, code, meaning?,
+  modifier?}`) is canonical. The `identifiers` dict and the `Identifier`
+  model are removed. `Designation.meaning` is now optional (the code is
+  authoritative; the meaning is a rendering — on conflict the code wins);
+  empty meanings normalize to `None`.
+- Per-designation `url` and `display` are removed. Concept URLs are now
+  derived from the new `url_template` field on `terminologies` registry
+  entries (`{code}` is substituted).
+- Slicer application state moved under `metadata.slicer`: extension-level
+  `contained_representations`, `conversion_parameters`,
+  `reference_extent_offset` and segment-level `name_auto_generated`,
+  `color_auto_generated`, `tags` are no longer first-class fields.
+- DICOM classification is a first-class `dicom` field on segments
+  (was written to `metadata.dicom` by the DICOM SEG importer and read
+  from there by the exporter, while the .seg.nrrd path used the
+  top-level field — classification now survives cross-format round trips).
+- `DicomClassification` entries are uniformly `CodedEntry`
+  (`scheme`/`code`/`meaning?`); the id/name variant is gone.
+- Spec: the version rule is now explicit — while the major version is 0, a
+  minor bump may break (0.6 does). Fractional labelmaps are given semantics
+  (one layer per segment; label unions and references are binary-only),
+  label value 0 is reserved for background, `extent` bounds are inclusive,
+  and §5's uniqueness rules are restated over (layer, label) pairs so they
+  hold for layered and reference segments. Terminology registration is a
+  recommendation in all three places it is mentioned (it was a requirement
+  in two). The `legacy` field is documented.
+- The `seg` extension is no longer called "slicerseg" in README.md,
+  dicom-spec.md, units-spec.md, or zero-copy-axis-order.md.
+
+### Added
+- `Segment.label_value` accepts string entries referencing other segments
+  by id (hierarchical/aggregate segments per spec §2). The .seg.nrrd
+  writer raises on them (not representable); the DICOM SEG writer skips
+  reference-only segments.
+- DICOM SEG import now surfaces the property type code as the segment's
+  primary designation, and export writes type/anatomic-region modifier
+  code sequences (laterality survives export).
+- `SEG_EXTENSION_VERSION` constant ("0.6"); both converters stamp it
+  (previously one wrote "1.0" and the other "0.5").
+- `Designation` and `SEG_EXTENSION_VERSION` are exported from `duckn`.
+- Pre-0.6 seg extensions are migrated on read: `identifiers` →
+  `designations`, `metadata.dicom` → `dicom`, and the moved Slicer fields →
+  `metadata.slicer`. Without this, `extra="forbid"` made every store
+  written by 0.1.8 unreadable, and `metadata.dicom` stores loaded fine but
+  exported no classification at all.
+- `SegAccessor.terminologies` / `.concept_url()` resolve a concept URL from
+  the registry's `url_template`; `SegmentView.label_values` returns the
+  integer labels a segment owns.
+- `tests/test_dicom_seg_export.py` covers `zarr_to_dicom_seg`, which had
+  none — the gap behind most of the export bugs fixed below.
+
+### Fixed
+- DICOM SEG export wrote `SegmentNumber` straight from `label_value`,
+  producing files that violate DICOM's "start at 1, increase monotonically"
+  rule (PS3.3 C.8.20.2.1) — a layered segmentation exported every segment
+  as number 1, and sparse atlas ids exported as-is. Segment numbers are now
+  assigned sequentially and the LABELMAP voxel data is remapped to match.
+- DICOM SEG export fell back to the segment's `id` for a missing
+  `CodeMeaning`, publishing an identifier as a SNOMED concept's meaning
+  (and re-importing it as a `designation.meaning`). It now falls back only
+  to the segment `name` and raises otherwise, per spec §4.2.
+- DICOM SEG export could emit an empty `SegmentSequence` (Type 1, requires
+  ≥1 item) for an all-reference or metadata-less segmentation. It now
+  synthesizes segments from the label values present, and raises where it
+  cannot. Label-union and layered segments, which have no LABELMAP
+  representation, now raise instead of silently exporting partial data.
+- `.seg.nrrd` serialization dropped a designation's `modifier` whenever
+  `dicom.type` was present without a `type_modifier` — losing laterality on
+  exactly the shape spec §7.1 shows.
+- `.seg.nrrd` serialization renamed `Segmentation_SourceRepresentation` to
+  the older `MasterRepresentation` spelling, and dropped `Segment*` keys the
+  model does not represent. Legacy replay now starts from the original
+  key/values, so both survive.
+- `.seg.nrrd` parsing rejected two-part coded entries (`SCT^64033007`),
+  discarding the code along with the absent meaning; assigned label value 0
+  (background) to segments with no `SegmentN_LabelValue`; carried
+  `SegmentN_Layer: 0` onto 3D arrays with no `list` axis, violating spec §5;
+  and raised on a legal `"Closed surface"` master representation.
+- `SegAccessor.segment(label_value=...)` never matched a segment whose
+  `label_value` is a multi-element list, and `segment(snomed=...)` raised
+  `TypeError` when `designations` was present but null.
+
 ## 0.1.8 — 2026-05-07
 
 ### Changed
