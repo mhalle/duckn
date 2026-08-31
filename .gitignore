@@ -11,3 +11,8 @@ output/idc/patient_*.zmp
 js/duckn-cornerstone/demo/public/*.zmp
 js/duckn-cornerstone/demo/package-lock.json
 js/duckn-reader/demo/public/*.zmp
+
+# JS test build output
+js/*/.test-out/
+
+node_modules/

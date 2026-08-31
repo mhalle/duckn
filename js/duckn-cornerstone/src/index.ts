@@ -10,6 +10,7 @@
  *   duckn:https://example.com/scan.zmp#slice=42
  */
 
+import { planCalibration, type ValueTransform } from "./valueTransforms.js";
 import * as zarr from "zarrita";
 import FetchStore from "@zarrita/storage/fetch";
 import { ZMPStore } from "zarr-zmp-ts";
@@ -44,10 +45,7 @@ interface DucknMetadata {
   space?: string;
   space_origin?: number[];
   axes?: DucknAxis[];
-  value_transforms?: Array<{
-    name: string;
-    parameters?: { slope?: number; intercept?: number };
-  }>;
+  value_transforms?: ValueTransform[];
   extensions?: Record<string, unknown>;
 }
 
@@ -196,18 +194,12 @@ function extractSliceMetadata(
     }
   }
 
-  // Value transforms (slope/intercept)
-  let slope = 1;
-  let intercept = 0;
-  if (duckn.value_transforms) {
-    for (const vt of duckn.value_transforms) {
-      if (vt.name === "linear" && vt.parameters) {
-        slope = vt.parameters.slope ?? 1;
-        intercept = vt.parameters.intercept ?? 0;
-        break;
-      }
-    }
-  }
+  // Value transforms. The whole chain is composed, not just the first
+  // entry: a second linear transform or a lut changes the answer, and
+  // silently applying part of a chain reports values in no defined units
+  // (duckn-spec section 4.2). planCalibration throws rather than guess.
+  const calibration = planCalibration(duckn.value_transforms);
+  const { slope, intercept } = calibration;
 
   // Rows/columns from shape (C-order: shape[1]=rows, shape[2]=cols)
   const rows = shape[shape.length - 2];
@@ -225,6 +217,7 @@ function extractSliceMetadata(
     windowWidth,
     slope,
     intercept,
+    materialize: calibration.materialize,
     sliceThickness: sliceAxis.thickness,
   };
 }
@@ -260,9 +253,14 @@ async function loadImage(imageId: string): Promise<Types.IImage> {
 
   // Read single slice
   const result = await zarr.get(array, [sliceIndex, null, null]);
-  const pixelData = result.data;
-
   const meta = extractSliceMetadata(duckn, shape, sliceIndex);
+
+  // Cornerstone carries a single affine rescale, so a chain it cannot
+  // express is materialized here and the identity is reported instead
+  // (duckn-spec section 4.3). Values, not the encoding, reach the viewer.
+  const pixelData = meta.materialize
+    ? meta.materialize(result.data as unknown as ArrayLike<number>)
+    : result.data;
 
   const image: Types.IImage = {
     imageId,

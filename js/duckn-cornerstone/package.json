@@ -12,5 +12,11 @@
   "peerDependencies": {
     "@cornerstonejs/core": ">=2.0.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "scripts": {
+    "test": "tsc --strict --target es2022 --module esnext --moduleResolution bundler --outDir .test-out src/valueTransforms.ts test/valueTransforms.test.ts && echo '{\"type\":\"module\"}' > .test-out/package.json && node .test-out/test/valueTransforms.test.js"
+  },
+  "devDependencies": {
+    "typescript": "^5"
+  }
 }

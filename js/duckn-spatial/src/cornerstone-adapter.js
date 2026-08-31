@@ -10,6 +10,7 @@
  *   metaData.addProvider(provider.getMetadata.bind(provider), 10000);
  */
 
+import { planCalibration } from './valueTransforms.js';
 import { VolumeGeometry } from './index.js';
 
 /**
@@ -67,18 +68,16 @@ export class DucknMetadataProvider {
     this._columns = shape[shape.length - 1];
     this._nSlices = shape[0];
 
-    // Value transforms
-    this._slope = 1;
-    this._intercept = 0;
-    if (duckn.value_transforms) {
-      for (const vt of duckn.value_transforms) {
-        if (vt.name === 'linear' && vt.parameters) {
-          this._slope = vt.parameters.slope ?? 1;
-          this._intercept = vt.parameters.intercept ?? 0;
-          break;
-        }
-      }
-    }
+    // Value transforms. The whole chain is composed, not just the first
+    // entry — a second linear transform or a lut changes the answer, and
+    // applying part of a chain reports values in no defined units
+    // (duckn-spec section 4.2). A chain cornerstone cannot express as one
+    // affine rescale yields a materializer instead; run it over the stored
+    // values and use the identity slope/intercept reported alongside.
+    const calibration = planCalibration(duckn.value_transforms);
+    this._slope = calibration.slope;
+    this._intercept = calibration.intercept;
+    this._materialize = calibration.materialize ?? null;
 
     // Window center/width from samples or extension tags
     this._windowCenter = null;
@@ -140,6 +139,19 @@ export class DucknMetadataProvider {
     return rawOrigin.map(
       (v, i) => v * flip[i] + sliceIndex * sliceDir[i]
     );
+  }
+
+  /**
+   * Non-null when the store's value_transforms cannot be reduced to the
+   * single affine rescale cornerstone applies — a `lut`, for instance.
+   *
+   * This class supplies metadata only, so it cannot apply the mapping
+   * itself: whoever fetches the pixel data must run this over the stored
+   * values and rely on the identity slope/intercept reported here
+   * (duckn-spec section 4.3). Ignoring it shows uncalibrated numbers.
+   */
+  get materialize() {
+    return this._materialize;
   }
 
   /**
