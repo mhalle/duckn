@@ -108,9 +108,25 @@ export function ducknToImageData(data, shape, attrs, opts = {}) {
   imageData.setDimensions(dimensions);
   imageData.setDirection(direction);
 
+  // Calibrate before handing values to vtk.js, which has no rescale of its
+  // own: raw stored values would read ~1024 HU low for a CT, silently.
+  // Mirrors @duckn/reader's ducknToImageData — the two are exported under
+  // the same name and must not differ by whether they calibrate.
+  const calibration = planCalibration(attrs?.duckn?.value_transforms);
+  let values = data;
+  if (calibration.materialize) {
+    values = calibration.materialize(data);
+  } else if (calibration.slope !== 1 || calibration.intercept !== 0) {
+    const scaled = new Float32Array(data.length);
+    for (let k = 0; k < data.length; k++) {
+      scaled[k] = calibration.slope * data[k] + calibration.intercept;
+    }
+    values = scaled;
+  }
+
   const scalars = vtkDataArray({
     name: 'DucknScalars',
-    values: data,
+    values,
     numberOfComponents: 1,
   });
   imageData.getPointData().setScalars(scalars);
