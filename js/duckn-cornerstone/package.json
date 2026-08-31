@@ -17,6 +17,7 @@
     "build": "tsc -p tsconfig.json && node scripts/sync-spatial.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "tsc --strict --target es2022 --module esnext --moduleResolution bundler --outDir .test-out src/valueTransforms.ts test/valueTransforms.test.ts && echo '{\"type\":\"module\"}' > .test-out/package.json && node .test-out/test/valueTransforms.test.js && node scripts/sync-spatial.mjs --check",
+    "prepare": "npm run build",
     "prepublishOnly": "npm run build && npm test"
   },
   "devDependencies": {

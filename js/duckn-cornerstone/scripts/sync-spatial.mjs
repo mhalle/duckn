@@ -8,13 +8,20 @@
  *   node scripts/sync-spatial.mjs          write the twin
  *   node scripts/sync-spatial.mjs --check  fail if it has drifted
  */
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = resolve(here, "../dist/valueTransforms.js");
 const dst = resolve(here, "../../duckn-spatial/src/valueTransforms.js");
+
+// When this package is installed from git, `prepare` runs the build but the
+// sibling package is not on disk. Nothing to sync, and not an error.
+if (!existsSync(dirname(dst))) {
+  console.log("  (duckn-spatial not present — skipping twin sync)");
+  process.exit(0);
+}
 
 const header = `// GENERATED FILE — do not edit.
 // Compiled from @duckn/cornerstone-loader src/valueTransforms.ts.
