@@ -16,3 +16,4 @@ js/duckn-reader/demo/public/*.zmp
 js/*/.test-out/
 
 node_modules/
+js/*/dist/

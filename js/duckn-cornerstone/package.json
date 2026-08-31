@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Cornerstone3D image loader for duckn Zarr/ZMP stores",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "dependencies": {
     "zarrita": "^0.6",
     "@zarrita/storage": "^0.1.4",
@@ -14,9 +14,24 @@
   },
   "license": "MIT",
   "scripts": {
-    "test": "tsc --strict --target es2022 --module esnext --moduleResolution bundler --outDir .test-out src/valueTransforms.ts test/valueTransforms.test.ts && echo '{\"type\":\"module\"}' > .test-out/package.json && node .test-out/test/valueTransforms.test.js"
+    "build": "tsc -p tsconfig.json && node scripts/sync-spatial.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc --strict --target es2022 --module esnext --moduleResolution bundler --outDir .test-out src/valueTransforms.ts test/valueTransforms.test.ts && echo '{\"type\":\"module\"}' > .test-out/package.json && node .test-out/test/valueTransforms.test.js && node scripts/sync-spatial.mjs --check",
+    "prepublishOnly": "npm run build && npm test"
   },
   "devDependencies": {
     "typescript": "^5"
-  }
+  },
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ]
 }

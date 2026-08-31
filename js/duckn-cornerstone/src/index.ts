@@ -61,6 +61,9 @@ interface CachedStore {
 }
 
 const storeCache = new Map<string, Promise<CachedStore>>();
+// Cornerstone calls metadata providers synchronously, so the resolved
+// value is kept alongside the promise rather than awaited on demand.
+const resolvedStores = new Map<string, CachedStore>();
 
 async function openStore(storeUrl: string): Promise<CachedStore> {
   let cached = storeCache.get(storeUrl);
@@ -87,6 +90,7 @@ async function openStore(storeUrl: string): Promise<CachedStore> {
   })();
 
   storeCache.set(storeUrl, promise);
+  void promise.then((v) => resolvedStores.set(storeUrl, v)).catch(() => {});
   return promise;
 }
 
@@ -247,6 +251,23 @@ function parseImageId(imageId: string): { storeUrl: string; sliceIndex: number }
   return { storeUrl, sliceIndex };
 }
 
+/**
+ * Narrow a zarrita read to numeric pixel data.
+ *
+ * `zarr.get` is typed over every array kind zarrita supports, including
+ * object and string arrays. A duckn store may legitimately hold one, and
+ * rendering it as pixels would produce silent garbage — so reject it here
+ * rather than downstream.
+ */
+function asPixelData(data: unknown): Types.PixelDataTypedArray {
+  if (ArrayBuffer.isView(data) && !(data instanceof DataView)) {
+    return data as Types.PixelDataTypedArray;
+  }
+  throw new Error(
+    "duckn: array does not hold numeric pixel data (got a non-numeric zarr dtype)",
+  );
+}
+
 async function loadImage(imageId: string): Promise<Types.IImage> {
   const { storeUrl, sliceIndex } = parseImageId(imageId);
   const { array, duckn, shape } = await openStore(storeUrl);
@@ -258,38 +279,11 @@ async function loadImage(imageId: string): Promise<Types.IImage> {
   // Cornerstone carries a single affine rescale, so a chain it cannot
   // express is materialized here and the identity is reported instead
   // (duckn-spec section 4.3). Values, not the encoding, reach the viewer.
-  const pixelData = meta.materialize
-    ? meta.materialize(result.data as unknown as ArrayLike<number>)
-    : result.data;
+  const stored = asPixelData(result.data);
+  const pixelData: Types.PixelDataTypedArray = meta.materialize
+    ? meta.materialize(stored)
+    : stored;
 
-  const image: Types.IImage = {
-    imageId,
-    minPixelValue: 0,
-    maxPixelValue: 0,
-    slope: meta.slope,
-    intercept: meta.intercept,
-    windowCenter: meta.windowCenter,
-    windowWidth: meta.windowWidth,
-    rows: meta.rows,
-    columns: meta.columns,
-    height: meta.rows,
-    width: meta.columns,
-    color: false,
-    rgba: false,
-    numComps: 1,
-    columnPixelSpacing: meta.columnPixelSpacing,
-    rowPixelSpacing: meta.rowPixelSpacing,
-    sliceThickness: meta.sliceThickness,
-    imagePositionPatient: meta.imagePositionPatient,
-    imageOrientationPatient: [
-      ...meta.rowCosines,
-      ...meta.columnCosines,
-    ],
-    sizeInBytes: pixelData.byteLength,
-    getPixelData: () => pixelData,
-  };
-
-  // Compute min/max
   let min = Infinity;
   let max = -Infinity;
   for (let i = 0; i < pixelData.length; i++) {
@@ -297,6 +291,40 @@ async function loadImage(imageId: string): Promise<Types.IImage> {
     if (v < min) min = v;
     if (v > max) max = v;
   }
+
+  const image: Types.IImage = {
+    imageId,
+    minPixelValue: 0,
+    maxPixelValue: 0,
+    slope: meta.slope,
+    intercept: meta.intercept,
+    // A store need not record a window. Falling back to the slice's own
+    // range beats 0/0, which renders black.
+    windowCenter: meta.windowCenter ?? (min + max) / 2,
+    windowWidth: meta.windowWidth ?? Math.max(max - min, 1),
+    rows: meta.rows,
+    columns: meta.columns,
+    height: meta.rows,
+    width: meta.columns,
+    color: false,
+    rgba: false,
+    numberOfComponents: 1,
+    columnPixelSpacing: meta.columnPixelSpacing,
+    rowPixelSpacing: meta.rowPixelSpacing,
+    sliceThickness: meta.sliceThickness,
+    sizeInBytes: pixelData.byteLength,
+    getPixelData: () => pixelData,
+    // Required by IImage. duckn stores are MONOCHROME2 with a linear VOI;
+    // getCanvas belongs to cornerstone's CPU fallback path, which this
+    // loader does not implement.
+    voiLUTFunction: "LINEAR" as Types.IImage["voiLUTFunction"],
+    invert: false,
+    dataType: pixelData.constructor.name as Types.IImage["dataType"],
+    getCanvas: () => {
+      throw new Error("duckn: CPU rendering fallback is not supported");
+    },
+  };
+
   image.minPixelValue = min;
   image.maxPixelValue = max;
 
@@ -316,12 +344,66 @@ async function loadImage(imageId: string): Promise<Types.IImage> {
  * @param cornerstone - The @cornerstonejs/core module
  */
 export function registerDucknImageLoader(
-  cornerstone: { imageLoader: { registerImageLoader: (scheme: string, loader: unknown) => void } },
+  cornerstone: {
+    imageLoader: { registerImageLoader: (scheme: string, loader: unknown) => void };
+    metaData?: { addProvider: (provider: MetadataProvider, priority?: number) => void };
+  },
 ): void {
   cornerstone.imageLoader.registerImageLoader("duckn", (imageId: string) => {
     const promise = loadImage(imageId);
     return { promise };
   });
+
+  // Cornerstone takes slice geometry from the metadata provider, not from
+  // IImage — which has no position or orientation members at all. Without
+  // this, a duckn store loads pixels with no spatial embedding, which is
+  // most of what the convention exists to carry.
+  cornerstone.metaData?.addProvider(ducknMetadataProvider);
+}
+
+type MetadataProvider = (type: string, imageId: string) => unknown;
+
+/**
+ * Supply `imagePlaneModule` / `imagePixelModule` for duckn image IDs.
+ *
+ * Registered automatically by {@link registerDucknImageLoader}; exported so
+ * a caller managing its own provider chain can add it explicitly.
+ *
+ * Returns undefined for any image ID this loader does not own, which is how
+ * Cornerstone asks the next provider in the chain.
+ */
+export function ducknMetadataProvider(type: string, imageId: string): unknown {
+  if (typeof imageId !== "string" || !imageId.startsWith("duckn:")) return undefined;
+
+  const cached = resolvedStores.get(parseImageId(imageId).storeUrl);
+  if (!cached) return undefined; // not loaded yet; ask again after loadImage
+
+  const { sliceIndex } = parseImageId(imageId);
+  const meta = extractSliceMetadata(cached.duckn, cached.shape, sliceIndex);
+
+  if (type === "imagePlaneModule") {
+    return {
+      imagePositionPatient: meta.imagePositionPatient,
+      imageOrientationPatient: [...meta.rowCosines, ...meta.columnCosines],
+      rowCosines: meta.rowCosines,
+      columnCosines: meta.columnCosines,
+      pixelSpacing: [meta.rowPixelSpacing, meta.columnPixelSpacing],
+      rowPixelSpacing: meta.rowPixelSpacing,
+      columnPixelSpacing: meta.columnPixelSpacing,
+      sliceThickness: meta.sliceThickness,
+      rows: meta.rows,
+      columns: meta.columns,
+    };
+  }
+  if (type === "imagePixelModule") {
+    return {
+      samplesPerPixel: 1,
+      photometricInterpretation: "MONOCHROME2",
+      rows: meta.rows,
+      columns: meta.columns,
+    };
+  }
+  return undefined;
 }
 
 /**
