@@ -16,6 +16,9 @@
 // Sign flips for LPS conversion (used by adapters)
 // ---------------------------------------------------------------------------
 
+// Value-transform handling, shared with the cornerstone adapter.
+export { planCalibration } from './valueTransforms.js';
+
 export const SPACE_SIGN_FLIPS = {
   // Medical / patient-based
   'left-posterior-superior': [1, 1, 1],

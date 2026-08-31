@@ -7,7 +7,11 @@
   "exports": {
     ".": "./src/index.js",
     "./vtk-adapter": "./src/vtk-adapter.js",
-    "./cornerstone-adapter": "./src/cornerstone-adapter.js"
+    "./cornerstone-adapter": "./src/cornerstone-adapter.js",
+    "./value-transforms": "./src/valueTransforms.js"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "files": [
+    "src"
+  ]
 }
