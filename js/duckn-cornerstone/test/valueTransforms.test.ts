@@ -33,6 +33,15 @@ eq("clamps outside", Array.from(c.materialize!([0, 9, 14, 9999])), [0, 0, 300, 3
 const c2 = planCalibration([lut, lin(2, 1)]);
 eq("lut then linear", Array.from(c2.materialize!([10, 11])), [1, 201]);
 
+console.log("\nparity with Python (these had drifted)");
+// Python's validator rejects a lut at any index != 0; checking only the
+// first one let [lut, lut] through, and the second silently replaced it.
+throws("second lut in chain", () => planCalibration([lut, lut]), /must be the first/);
+// Python raises for float stored values rather than rounding an index.
+throws("float stored values", () => planCalibration([lut]).materialize!(new Float32Array([10.5])), /integer stored values/);
+throws("non-integer in plain array", () => planCalibration([lut]).materialize!([10.5]), /integer stored values/);
+eq("identity is frozen", Object.isFrozen(planCalibration([])), true);
+
 console.log("\nrefusals (spec section 4.2)");
 throws("unknown name", () => planCalibration([{ name: "gamma" }]), /unsupported/);
 throws("unknown after linear", () => planCalibration([lin(2, 0), { name: "gamma" }]), /unsupported/);

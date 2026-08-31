@@ -38,7 +38,7 @@ export interface Calibration {
   materialize?: (stored: ArrayLike<number>) => Float32Array;
 }
 
-const IDENTITY: Calibration = { slope: 1, intercept: 0 };
+const IDENTITY: Calibration = Object.freeze({ slope: 1, intercept: 0 });
 
 /**
  * Apply a lookup table: values[clamp(stored - first_value, 0, n-1)].
@@ -52,10 +52,23 @@ function applyLut(
   values: number[],
   firstValue: number,
 ): Float32Array {
+  if (stored instanceof Float32Array || stored instanceof Float64Array) {
+    throw new Error(
+      "duckn: lut transform requires integer stored values, got a float " +
+        "array — rounding would invent an index, and NaN has none",
+    );
+  }
+
   const out = new Float32Array(stored.length);
   const last = values.length - 1;
   for (let i = 0; i < stored.length; i++) {
-    let idx = Math.round(stored[i]) - firstValue;
+    const v = stored[i];
+    if (!Number.isInteger(v)) {
+      throw new Error(
+        `duckn: lut transform requires integer stored values, got ${v}`,
+      );
+    }
+    let idx = v - firstValue;
     if (idx < 0) idx = 0;
     else if (idx > last) idx = last;
     out[i] = values[idx];
@@ -74,13 +87,16 @@ export function planCalibration(transforms?: ValueTransform[] | null): Calibrati
   if (!transforms || transforms.length === 0) return IDENTITY;
 
   // A lut indexes stored values, so it can only be first; anything before
-  // it would hand it already-rescaled, typically fractional, values.
-  const lutIndex = transforms.findIndex((t) => t.name === "lut");
-  if (lutIndex > 0) {
-    throw new Error(
-      `duckn: value_transforms[${lutIndex}] is a 'lut', which must be the ` +
-        `first transform in the chain`,
-    );
+  // it would hand it already-rescaled, typically fractional, values. Every
+  // lut is checked, not just the first: two luts in a chain would otherwise
+  // pass this guard and the second would silently replace the first.
+  for (let i = 0; i < transforms.length; i++) {
+    if (transforms[i].name === "lut" && i !== 0) {
+      throw new Error(
+        `duckn: value_transforms[${i}] is a 'lut': a lut indexes stored ` +
+          `values and must be the first transform in the chain`,
+      );
+    }
   }
 
   let slope = 1;

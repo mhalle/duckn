@@ -10,6 +10,7 @@
  */
 
 import { VolumeGeometry } from './index.js';
+import { planCalibration } from './valueTransforms.js';
 
 /**
  * Convert duckn array data to a vtkImageData.
@@ -118,20 +119,30 @@ export function ducknToImageData(data, shape, attrs, opts = {}) {
 }
 
 /**
- * Get value transforms from duckn metadata.
- * Returns { slope, intercept } or null if no linear transform.
+ * Get the affine value transform from duckn metadata.
+ *
+ * Returns `{ slope, intercept }`, or null when the metadata declares no
+ * transforms at all.
+ *
+ * Delegates to planCalibration rather than scanning for the first `linear`
+ * entry, which composed a multi-step chain wrongly and silently ignored a
+ * `lut`. A chain that is not affine has no slope/intercept form, so this
+ * throws rather than returning a partial answer — use planCalibration
+ * directly if you need to handle that case (duckn-spec section 4.3).
  */
 export function getValueTransform(attrs) {
   const duckn = attrs.duckn;
-  if (!duckn || !duckn.value_transforms) return null;
-
-  for (const vt of duckn.value_transforms) {
-    if (vt.name === 'linear' && vt.parameters) {
-      return {
-        slope: vt.parameters.slope ?? 1,
-        intercept: vt.parameters.intercept ?? 0,
-      };
-    }
+  if (!duckn || !duckn.value_transforms || duckn.value_transforms.length === 0) {
+    return null;
   }
-  return null;
+
+  const calibration = planCalibration(duckn.value_transforms);
+  if (calibration.materialize) {
+    throw new Error(
+      "duckn: value_transforms cannot be reduced to slope/intercept " +
+        "(the chain contains a lut); use planCalibration and apply its " +
+        "materialize() to the stored values",
+    );
+  }
+  return { slope: calibration.slope, intercept: calibration.intercept };
 }

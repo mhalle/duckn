@@ -112,11 +112,11 @@ def _compose_linear_transforms(
 ) -> tuple[float, float]:
     """Compose a sequence of linear ValueTransforms into one (slope, intercept).
 
-    Unknown transform names are skipped with a warning. Returns (1.0, 0.0)
-    when there are no applicable transforms — i.e., identity.
+    Every transform must be affine. A non-affine or unrecognized name
+    raises: the caller reached this function only because the chain was
+    classified as affine, so encountering one here is a bug rather than a
+    condition to warn about. Returns (1.0, 0.0) for an empty chain.
     """
-    import warnings
-
     composed_slope = 1.0
     composed_intercept = 0.0
     if not transforms:
@@ -213,8 +213,6 @@ def _apply_value_transforms(
     is handled by composing to one (slope, intercept) and calling
     :func:`_rescale`.
     """
-    import warnings
-
     target = transform_dtype if transform_dtype is not None else np.dtype(np.float32)
     work = (
         np.dtype(np.float64) if target == np.dtype(np.float64) else np.dtype(np.float32)

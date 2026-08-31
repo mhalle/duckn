@@ -1,3 +1,4 @@
+import { planCalibration } from './valueTransforms.js';
 import vtkImageData from '@kitware/vtk.js/Common/DataModel/ImageData';
 import vtkDataArray from '@kitware/vtk.js/Common/Core/DataArray';
 
@@ -99,10 +100,28 @@ export function ducknToImageData(data, shape, attrs, options = {}) {
   imageData.setDimensions(dimensions);
   imageData.setDirection(direction);
 
-  // Attach scalar data
+  // Attach scalar data, calibrated.
+  //
+  // vtk.js has no rescale of its own, so the values handed to it must
+  // already be the quantity `sample_units` names — otherwise a CT loads as
+  // raw stored values and reads ~1024 HU off, silently. This is the
+  // materialize policy in duckn-spec section 4.3: apply the chain, and the
+  // transform is spent.
+  const calibration = planCalibration(attrs?.duckn?.value_transforms);
+  let values = data;
+  if (calibration.materialize) {
+    values = calibration.materialize(data);
+  } else if (calibration.slope !== 1 || calibration.intercept !== 0) {
+    const out = new Float32Array(data.length);
+    for (let i = 0; i < data.length; i++) {
+      out[i] = calibration.slope * data[i] + calibration.intercept;
+    }
+    values = out;
+  }
+
   const scalars = vtkDataArray.newInstance({
     name: scalarArrayName,
-    values: data,
+    values,
     numberOfComponents: 1,
   });
   imageData.getPointData().setScalars(scalars);

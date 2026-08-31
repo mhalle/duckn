@@ -15,5 +15,8 @@
   "peerDependencies": {
     "@kitware/vtk.js": ">=30.0.0"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "files": [
+    "src"
+  ]
 }
