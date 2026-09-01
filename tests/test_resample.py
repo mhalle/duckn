@@ -87,7 +87,10 @@ class TestIsotropicDefault:
         vol = _make_volume()
         result = resample(vol)
         sp = result.geometry.voxel_size
-        assert np.allclose(sp, sp[0], rtol=1e-3)
+        # Exact isotropy is generally unreachable: the sample count is an
+        # integer, so the realized spacing is extent / round(n * zoom). The
+        # residual is bounded by roughly half a sample over the axis.
+        assert np.allclose(sp, sp[0], rtol=1e-2)
 
     def test_matches_finest_spacing(self):
         vol = _make_volume(spacing=(2.0, 0.7, 0.7))
@@ -218,10 +221,24 @@ class TestMetadata:
         result = resample(vol, spacing=1.0)
         assert np.allclose(result.geometry.voxel_size, 1.0, rtol=1e-2)
 
-    def test_origin_preserved(self):
-        vol = _make_volume()
+    def test_origin_shifts_under_cell_centering(self):
+        # Cell centering fixes the outer boundary, not the first sample, so
+        # the first sample center moves inward by half the spacing change.
+        vol = _make_volume(spacing=(2.0, 2.0, 2.0))
         result = resample(vol, spacing=1.0)
-        assert result.metadata.space_origin == vol.metadata.space_origin
+        before = np.array(vol.metadata.space_origin)
+        after = np.array(result.metadata.space_origin)
+        assert np.allclose(after - before, 0.5 * (1.0 - 2.0), atol=1e-9)
+
+    def test_origin_preserved_under_node_centering(self):
+        # Node centering fixes the first and last samples themselves.
+        vol = _make_volume(spacing=(2.0, 2.0, 2.0))
+        for ax in vol.metadata.axes:
+            ax.centering = Centering.NODE
+        result = resample(vol, spacing=1.0)
+        assert np.allclose(
+            result.metadata.space_origin, vol.metadata.space_origin, atol=1e-9
+        )
 
     def test_space_preserved(self):
         vol = _make_volume()
@@ -263,3 +280,152 @@ class TestValidation:
         vol = _make_volume()
         with pytest.raises(ValueError, match="Only one"):
             resample(vol, spacing=1.0, shape=128, factor=2)
+
+
+# ---- Centering: the sample/extent relationship ----
+
+
+def _ramp_volume(n=10, spacing=2.0, origin=5.0, centering=Centering.CELL, direction=None):
+    """A volume whose values are the world position of their own sample.
+
+    Interpolation is exact on a linear function, so after any resample an
+    interior sample must still hold its own world coordinate. That makes the
+    data itself a check on the metadata: if the grid is misdescribed, the value
+    and the declared position disagree, in world units.
+    """
+    unit = np.array(direction if direction is not None else [1.0, 0.0, 0.0], dtype=float)
+    unit /= np.linalg.norm(unit)
+    axes = [
+        AxisMetadata(
+            kind=AxisKind.SPACE,
+            centering=centering,
+            space_direction=list(spacing * unit) if i == 0
+            else [spacing if j == i else 0.0 for j in range(3)],
+        )
+        for i in range(3)
+    ]
+    meta = DucknMetadata(
+        space="right-anterior-superior",
+        space_origin=[origin, 0.0, 0.0],
+        axes=axes,
+    )
+    # Value = distance along axis 0 from the origin, projected to world x.
+    coords = origin + spacing * unit[0] * np.arange(n)
+    return Volume(raw=np.broadcast_to(coords.reshape(n, 1, 1), (n, n, n)).astype(float).copy(),
+                  metadata=meta)
+
+
+class TestCentering:
+    @pytest.mark.parametrize("centering", [Centering.CELL, Centering.NODE])
+    @pytest.mark.parametrize("factor", [2, 4])
+    def test_declared_position_matches_the_data(self, centering, factor):
+        """The grid the metadata describes is the grid the samples are on."""
+        vol = _ramp_volume(centering=centering)
+        result = resample(vol, factor=factor)
+        geom = result.geometry
+        n = result.raw.shape[0]
+        mid = n // 2
+        declared = np.array(
+            [geom.index_to_world(np.array([i, mid, mid]))[0] for i in range(n)]
+        )
+        held = np.asarray(result.raw)[:, mid, mid]
+        # Interpolation is only defined between the source sample centers.
+        # Outside that hull the resampler clamps by design, so those samples
+        # are not a claim about the grid — every sample within it is.
+        src_first, src_last = 5.0, 5.0 + 2.0 * (10 - 1)
+        interior = (declared >= src_first - 1e-9) & (declared <= src_last + 1e-9)
+        assert interior.sum() >= n - factor
+        assert np.allclose(declared[interior], held[interior], atol=1e-9)
+
+    def test_cell_preserves_the_field_of_view(self):
+        vol = _ramp_volume(n=10, spacing=2.0, origin=5.0, centering=Centering.CELL)
+        result = resample(vol, factor=2)
+        sp = float(np.asarray(result.metadata.axes[0].space_direction)[0])
+        first = result.metadata.space_origin[0]
+        n = result.raw.shape[0]
+        assert np.isclose(first - sp / 2, 5.0 - 2.0 / 2)          # outer edge held
+        assert np.isclose(first + sp * (n - 1) + sp / 2, 23.0 + 2.0 / 2)
+
+    def test_node_preserves_the_sample_extent(self):
+        vol = _ramp_volume(n=10, spacing=2.0, origin=5.0, centering=Centering.NODE)
+        result = resample(vol, factor=2)
+        sp = float(np.asarray(result.metadata.axes[0].space_direction)[0])
+        n = result.raw.shape[0]
+        assert np.isclose(result.metadata.space_origin[0], 5.0)   # end samples held
+        assert np.isclose(result.metadata.space_origin[0] + sp * (n - 1), 23.0)
+
+    def test_spacing_is_the_realized_one_not_the_requested_one(self):
+        # 10 samples to 7 cannot land on the requested spacing; the array
+        # means what it realized, so that is what must be declared.
+        vol = _ramp_volume(n=10, spacing=2.0, centering=Centering.CELL)
+        result = resample(vol, shape=(7, 7, 7))
+        assert np.isclose(result.geometry.voxel_size[0], 10 * 2.0 / 7)
+
+    def test_oblique_origin_shift_follows_the_axis_direction(self):
+        # The half-spacing shift is along each axis's own direction, so a
+        # rotated frame moves the origin in more than one component.
+        vol = _ramp_volume(centering=Centering.CELL, direction=[1.0, 1.0, 0.0])
+        result = resample(vol, factor=2)
+        before = np.array(vol.metadata.space_origin)
+        after = np.array(result.metadata.space_origin)
+        moved = after - before
+        # Every cell-centered axis contributes half its own spacing change
+        # along its own direction. Axis 0 is oblique in x and y; axes 1 and 2
+        # are axis-aligned, so y collects a contribution from each.
+        d0 = 2.0 / np.sqrt(2)            # axis 0 spacing per component
+        assert np.allclose(moved, [-d0 / 4, -d0 / 4 - 0.5, -0.5], atol=1e-9)
+
+    def test_resolved_centering_is_recorded(self):
+        vol = _ramp_volume(centering=Centering.CELL)
+        for ax in vol.metadata.axes:
+            ax.centering = None          # unknown, per spec
+        result = resample(vol, factor=2)
+        assert all(ax.centering is Centering.CELL for ax in result.metadata.axes)
+
+    def test_override_beats_the_declared_value(self):
+        vol = _ramp_volume(centering=Centering.CELL)
+        result = resample(vol, factor=2, centering=Centering.NODE)
+        assert np.isclose(result.metadata.space_origin[0], vol.metadata.space_origin[0])
+        assert all(ax.centering is Centering.NODE for ax in result.metadata.axes)
+
+    def test_disagreeing_axes_raise(self):
+        vol = _ramp_volume(centering=Centering.CELL)
+        vol.metadata.axes[1].centering = Centering.NODE
+        with pytest.raises(ValueError, match="different centerings"):
+            resample(vol, factor=2)
+
+
+# ---- Anti-aliasing ----
+
+
+class TestAntiAlias:
+    def test_downsampling_blurs_by_default(self):
+        vol = _make_volume()
+        blurred = resample(vol, factor=0.5)
+        sharp = resample(vol, factor=0.5, anti_alias=False)
+        assert not np.allclose(np.asarray(blurred.raw), np.asarray(sharp.raw))
+
+    def test_disabled_matches_plain_zoom(self):
+        """anti_alias=False is a plain ndimage.zoom, for consumers validated on one."""
+        ndimage = pytest.importorskip("scipy.ndimage")
+        vol = _make_volume()
+        result = resample(vol, factor=0.5, anti_alias=False, centering=Centering.NODE)
+        expected = ndimage.zoom(
+            np.asarray(vol.raw).astype(float), 0.5, order=1,
+            mode="nearest", grid_mode=False,
+        )
+        assert np.allclose(np.asarray(result.raw), expected)
+
+    def test_no_effect_when_upsampling(self):
+        vol = _make_volume()
+        assert np.allclose(
+            np.asarray(resample(vol, factor=2).raw),
+            np.asarray(resample(vol, factor=2, anti_alias=False).raw),
+        )
+
+    def test_no_effect_for_nearest(self):
+        vol = _make_labelmap()
+        assert np.array_equal(
+            np.asarray(resample(vol, factor=0.5, order=0).raw),
+            np.asarray(resample(vol, factor=0.5, order=0, anti_alias=False).raw),
+        )

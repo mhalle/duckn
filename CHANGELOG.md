@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased
+
+0.2.0's rule — **metadata must agree with the bytes it describes** — applied to
+`resample()`, which was describing a grid it had not produced.
+
+**If you are upgrading, read this first:**
+
+- **`space_origin` now moves when resampling cell-centered data.** That is
+  correct and it is a behavior change: cell centering fixes the outer boundary,
+  not the first sample, so the first sample center shifts by half the change in
+  spacing. Code that assumed the origin was invariant was relying on a bug.
+- **Output spacing is the realized spacing, not the requested one.** A target
+  rounds to a whole number of samples, so `resample(vol, spacing=1.0)` generally
+  lands near 1.0 rather than on it — 20 samples zoomed by 2.857 gives 57, and
+  20 × 2.0 / 57 is 0.70175. The array now declares what it is. Exact isotropy is
+  not reachable in general; assertions written against the *request* will need a
+  tolerance of about `1 / (2 * n_out)`.
+
+### Fixed — the resampled grid is the grid that was described
+- `resample()` read the array's `centering` for the first time. It had always
+  sampled with scipy's default (node), declared cell spacing, and updated the
+  origin for neither — three conventions in one operation, at most one of which
+  could be right. Measured on a 10 → 20 upsample, the far sample landed a full
+  output voxel away from where the metadata put it. The spec has named this
+  failure since it defined the field: centering governs "resampling — the
+  relationship between sample count and spatial extent", and getting it wrong
+  "shifts the image by half a voxel".
+- Spatial axes that declare different centerings now raise instead of silently
+  shifting one axis: scipy applies one convention to the whole array.
+- Axes that declare no centering are treated as `cell` — what every duckn
+  converter writes, and what DICOM and NIfTI mean by a voxel. Because that is an
+  assumption rather than a reading, the resolved value is now recorded on the
+  output axes, so a later reader (or a second resample) does not have to make it
+  again.
+- Boundary handling is `nearest` rather than padding with `cval`. A resample
+  preserves the extent, so no output sample falls outside the input's footprint;
+  under cell centering the outermost half-cell does sit past the last sample
+  *center*, and clamping is what "the sample owns its cell" means there. Padding
+  blended every boundary voxel toward a value the data never had. `fill` is
+  correspondingly almost never reached.
+
+### Added
+- `resample(centering=...)` overrides the declared convention.
+- `resample(anti_alias=...)`, default `True`, so the downsampling pre-blur can be
+  turned off. Consumers trained or validated on unfiltered resampling need a
+  plain `ndimage.zoom`: the blur trades contrast in small structures for the
+  absence of aliasing, and for those consumers that is a distribution shift
+  rather than an improvement.
+
 ## 0.2.0 — 2026-08-29
 
 A correctness release. The theme is a single rule applied throughout —
