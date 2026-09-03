@@ -97,8 +97,28 @@ class SegAccessor:
     """Accessor for the segmentation extension."""
 
     def __init__(self, data: dict):
-        self._data = data
+        # Every question is answered from the CURRENT shape: an older file's segments
+        # (0.6 list-valued label_value) are migrated once here, so `segments`, the
+        # lookups and the graph questions cannot disagree about what a segment is.
+        # A dict the migration cannot read (no version) is kept raw; `.model` then says why.
+        self._raw = data
+        migrated = data
+        if isinstance(data, dict):
+            from .models import _migrate_extension_pre_0_6, _migrate_extension_pre_0_7
+            try:
+                migrated = _migrate_extension_pre_0_7(_migrate_extension_pre_0_6(dict(data)))
+            except (ValueError, KeyError, TypeError, AttributeError):
+                # a shape the migration cannot read is kept raw - whatever the reason it
+                # could not - and `.model` reports it as the validation error it is
+                migrated = data
+        self._data = migrated
         self._model = None
+
+    @property
+    def file_version(self):
+        """The version the extension DECLARES on disk (``version`` answers with the
+        migrated one, ``0.7`` for every readable file)."""
+        return self._raw.get("version") if isinstance(self._raw, dict) else None
 
     @property
     def model(self):

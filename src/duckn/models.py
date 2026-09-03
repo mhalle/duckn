@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from enum import StrEnum
 from typing import Annotated, Any, Union
 
@@ -607,7 +609,9 @@ class Segment(BaseModel):
     id: str
     name: str | None = None
     display: dict[str, str] | None = None
-    color: list[float] | None = None
+    # RGB in [0, 1] (spec §3.2) - three components, no alpha
+    color: Annotated[list[Annotated[float, Field(ge=0.0, le=1.0)]],
+                     Field(min_length=3, max_length=3)] | None = None
     # A LEAF names one voxel value in its layer; a GROUP names the segments it
     # is the union of. Exactly one of the two (spec §5 rule 7).
     label_value: int | None = None
@@ -619,7 +623,8 @@ class Segment(BaseModel):
     # The role a leaf may play: its layer's background value (spec §3.2).
     background: bool | None = None
     layer: int | None = None
-    extent: list[int] | None = None
+    # [min_i, max_i, min_j, max_j, min_k, max_k], inclusive (spec §3.2)
+    extent: Annotated[list[int], Field(min_length=6, max_length=6)] | None = None
     designations: list[Designation] | None = None
     dicom: DicomClassification | None = None
     metadata: dict[str, Any] | None = None
@@ -629,10 +634,18 @@ class Segment(BaseModel):
     def _migrate_pre_0_6(cls, data: Any) -> Any:
         return _migrate_segment_pre_0_6(data)
 
+    @field_validator("label_value", mode="before")
+    @classmethod
+    def _not_a_bool(cls, v: Any) -> Any:
+        # pydantic coerces True -> 1 before an after-validator could see it; a numpy
+        # bool (what a labelmap comparison yields) is not a Python bool but is the
+        # realistic way one arrives here
+        if isinstance(v, bool) or getattr(getattr(v, "dtype", None), "kind", None) == "b":
+            raise ValueError("label_value must be an integer, not a boolean")
+        return v
+
     @model_validator(mode="after")
     def _leaf_or_group(self) -> Segment:
-        if isinstance(self.label_value, bool):
-            raise ValueError(f"segment {self.id!r}: label_value must be an integer")
         is_leaf = self.label_value is not None
         is_group = self.members is not None
         if is_leaf == is_group:
@@ -695,12 +708,24 @@ class SegmentationExtension(BaseModel):
 # was written with (spec §3.1, version semantics).
 
 
+_VERSION_RE = re.compile(r"^\s*v?(\d+)\.(\d+)")
+
+
 def _version_tuple(version: Any) -> tuple[int, int]:
-    try:
-        major, minor, *_ = (int(p) for p in str(version).split("."))
-        return major, minor
-    except (TypeError, ValueError):
-        return (0, 0)
+    """``(major, minor)`` of a seg extension version string. ``version`` is required
+    (spec §3.1) and must lead with ``N.N``; anything else is refused rather than read
+    as "older than everything", which would migrate a future file and stamp its
+    version DOWN to the current one."""
+    if version is None:
+        raise ValueError("seg extension: `version` is required")
+    if not isinstance(version, str):
+        # a JSON number is not a version: 0.10 is the float 0.1, and reading it as
+        # (0, 1) would migrate a future file and stamp its version DOWN
+        raise ValueError(f"seg extension: version must be a string, not {type(version).__name__}")
+    m = _VERSION_RE.match(version)
+    if not m:
+        raise ValueError(f"seg extension: unparseable version {version!r} (expected N.N)")
+    return int(m.group(1)), int(m.group(2))
 
 
 def _island_id(value: int, layer: int, taken: set[str]) -> str:
@@ -888,11 +913,15 @@ def _migrate_segment_pre_0_6(seg: Any) -> Any:
 def _migrate_extension_pre_0_6(ext: dict[str, Any]) -> dict[str, Any]:
     """Migrate a pre-0.6 seg extension dict to the 0.6 shape.
 
-    Segment-level migration happens in ``Segment``'s own validator.
+    Segment-level migration runs here too (``Segment``'s own validator repeats it, a
+    no-op on migrated input), so an accessor and a model built from one dict agree.
     """
-    if not any(field in ext for field in _SLICER_EXT_FIELDS):
-        return ext
-    return _move_to_slicer_metadata(dict(ext), _SLICER_EXT_FIELDS)
+    out = dict(ext)
+    if isinstance(out.get("segments"), list):
+        out["segments"] = [_migrate_segment_pre_0_6(s) for s in out["segments"]]
+    if not any(field in out for field in _SLICER_EXT_FIELDS):
+        return out
+    return _move_to_slicer_metadata(out, _SLICER_EXT_FIELDS)
 
 
 # ---------------------------------------------------------------------------
@@ -1289,7 +1318,7 @@ def validate_seg_extension(
                     "a fractional labelmap requires a 'list' axis, one layer per segment"
                 )
             else:
-                layers = [seg.layer for seg in ext.segments]
+                layers = [seg.layer or 0 for seg in ext.segments]     # absent means 0
                 if len(ext.segments) > 1 and len(set(layers)) != len(layers):
                     problems.append(
                         "a fractional labelmap requires a distinct layer per segment; "
@@ -1428,6 +1457,11 @@ def validate_seg_data(
     """
     import numpy as np
 
+    if list_axis is None and layer is None and any((seg.layer or 0) for seg in ext.segments):
+        raise ValueError(
+            "the segmentation declares layers beyond 0 but neither list_axis nor layer was "
+            "given; a 4-D array checked as one layer would report false violations"
+        )
     problems: list[str] = []
     for layer, voxels in _layer_slices(data, list_axis, layer):
         described = {
@@ -1450,27 +1484,42 @@ def validate_seg_data(
 
 
 def coverage_report(
-    ext: SegmentationExtension, data: Any, *, list_axis: int | None = None
+    ext: SegmentationExtension,
+    data: Any,
+    *,
+    list_axis: int | None = None,
+    layer: int | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Rule 14 against the voxels: for every group claiming ``exhaustive`` that
     shares a designation (scheme and code) with a leaf, compare the two voxel
     sets. Returns ``{group_id: {"leaf": id, "jaccard": float, "group_voxels":
     n, "leaf_voxels": n}}``; a group with no such leaf is not reported, since
-    the claim cannot be checked without one.
+    the claim cannot be checked without one. ``list_axis`` names the layer axis of a
+    layered array; ``layer`` says which single layer a plain 3-D array holds (as in
+    :func:`validate_seg_data`). A group whose voxels lie in a layer the data does not
+    hold raises rather than reporting a comparison it could not make.
     """
     import numpy as np
 
     def codes(seg: Segment) -> set[tuple[str, str]]:
         return {(d.scheme, d.code) for d in seg.designations or []}
 
-    layers = dict(_layer_slices(data, list_axis))
+    layers = dict(_layer_slices(data, list_axis, layer))
 
     def mask(segment_id: str) -> Any:
         m = None
-        for layer, value in effective_label_values(ext, segment_id):
-            if layer not in layers:
-                continue
-            hit = layers[layer] == value
+        for lay, value in effective_label_values(ext, segment_id):
+            if lay not in layers:
+                if layer is not None:
+                    # the caller handed in ONE layer's volume on purpose: a segment
+                    # that lives elsewhere cannot be compared, and that is not an error
+                    return None
+                raise ValueError(
+                    f"segment {segment_id!r} has voxels in layer {lay}, which the data "
+                    f"handed in does not contain (layers {sorted(layers)}); pass "
+                    "list_axis= for a layered array, or layer= for one layer's volume"
+                )
+            hit = layers[lay] == value
             m = hit if m is None else (m | hit)
         return m
 
@@ -1479,8 +1528,10 @@ def coverage_report(
         if not group.exhaustive or not group.members:
             continue
         wanted = codes(group)
+        own = set(leaves_of(ext, group.id))            # a member is not the thing to compare with
         leaf = next(
-            (s for s in ext.segments if s.label_value is not None and codes(s) & wanted),
+            (s for s in ext.segments
+             if s.label_value is not None and s.id not in own and codes(s) & wanted),
             None,
         )
         if leaf is None:
@@ -1492,7 +1543,8 @@ def coverage_report(
         union = int(np.count_nonzero(gm | lm))
         report[group.id] = {
             "leaf": leaf.id,
-            "jaccard": (inter / union) if union else 1.0,
+            # None, not 1.0, when neither side has a voxel: nothing was compared
+            "jaccard": (inter / union) if union else None,
             "group_voxels": int(np.count_nonzero(gm)),
             "leaf_voxels": int(np.count_nonzero(lm)),
         }

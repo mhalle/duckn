@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.3.2 — 2026-09-03
+
+A second adversarial round over 0.3.1's fixes.
+
+### Fixed
+- `label_value` refused a Python `bool` but still coerced a numpy bool to 1 - the
+  realistic source, since labelmaps are compared with numpy.
+- `SegAccessor` raised a bare `KeyError` on a malformed 0.6 segment (no `id`) where it
+  used to defer to the model's validation error; every failure of the one-time migration
+  now keeps the dict raw and `.model` says why.
+- Pre-0.6 segment fields (`identifiers`, `metadata.dicom`, Slicer `tags`) were migrated
+  only when the model was built, so on a 0.5 store the accessor and the model disagreed
+  about a segment's `dicom` and `metadata`. The extension migration now migrates its
+  segments too.
+- A JSON *number* as the seg version was read through `str()`: `0.10` is the float 0.1,
+  and a future 0.10 file written that way would have been migrated and stamped down.
+  `version` must be a string.
+- `coverage_report` raises when a group's voxels lie in a layer the data does not hold
+  (0.3.1) but had no way to be handed one layer's volume; it takes `layer=` like
+  `validate_seg_data`.
+
+### Added
+- `SegAccessor.file_version`: the version the file declares, since `version` now answers
+  with the migrated one.
+
+## 0.3.1 — 2026-09-03
+
+Defects an adversarial review reproduced in the day-old 0.7 seg extension.
+
+### Fixed
+- `vol.extensions.seg` answered half its questions from the migrated model and half
+  from the raw dict: on a 0.6 store, `segments` showed a union as a leaf with no
+  label value while `effective_label_values` showed the group. The accessor now
+  migrates once and answers from one shape.
+- A `.seg.nrrd` with a space-separated `LabelValue` parsed (as a group over islands)
+  but could not be written back: generation ran before the legacy byte-replay path
+  that exists for exactly this. Legacy replay now comes first; generation, which
+  refuses groups, runs only when the model changed or no legacy exists.
+- `version` is required and must lead with `N.N`. A missing or unparseable version
+  used to read as "older than everything", which migrated the file and stamped its
+  version DOWN to 0.7 - including a future file's.
+- `coverage_report` could compare a group with one of its own members, reported a
+  Jaccard of 1.0 when neither side had a voxel, and silently dropped layers it could
+  not see; `validate_seg_data` on a layered array without `list_axis` invented
+  violations. Members are excluded, nothing-compared is `None`, and a missing layer
+  or an unstated layering raises.
+- Rule 4 counted an omitted `layer` and `layer: 0` as distinct layers.
+- `"label_value": true` was coerced to 1; it is refused. `color` is three components
+  in [0, 1] and `extent` six bounds, as the spec says.
+- DICOM SEG export drops groups (they have no row in a LABELMAP) and now warns when
+  the dropped group carried a name, designations or a classification - the case of a
+  migrated 0.6 island union, whose islands are only called "label <v>".
+
 ## 0.3.0 — 2026-09-03
 
 ### Changed — segmentation extension 0.7: leaves and groups
@@ -28,8 +81,9 @@
   and on `vol.extensions.seg`: `leaf_for`, `parents_of`, `leaves_of`,
   `label_values_by_layer`, `background_value`, `color_map` (a leaf without a
   color inherits the first containing group's).
-- Converters: `.seg.nrrd` and DICOM SEG export refuse groups (they have no
-  representation there) and take a leaf's single value; a `.seg.nrrd` with a
+- Converters: `.seg.nrrd` export refuses groups (they have no representation there)
+  and DICOM SEG export skips them with a warning when they carried a name,
+  designations or a classification; both take a leaf's single value; a `.seg.nrrd` with a
   space-separated `LabelValue` is read as the 0.6 island union and migrated.
 
 ### Changed — segmentation extension: rule 8 withdrawn (superseded by 0.7's rule 8)

@@ -434,17 +434,21 @@ def test_serialize_tags_and_dicom():
     assert seg.designations[0].scheme == "SCT"
 
 
-def test_serialize_refuses_a_group():
-    """A multi-value LabelValue reads as a group over islands, and a group has
-    no .seg.nrrd representation - serializing it is refused, not flattened."""
+def test_serialize_replays_an_unchanged_group_and_refuses_a_changed_one():
+    """A multi-value LabelValue reads as a group over islands. Unchanged, it writes
+    back verbatim through the legacy strings; changed, it cannot be generated - a
+    group has no .seg.nrrd representation - and is refused, not flattened."""
     kv = {
         "Segment0_ID": "S1",
         "Segment0_LabelValue": "2 3",
     }
     ext, _ = parse_seg_keyvalues(kv)
+    assert serialize_seg_extension(ext)["Segment0_LabelValue"] == "2 3"
+    changed = ext.model_copy(update={"segments": [
+        ext.segments[0].model_copy(update={"name": "renamed"}), *ext.segments[1:]]})
     with pytest.raises(ValueError, match="group"):
-        serialize_seg_extension(ext)
-    leaves_only = ext.model_copy(update={"segments": ext.segments[1:]})
+        serialize_seg_extension(changed)
+    leaves_only = ext.model_copy(update={"segments": ext.segments[1:], "legacy": None})
     flat = serialize_seg_extension(leaves_only)
     ext2, _ = parse_seg_keyvalues(flat)
     assert [s.label_value for s in ext2.segments] == [2, 3]

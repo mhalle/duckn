@@ -521,39 +521,39 @@ def serialize_seg_extension(ext: SegmentationExtension) -> dict[str, str]:
     preserve formatting.  If not (or no legacy), the generated string
     is used.
     """
-    generated = _generate_from_model(ext)
-
     legacy_kv: dict[str, str] = {}
     if ext.legacy and "keyvalues" in ext.legacy:
         legacy_kv = ext.legacy["keyvalues"]
 
-    if not legacy_kv:
-        return generated
-
-    # Re-parse legacy to see if it still matches the current model.
-    # If the legacy parses to an identical extension (ignoring legacy itself),
-    # use the original strings for any key the legacy has.
-    try:
-        legacy_ext, _ = parse_seg_keyvalues(legacy_kv)
-    except Exception:
-        return generated
+    # Legacy replay comes FIRST. Generating from the model refuses a group, and a
+    # stock Slicer file with a space-separated LabelValue reads as a group over
+    # islands (0.7) - so an unchanged file must be replayable without ever
+    # generating, or the round trip that `legacy` exists for is unreachable.
+    legacy_ext = None
+    if legacy_kv:
+        try:
+            legacy_ext, _ = parse_seg_keyvalues(legacy_kv)
+        except Exception:
+            legacy_ext = None
+    if legacy_ext is not None:
+        current_dump = ext.model_dump(exclude={"legacy"}, exclude_none=True)
+        legacy_dump = legacy_ext.model_dump(exclude={"legacy"}, exclude_none=True)
+        if current_dump != legacy_dump:
+            legacy_ext = None                  # model was modified - generate fresh
 
     if legacy_ext is None:
-        return generated
+        return _generate_from_model(ext)
 
-    # Compare model data (excluding legacy) to check equivalence
-    current_dump = ext.model_dump(exclude={"legacy"}, exclude_none=True)
-    legacy_dump = legacy_ext.model_dump(exclude={"legacy"}, exclude_none=True)
-
-    if current_dump != legacy_dump:
-        # Model was modified — generate fresh
-        return generated
-
-    # Model unchanged — replay the original strings verbatim. Starting from
+    # Model unchanged - replay the original strings verbatim. Starting from
     # the legacy dict (rather than from the generated keys) also preserves
     # the original Master/Source spelling and any Segment*/Segmentation_*
     # keys this model does not represent, which would otherwise be consumed
-    # on parse and dropped here.
+    # on parse and dropped here. Generation only fills keys the legacy lacks,
+    # and a model that cannot be generated (a group) has nothing to add.
+    try:
+        generated = _generate_from_model(ext)
+    except ValueError:
+        generated = {}
     result = dict(legacy_kv)
     for key, val in generated.items():
         if key in result:

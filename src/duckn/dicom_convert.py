@@ -2947,17 +2947,20 @@ def zarr_to_dicom_seg(
         labels = [seg.label_value] if seg.label_value is not None else []
 
         if not labels:
-            # Defined purely as a union of other segments by id: it owns no
-            # voxels of its own, so it has no row of its own here.
+            # A group: it owns no voxels of its own, so it has no row of its own
+            # here - its member leaves export instead. When the group is what
+            # carries the anatomy (a migrated 0.6 island union, whose islands are
+            # named "label <v>"), say so: the output keeps the voxels and loses
+            # the names, colors, designations and classification.
             reference_only.append(seg.id)
+            if seg.name or seg.designations or seg.dicom:
+                warnings.warn(
+                    f"segment {seg.id!r} ({seg.name or 'unnamed'}) is a group and has no "
+                    "row in a DICOM LABELMAP segmentation; its member leaves export "
+                    "without its name, color, designations or classification",
+                    stacklevel=2,
+                )
             continue
-        if len(labels) > 1:
-            raise ValueError(
-                f"segment {seg.id!r} owns multiple label values {labels}: "
-                "label-union (overlapping) segments cannot be represented in a "
-                "DICOM LABELMAP segmentation, where each voxel carries exactly "
-                "one segment number"
-            )
         if seg.layer not in (None, 0):
             raise ValueError(
                 f"segment {seg.id!r} is on layer {seg.layer}: layered "
