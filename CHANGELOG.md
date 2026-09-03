@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-09-03
 
 ### Changed — segmentation extension 0.7: leaves and groups
 - **A segment is a leaf or a group.** `label_value` is now a single integer,
