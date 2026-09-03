@@ -491,7 +491,7 @@ class DucknMetadata(BaseModel):
 
 
 # Version of the seg extension spec this implementation writes.
-SEG_EXTENSION_VERSION = "0.6"
+SEG_EXTENSION_VERSION = "0.7"
 
 
 class SourceRepresentation(StrEnum):
@@ -608,9 +608,16 @@ class Segment(BaseModel):
     name: str | None = None
     display: dict[str, str] | None = None
     color: list[float] | None = None
-    # Integers are literal voxel label values; strings reference other
-    # segments by id (the segment is the union of the referenced sets).
-    label_value: int | str | list[int | str]
+    # A LEAF names one voxel value in its layer; a GROUP names the segments it
+    # is the union of. Exactly one of the two (spec §5 rule 7).
+    label_value: int | None = None
+    members: list[str] | None = None
+    # Claims a group may make about its members (spec §2): pairwise disjoint,
+    # and/or exhaustive of the thing the group names. Omitted when not claimed.
+    disjoint: bool | None = None
+    exhaustive: bool | None = None
+    # The role a leaf may play: its layer's background value (spec §3.2).
+    background: bool | None = None
     layer: int | None = None
     extent: list[int] | None = None
     designations: list[Designation] | None = None
@@ -621,6 +628,40 @@ class Segment(BaseModel):
     @classmethod
     def _migrate_pre_0_6(cls, data: Any) -> Any:
         return _migrate_segment_pre_0_6(data)
+
+    @model_validator(mode="after")
+    def _leaf_or_group(self) -> Segment:
+        if isinstance(self.label_value, bool):
+            raise ValueError(f"segment {self.id!r}: label_value must be an integer")
+        is_leaf = self.label_value is not None
+        is_group = self.members is not None
+        if is_leaf == is_group:
+            raise ValueError(
+                f"segment {self.id!r} must have exactly one of label_value (a leaf) "
+                "and members (a group)"
+            )
+        if is_group:
+            if not self.members:
+                raise ValueError(f"segment {self.id!r}: a group needs at least one member")
+            if self.background:
+                raise ValueError(
+                    f"segment {self.id!r}: background is a leaf's role, not a group's"
+                )
+            if self.layer is not None:
+                raise ValueError(
+                    f"segment {self.id!r}: a group owns no voxels and has no layer; "
+                    "its members carry theirs"
+                )
+        elif self.disjoint is not None or self.exhaustive is not None:
+            raise ValueError(
+                f"segment {self.id!r}: disjoint and exhaustive are claims a group "
+                "makes about its members"
+            )
+        return self
+
+    @property
+    def is_group(self) -> bool:
+        return self.members is not None
 
 
 class SegmentationExtension(BaseModel):
@@ -635,10 +676,96 @@ class SegmentationExtension(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _migrate_pre_0_6(cls, data: Any) -> Any:
+    def _migrate_older(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
-        return _migrate_extension_pre_0_6(data)
+        return _migrate_extension_pre_0_7(_migrate_extension_pre_0_6(data))
+
+
+# ---------------------------------------------------------------------------
+# Backward compatibility: seg extension 0.6 and earlier
+# ---------------------------------------------------------------------------
+#
+# 0.7 made `label_value` a single integer and moved membership to `members`:
+# a segment is a leaf or a group. A 0.6 `label_value` could be a string (a
+# reference), a list of integers (a union of islands) or a mix. Strings become
+# members. A list of integers becomes a group over island leaves, one per
+# distinct (layer, value), reusing a leaf the file already had for that value
+# and synthesizing the rest - so a migrated file has more segments than it
+# was written with (spec §3.1, version semantics).
+
+
+def _version_tuple(version: Any) -> tuple[int, int]:
+    try:
+        major, minor, *_ = (int(p) for p in str(version).split("."))
+        return major, minor
+    except (TypeError, ValueError):
+        return (0, 0)
+
+
+def _island_id(value: int, layer: int, taken: set[str]) -> str:
+    base = f"label_{value}" if not layer else f"label_{value}_layer_{layer}"
+    candidate, n = base, 1
+    while candidate in taken:
+        n += 1
+        candidate = f"{base}_{n}"
+    return candidate
+
+
+def _migrate_extension_pre_0_7(ext: dict[str, Any]) -> dict[str, Any]:
+    """Migrate a pre-0.7 seg extension dict to the 0.7 shape."""
+    if _version_tuple(ext.get("version")) >= (0, 7):
+        return ext
+    raw = ext.get("segments")
+    if not isinstance(raw, list):
+        return ext
+    segs = [dict(s) if isinstance(s, dict) else s for s in raw]
+    ids = {s.get("id") for s in segs if isinstance(s, dict)}
+    leaf_by: dict[tuple[int, int], str] = {}
+    for s in segs:
+        if not isinstance(s, dict):
+            continue
+        lv = s.get("label_value")
+        if isinstance(lv, int) and not isinstance(lv, bool):
+            leaf_by.setdefault((int(s.get("layer") or 0), lv), s["id"])
+
+    islands: list[dict[str, Any]] = []
+    for s in segs:
+        if not isinstance(s, dict):
+            continue
+        lv = s.get("label_value")
+        if lv is None or (isinstance(lv, int) and not isinstance(lv, bool)):
+            continue
+        entries = lv if isinstance(lv, list) else [lv]
+        ints = [e for e in entries if isinstance(e, int) and not isinstance(e, bool)]
+        refs = [e for e in entries if isinstance(e, str)]
+        layer = int(s.get("layer") or 0)
+        if len(ints) == 1 and not refs:
+            s["label_value"] = ints[0]
+            continue
+        members: list[str] = []
+        for v in ints:
+            key = (layer, v)
+            if key not in leaf_by:
+                nid = _island_id(v, layer, ids)
+                ids.add(nid)
+                leaf_by[key] = nid
+                leaf: dict[str, Any] = {"id": nid, "name": f"label {v}", "label_value": v}
+                if layer:
+                    leaf["name"] += f" (layer {layer})"
+                    leaf["layer"] = layer
+                islands.append(leaf)
+            if leaf_by[key] not in members:
+                members.append(leaf_by[key])
+        members.extend(r for r in refs if r not in members)
+        s.pop("label_value", None)
+        s.pop("layer", None)
+        s["members"] = members
+
+    out = dict(ext)
+    out["segments"] = segs + islands
+    out["version"] = SEG_EXTENSION_VERSION
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -981,19 +1108,18 @@ def effective_label_values(
 ) -> set[tuple[int, int]]:
     """The effective voxel set of a segment, as ``(layer, label_value)`` pairs.
 
-    Resolves string entries in ``label_value`` recursively: the result is the
-    union of the segment's own integer labels and the effective sets of every
-    segment it references, per spec §3.2. A label value only identifies voxels
-    within a layer, so each element carries the layer of the segment that
-    contributed it — not of the segment doing the referencing.
+    A leaf contributes its one pair; a group the union of its members' sets,
+    resolved recursively (spec §3.2). A label value only identifies voxels
+    within a layer, so each element carries the layer of the leaf that
+    contributed it.
 
     Raises
     ------
     KeyError
-        If ``segment_id`` is not in the segmentation, or a reference does not
-        resolve (§5 rule 10).
+        If ``segment_id`` is not in the segmentation, or a member does not
+        resolve (§5 rule 11).
     ValueError
-        If the reference graph contains a cycle (§5 rule 11).
+        If the membership graph contains a cycle (§5 rule 12).
     """
     by_id: dict[str, Segment] = {}
     for seg in ext.segments:
@@ -1013,23 +1139,13 @@ def effective_label_values(
 
         seg = by_id.get(sid)
         if seg is None:
-            raise KeyError(f"segment reference {sid!r} does not resolve")
-
-        layer = seg.layer or 0
-        entries = (
-            seg.label_value
-            if isinstance(seg.label_value, list)
-            else [seg.label_value]
-        )
+            raise KeyError(f"member {sid!r} does not resolve")
 
         out: set[tuple[int, int]] = set()
-        for entry in entries:
-            if isinstance(entry, bool):
-                continue
-            if isinstance(entry, int):
-                out.add((layer, entry))
-            elif isinstance(entry, str):
-                out |= resolve(entry, (*path, sid))
+        if seg.label_value is not None:
+            out.add((seg.layer or 0, seg.label_value))
+        for member in seg.members or []:
+            out |= resolve(member, (*path, sid))
 
         resolved[sid] = out
         return out
@@ -1045,9 +1161,11 @@ def validate_seg_extension(
 ) -> None:
     """Validate a segmentation against the consistency rules of spec §5.
 
-    Checks the metadata-only rules (5-11) always. Passing ``axes`` (and
-    ``shape``) additionally checks the rules that depend on the array's axes
-    (2 and 4). Raises ``ValueError`` listing every violation found.
+    Checks the metadata-only rules (5, 8, 10-13) always; rule 7 is enforced
+    by the ``Segment`` model itself. Passing ``axes`` (and ``shape``)
+    additionally checks the rules that depend on the array's axes (2 and 4).
+    Rules 9 and 14 need the voxel data: see :func:`validate_seg_data` and
+    :func:`coverage_report`. Raises ``ValueError`` listing every violation.
     """
     problems: list[str] = []
 
@@ -1058,31 +1176,57 @@ def validate_seg_extension(
             problems.append(f"duplicate segment id {seg.id!r}")
         seen_ids.add(seg.id)
 
-    # Rule 7: 0 is background
+    # Rule 8: within a layer, one leaf per label value
+    leaves_by_pair: dict[tuple[int, int], list[str]] = {}
     for seg in ext.segments:
-        entries = (
-            seg.label_value if isinstance(seg.label_value, list) else [seg.label_value]
-        )
-        if any(e == 0 and not isinstance(e, bool) for e in entries):
+        if seg.label_value is not None:
+            leaves_by_pair.setdefault((seg.layer or 0, seg.label_value), []).append(seg.id)
+    for (layer, value), ids in leaves_by_pair.items():
+        if len(ids) > 1:
             problems.append(
-                f"segment {seg.id!r} claims label value 0, reserved for background"
+                f"segments {', '.join(repr(i) for i in ids)} all claim label value "
+                f"{value} in layer {layer}; a value resolves to exactly one leaf"
             )
 
-    # Rule 10: every string entry names a segment in this array. Checked
-    # structurally rather than through resolution, so that it is still
-    # reported when duplicate ids make resolution itself ambiguous.
+    # Rule 10: at most one background per layer, and no other leaf on its value
+    background_by_layer: dict[int, list[Segment]] = {}
     for seg in ext.segments:
-        entries = (
-            seg.label_value if isinstance(seg.label_value, list) else [seg.label_value]
-        )
-        for entry in entries:
-            if isinstance(entry, str) and entry not in seen_ids:
+        if seg.background:
+            background_by_layer.setdefault(seg.layer or 0, []).append(seg)
+    for layer, segs in background_by_layer.items():
+        if len(segs) > 1:
+            problems.append(
+                f"layer {layer} declares {len(segs)} background segments "
+                f"({', '.join(repr(s.id) for s in segs)}); at most one"
+            )
+    for seg in ext.segments:
+        if seg.label_value is None or seg.background:
+            continue
+        layer = seg.layer or 0
+        bg = background_by_layer.get(layer)
+        bg_value = bg[0].label_value if bg else 0
+        if seg.label_value == bg_value:
+            problems.append(
+                f"segment {seg.id!r} claims label value {bg_value}, the background "
+                f"of layer {layer}"
+                + ("" if bg else " (0 by default)")
+            )
+
+    # Rule 11: every member names a segment in this array. Checked structurally
+    # rather than through resolution, so that it is still reported when
+    # duplicate ids make resolution itself ambiguous.
+    for seg in ext.segments:
+        for member in seg.members or []:
+            if member not in seen_ids:
                 problems.append(
-                    f"segment {seg.id!r}: reference {entry!r} does not resolve to any "
+                    f"segment {seg.id!r}: member {member!r} does not resolve to any "
                     "segment in this segmentation"
                 )
 
-    # Rules 11 and 8 need resolved effective sets.
+    # Rule 12 (acyclic membership) is checked by resolving every segment: a cycle
+    # surfaces as the resolver's error. There is deliberately no rule against two
+    # segments resolving to the same voxels - identity is the id (rule 5), and a
+    # group of one member, or a group coinciding with a leaf, is legitimate.
     effective: dict[str, set[tuple[int, int]]] = {}
     for seg in ext.segments:
         try:
@@ -1093,18 +1237,22 @@ def validate_seg_extension(
             if problem not in problems:
                 problems.append(problem)
 
-    # Rule 8: no two segments may claim the same effective voxel set
-    by_set: dict[frozenset[tuple[int, int]], list[str]] = {}
-    for sid, values in effective.items():
-        if not values:
+    # Rule 13: a group that claims disjoint members must have them
+    for seg in ext.segments:
+        if not seg.disjoint or not seg.members:
             continue
-        by_set.setdefault(frozenset(values), []).append(sid)
-    for values, ids in by_set.items():
-        if len(ids) > 1:
-            problems.append(
-                f"segments {', '.join(repr(i) for i in sorted(ids))} have identical "
-                f"effective label sets {sorted(values)}"
-            )
+        sets = [(m, effective.get(m)) for m in seg.members]
+        for i, (a, sa) in enumerate(sets):
+            for b, sb in sets[i + 1:]:
+                if sa is None or sb is None:
+                    continue
+                shared = sa & sb
+                if shared:
+                    problems.append(
+                        f"segment {seg.id!r} claims disjoint members, but {a!r} and "
+                        f"{b!r} share {sorted(shared)[:4]}"
+                        + ("..." if len(shared) > 4 else "")
+                    )
 
     # Rule 6: schemes should be registered (a recommendation — not an error)
 
@@ -1128,8 +1276,14 @@ def validate_seg_extension(
                         f"'list' axis of size {extent}"
                     )
 
-        # Rule 4: fractional labelmaps need one layer per segment
+        # Rule 4: fractional labelmaps need one layer per segment, every one a leaf
         if ext.source_representation == SourceRepresentation.FRACTIONAL_LABELMAP:
+            groups = [seg.id for seg in ext.segments if seg.members is not None]
+            if groups:
+                problems.append(
+                    "a fractional labelmap's segments must all be leaves; groups: "
+                    + ", ".join(repr(g) for g in groups)
+                )
             if not list_axes:
                 problems.append(
                     "a fractional labelmap requires a 'list' axis, one layer per segment"
@@ -1147,3 +1301,199 @@ def validate_seg_extension(
             "segmentation violates the seg extension consistency rules:\n  - "
             + "\n  - ".join(problems)
         )
+
+
+# ---------------------------------------------------------------------------
+# Working with segments: the questions a reader asks of leaves and groups
+# ---------------------------------------------------------------------------
+
+
+def _segments_by_id(ext: SegmentationExtension) -> dict[str, Segment]:
+    by_id: dict[str, Segment] = {}
+    for seg in ext.segments:
+        by_id.setdefault(seg.id, seg)
+    return by_id
+
+
+def background_value(ext: SegmentationExtension, layer: int = 0) -> int:
+    """The background value of ``layer``: its background segment's
+    ``label_value``, or 0 when it declares none (spec §5 rule 10)."""
+    for seg in ext.segments:
+        if seg.background and (seg.layer or 0) == layer and seg.label_value is not None:
+            return seg.label_value
+    return 0
+
+
+def leaf_for(
+    ext: SegmentationExtension, label_value: int, *, layer: int = 0
+) -> Segment | None:
+    """The one leaf that owns ``label_value`` in ``layer`` (rule 8), or None."""
+    for seg in ext.segments:
+        if seg.label_value == label_value and (seg.layer or 0) == layer:
+            return seg
+    return None
+
+
+def parents_of(ext: SegmentationExtension, segment_id: str) -> list[str]:
+    """The groups that list ``segment_id`` directly, in ``segments`` order."""
+    return [seg.id for seg in ext.segments if seg.members and segment_id in seg.members]
+
+
+def leaves_of(ext: SegmentationExtension, segment_id: str) -> list[str]:
+    """Every leaf under ``segment_id`` (itself, if it is a leaf), in ``segments``
+    order. Raises like :func:`effective_label_values` on a bad graph."""
+    by_id = _segments_by_id(ext)
+    if segment_id not in by_id:
+        raise KeyError(f"no segment with id {segment_id!r}")
+    found: set[str] = set()
+
+    def walk(sid: str, path: tuple[str, ...]) -> None:
+        if sid in path:
+            cycle = " -> ".join((*path[path.index(sid):], sid))
+            raise ValueError(f"circular segment reference: {cycle}")
+        seg = by_id.get(sid)
+        if seg is None:
+            raise KeyError(f"member {sid!r} does not resolve")
+        if seg.label_value is not None:
+            found.add(sid)
+        for member in seg.members or []:
+            walk(member, (*path, sid))
+
+    walk(segment_id, ())
+    return [seg.id for seg in ext.segments if seg.id in found]
+
+
+def label_values_by_layer(
+    ext: SegmentationExtension, segment_id: str
+) -> dict[int, set[int]]:
+    """:func:`effective_label_values` regrouped as ``{layer: {values}}``."""
+    out: dict[int, set[int]] = {}
+    for layer, value in effective_label_values(ext, segment_id):
+        out.setdefault(layer, set()).add(value)
+    return out
+
+
+def color_map(
+    ext: SegmentationExtension, *, layer: int = 0, inherit: bool = True
+) -> dict[int, list[float]]:
+    """``{label_value: color}`` for the leaves of ``layer`` that have a color.
+
+    With ``inherit`` (the default), a leaf with no color of its own takes the
+    color of the first group in ``segments`` order that contains it - directly
+    or through nested groups - and has one (spec §8). Leaves that resolve to no
+    color are omitted: absent means unknown, and a renderer picks its own.
+    """
+    colors: dict[int, list[float]] = {}
+    inherited: dict[str, list[float]] = {}
+    if inherit:
+        for seg in ext.segments:
+            if seg.members is None or seg.color is None:
+                continue
+            for leaf_id in leaves_of(ext, seg.id):
+                inherited.setdefault(leaf_id, seg.color)
+    for seg in ext.segments:
+        if seg.label_value is None or (seg.layer or 0) != layer:
+            continue
+        color = seg.color if seg.color is not None else inherited.get(seg.id)
+        if color is not None:
+            colors[seg.label_value] = list(color)
+    return colors
+
+
+def _layer_slices(
+    data: Any, list_axis: int | None, layer: int | None = None
+) -> list[tuple[int, Any]]:
+    import numpy as np
+
+    arr = np.asarray(data)
+    if layer is not None:
+        return [(layer, arr)]
+    if list_axis is None:
+        return [(0, arr)]
+    return [(i, np.take(arr, i, axis=list_axis)) for i in range(arr.shape[list_axis])]
+
+
+def validate_seg_data(
+    ext: SegmentationExtension,
+    data: Any,
+    *,
+    list_axis: int | None = None,
+    layer: int | None = None,
+) -> None:
+    """Rule 9 against the voxels: every value present in a layer, other than its
+    background, has a leaf. ``data`` is the label array; ``list_axis`` is the
+    index of the ``list`` axis for a layered array (None for a single layer).
+    Pass ``layer`` when ``data`` is one layer's volume held separately from the
+    others. Raises ``ValueError`` naming every undescribed value.
+    """
+    import numpy as np
+
+    problems: list[str] = []
+    for layer, voxels in _layer_slices(data, list_axis, layer):
+        described = {
+            seg.label_value
+            for seg in ext.segments
+            if seg.label_value is not None and (seg.layer or 0) == layer
+        }
+        present = {int(v) for v in np.unique(voxels)}
+        missing = sorted(present - described - {background_value(ext, layer)})
+        if missing:
+            problems.append(
+                f"layer {layer}: values {missing} are present in the data but no "
+                "leaf describes them"
+            )
+    if problems:
+        raise ValueError(
+            "segmentation does not describe its data (spec §5 rule 9):\n  - "
+            + "\n  - ".join(problems)
+        )
+
+
+def coverage_report(
+    ext: SegmentationExtension, data: Any, *, list_axis: int | None = None
+) -> dict[str, dict[str, Any]]:
+    """Rule 14 against the voxels: for every group claiming ``exhaustive`` that
+    shares a designation (scheme and code) with a leaf, compare the two voxel
+    sets. Returns ``{group_id: {"leaf": id, "jaccard": float, "group_voxels":
+    n, "leaf_voxels": n}}``; a group with no such leaf is not reported, since
+    the claim cannot be checked without one.
+    """
+    import numpy as np
+
+    def codes(seg: Segment) -> set[tuple[str, str]]:
+        return {(d.scheme, d.code) for d in seg.designations or []}
+
+    layers = dict(_layer_slices(data, list_axis))
+
+    def mask(segment_id: str) -> Any:
+        m = None
+        for layer, value in effective_label_values(ext, segment_id):
+            if layer not in layers:
+                continue
+            hit = layers[layer] == value
+            m = hit if m is None else (m | hit)
+        return m
+
+    report: dict[str, dict[str, Any]] = {}
+    for group in ext.segments:
+        if not group.exhaustive or not group.members:
+            continue
+        wanted = codes(group)
+        leaf = next(
+            (s for s in ext.segments if s.label_value is not None and codes(s) & wanted),
+            None,
+        )
+        if leaf is None:
+            continue
+        gm, lm = mask(group.id), mask(leaf.id)
+        if gm is None or lm is None:
+            continue
+        inter = int(np.count_nonzero(gm & lm))
+        union = int(np.count_nonzero(gm | lm))
+        report[group.id] = {
+            "leaf": leaf.id,
+            "jaccard": (inter / union) if union else 1.0,
+            "group_voxels": int(np.count_nonzero(gm)),
+            "leaf_voxels": int(np.count_nonzero(lm)),
+        }
+    return report

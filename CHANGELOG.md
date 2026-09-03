@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+### Changed — segmentation extension 0.7: leaves and groups
+- **A segment is a leaf or a group.** `label_value` is now a single integer,
+  the one voxel value a leaf owns in its layer; membership moved to a new
+  `members` field, an array of segment ids. Through 0.6 one field carried
+  both values and references and every reader detected a group by asking
+  whether it was a list. Within a layer no two leaves share a value, so a
+  value resolves to exactly one segment and the leaves partition the layer's
+  described voxels; groups are unions of those atoms. **Reading older files
+  migrates them:** string entries become `members`, and a list of integers
+  becomes a group over island leaves, one per distinct value in the layer -
+  reused where the file named one, synthesized (`label_<value>`) where it did
+  not. A migrated file has more segments than it was written with.
+- **Groups can claim coverage and partition.** `"disjoint": true` says no two
+  members share a voxel (checked from the metadata); `"exhaustive": true` says
+  the members exhaust the thing the group names (checked against data, through
+  a leaf sharing a designation - `coverage_report`). Both together make a
+  partition, which is what lets a group export as one labelmap and lets
+  probabilities over its members sum to one.
+- **Background is a segment role.** A leaf may carry `"background": true`; a
+  layer with none has background 0, as before. A partition of a whole layer can
+  now include the background, and FreeSurfer's "Unknown" at 0 can be named.
+- **Every present value must be described** (§5 rule 9, inverted from 0.6):
+  `validate_seg_data` checks it against the voxels. New helpers on the model
+  and on `vol.extensions.seg`: `leaf_for`, `parents_of`, `leaves_of`,
+  `label_values_by_layer`, `background_value`, `color_map` (a leaf without a
+  color inherits the first containing group's).
+- Converters: `.seg.nrrd` and DICOM SEG export refuse groups (they have no
+  representation there) and take a leaf's single value; a `.seg.nrrd` with a
+  space-separated `LabelValue` is read as the 0.6 island union and migrated.
+
+### Changed — segmentation extension: rule 8 withdrawn (superseded by 0.7's rule 8)
+- `validate_seg_extension` no longer rejects two segments whose effective voxel
+  sets are identical, and spec §5 rule 8 now says so. Identity is the `id`
+  (rule 5), never the voxels: the spec already lets segments coincide in part
+  through layers, shared islands and hierarchies, so a rule that bit only at
+  100 % overlap protected no property a reader could use, and it refused
+  legitimate files — a named union whose only member in this file is one leaf
+  (a vertebral-column group on a scan that shows one vertebra), or a concept
+  that maps onto a single structure. A converter that needs one label value per
+  segment checks that at export time. Found by a writer that had to drop every
+  one-member group to pass validation, which made a store's set of group ids
+  depend on the field of view instead of the task.
+
 0.2.0's rule — **metadata must agree with the bytes it describes** — applied to
 `resample()`, which was describing a grid it had not produced.
 

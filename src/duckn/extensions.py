@@ -29,24 +29,39 @@ class SegmentView:
         return self._data.get("id")
 
     @property
-    def label_value(self) -> int | str | list[int | str] | None:
-        """Raw label value: an int, a segment-id reference, or a list of both."""
-        return self._data.get("label_value")
+    def label_value(self) -> int | None:
+        """A leaf's voxel value in its layer; None for a group."""
+        lv = self._data.get("label_value")
+        return lv if isinstance(lv, int) and not isinstance(lv, bool) else None
+
+    @property
+    def members(self) -> list[str]:
+        """The segment ids a group is the union of; empty for a leaf."""
+        return list(self._data.get("members") or [])
+
+    @property
+    def is_group(self) -> bool:
+        return self._data.get("members") is not None
 
     @property
     def label_values(self) -> list[int]:
-        """The integer label values this segment owns directly.
+        """The label value this segment owns directly, as a list: one entry for
+        a leaf, none for a group. Resolve a group with
+        ``SegAccessor.effective_label_values``."""
+        lv = self.label_value
+        return [lv] if lv is not None else []
 
-        Excludes string entries, which reference other segments by id.
-        """
-        lv = self._data.get("label_value")
-        if isinstance(lv, bool):
-            return []
-        if isinstance(lv, int):
-            return [lv]
-        if isinstance(lv, list):
-            return [v for v in lv if isinstance(v, int) and not isinstance(v, bool)]
-        return []
+    @property
+    def background(self) -> bool:
+        return bool(self._data.get("background"))
+
+    @property
+    def disjoint(self) -> bool:
+        return bool(self._data.get("disjoint"))
+
+    @property
+    def exhaustive(self) -> bool:
+        return bool(self._data.get("exhaustive"))
 
     @property
     def layer(self) -> int | None:
@@ -73,6 +88,8 @@ class SegmentView:
         return self._data
 
     def __repr__(self) -> str:
+        if self.is_group:
+            return f"Segment({self.name!r}, members={self.members})"
         return f"Segment({self.name!r}, label={self.label_value})"
 
 
@@ -81,6 +98,46 @@ class SegAccessor:
 
     def __init__(self, data: dict):
         self._data = data
+        self._model = None
+
+    @property
+    def model(self):
+        """The extension as a validated ``SegmentationExtension`` (migrated to
+        the current version), built once; the graph questions below run on it."""
+        if self._model is None:
+            from .models import SegmentationExtension
+
+            self._model = SegmentationExtension.model_validate(self._data)
+        return self._model
+
+    def effective_label_values(self, segment_id: str) -> set[tuple[int, int]]:
+        """A segment's voxel set as ``(layer, label_value)`` pairs, groups resolved."""
+        from .models import effective_label_values
+
+        return effective_label_values(self.model, segment_id)
+
+    def members_of(self, segment_id: str) -> list[str]:
+        """Every leaf under a segment (itself, if it is a leaf)."""
+        from .models import leaves_of
+
+        return leaves_of(self.model, segment_id)
+
+    def parents_of(self, segment_id: str) -> list[str]:
+        """The groups that list a segment directly."""
+        from .models import parents_of
+
+        return parents_of(self.model, segment_id)
+
+    def background_value(self, layer: int = 0) -> int:
+        from .models import background_value
+
+        return background_value(self.model, layer)
+
+    def color_map(self, *, layer: int = 0, inherit: bool = True) -> dict[int, list[float]]:
+        """``{label_value: color}`` for a layer's leaves, colors inherited from groups."""
+        from .models import color_map
+
+        return color_map(self.model, layer=layer, inherit=inherit)
 
     @property
     def version(self) -> str | None:
@@ -103,16 +160,19 @@ class SegAccessor:
         *,
         name: str | None = None,
         label_value: int | None = None,
+        layer: int = 0,
         snomed: str | None = None,
     ) -> SegmentView | None:
-        """Find a segment by name, label value, or SNOMED code.
+        """Find a segment by name, by label value (the one leaf owning it in
+        ``layer``), or by SNOMED code.
 
         Returns a SegmentView, or None if not found.
         """
         for seg in self.segments:
             if name is not None and seg.name == name:
                 return seg
-            if label_value is not None and label_value in seg.label_values:
+            if (label_value is not None and seg.label_value == label_value
+                    and (seg.layer or 0) == layer):
                 return seg
             if snomed is not None:
                 for des in seg.designations:
@@ -147,8 +207,8 @@ class SegAccessor:
         return [s.name for s in self.segments]
 
     @property
-    def label_values(self) -> list:
-        """The raw label value of each segment (int, str, or list)."""
+    def label_values(self) -> list[int | None]:
+        """Each segment's own label value: an int for a leaf, None for a group."""
         return [s.label_value for s in self.segments]
 
     @property

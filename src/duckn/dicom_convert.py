@@ -2944,12 +2944,7 @@ def zarr_to_dicom_seg(
     plan: list[tuple[Segment, int]] = []
     reference_only: list[str] = []
     for seg in segments:
-        if isinstance(seg.label_value, int):
-            labels = [seg.label_value]
-        elif isinstance(seg.label_value, list):
-            labels = [v for v in seg.label_value if isinstance(v, int)]
-        else:
-            labels = []
+        labels = [seg.label_value] if seg.label_value is not None else []
 
         if not labels:
             # Defined purely as a union of other segments by id: it owns no

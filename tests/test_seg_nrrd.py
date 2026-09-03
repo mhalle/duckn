@@ -133,13 +133,16 @@ def test_segment_fields():
 
 
 def test_multi_label_value():
-    """Space-separated label values should become a list."""
+    """Space-separated label values are the 0.6 island union; they read as a
+    group over one island leaf per value (spec 0.7 migration)."""
     kv = {
         "Segment0_ID": "S1",
         "Segment0_LabelValue": "2 3",
     }
     ext, _ = parse_seg_keyvalues(kv)
-    assert ext.segments[0].label_value == [2, 3]
+    assert ext.version == "0.7"
+    assert ext.segments[0].id == "S1" and ext.segments[0].members == ["label_2", "label_3"]
+    assert [(s.id, s.label_value) for s in ext.segments[1:]] == [("label_2", 2), ("label_3", 3)]
 
 
 def test_tags_and_terminology():
@@ -431,16 +434,20 @@ def test_serialize_tags_and_dicom():
     assert seg.designations[0].scheme == "SCT"
 
 
-def test_serialize_multi_label():
-    """Multi-value label_value should round-trip."""
+def test_serialize_refuses_a_group():
+    """A multi-value LabelValue reads as a group over islands, and a group has
+    no .seg.nrrd representation - serializing it is refused, not flattened."""
     kv = {
         "Segment0_ID": "S1",
         "Segment0_LabelValue": "2 3",
     }
     ext, _ = parse_seg_keyvalues(kv)
-    flat = serialize_seg_extension(ext)
+    with pytest.raises(ValueError, match="group"):
+        serialize_seg_extension(ext)
+    leaves_only = ext.model_copy(update={"segments": ext.segments[1:]})
+    flat = serialize_seg_extension(leaves_only)
     ext2, _ = parse_seg_keyvalues(flat)
-    assert ext2.segments[0].label_value == [2, 3]
+    assert [s.label_value for s in ext2.segments] == [2, 3]
 
 
 @pytest.mark.parametrize(

@@ -1,7 +1,7 @@
 # Segmentation Extension for duckn
 
 **Extension name:** `seg`
-**Version:** 0.6
+**Version:** 0.7
 **Status:** Draft
 
 ---
@@ -19,7 +19,7 @@ A secondary goal is to decouple segment identity from any single ontology. The `
 
 A segment can carry multiple designations from different ontologies simultaneously. The DICOM classification structure is available when needed, but is no longer the mandatory backbone of segment identity.
 
-The extension also supports string references in `label_value`, allowing a segment to be defined as the union of other named segments. This enables hierarchical ontologies (such as brain atlas parcellations) to be represented compactly and without redundancy, using the existing `id` field as the reference target.
+The extension also separates two kinds of segment. A **leaf** names one label value in the voxel data. A **group** names other segments as its `members` and is their union; it may further claim that its members are `disjoint`, or `exhaustive` of the thing it names, or both — a partition. Leaves are the atoms of a segmentation and groups are built from them, which is what lets hierarchical ontologies (such as brain atlas parcellations), overlapping structures, and statistical claims about coverage all be expressed with one mechanism, using the existing `id` field as the reference target.
 
 ---
 
@@ -35,29 +35,38 @@ Everything in this section describes binary labelmaps. Fractional labelmaps are 
 
 The array has 3 spatial dimensions. Each voxel's integer value identifies which segment it belongs to. This is the common case.
 
-**Label value 0 is reserved for background** and must not be claimed by any segment: a duckn array's `fill_value` is typically 0, so a segment claiming label 0 would claim every unwritten voxel.
+Every voxel value that is present in the data and is not the background has a **leaf** segment — exactly one — whose `label_value` is that value. Leaves are the atoms of a segmentation: within a layer they never share a value, so a value resolves to one segment and the leaves of a layer partition its described voxels by construction.
+
+**Background is a role, not a value.** By default the background of a layer is 0 — a duckn array's `fill_value` is typically 0, so a segment claiming it would claim every unwritten voxel — and no leaf may claim it. A layer whose background is some other value, or whose background deserves a name ("Unknown" in a FreeSurfer parcellation), declares it as a leaf flagged `"background": true` (§3.2). That leaf is exempt from the requirement that every present value be described, not from being described: it is a segment like any other, and a group may list it as a member.
 
 ### Overlapping segments: layers
 
 The array has a `list` axis (kind `"list"`) plus 3 spatial dimensions. Each position along the list axis is a **layer** — a 3D label volume. Segments that would collide in a single volume are assigned to different layers. Multiple segments may share the same label value if they are in different layers.
 
-### Overlapping segments: label unions
+### Overlapping segments: islands and groups
 
-An alternative to layers is to decompose the volume into non-overlapping **islands** and define each semantic segment as the union of one or more islands. The array remains a single 3D volume with no extra axis.
+An alternative to layers is to decompose the volume into non-overlapping **islands** — each a leaf with its own label value — and define each semantic structure as a **group** whose `members` are islands. The array remains a single 3D volume with no extra axis.
 
-For example, a tumor that partially overlaps the liver can be decomposed into three islands — liver-only voxels (label 1), tumor-only voxels (label 2), and the overlap region (label 3). The "Liver" segment is then defined as `"label_value": [1, 3]` and the "Tumor" segment as `"label_value": [2, 3]`. The overlap region (label 3) appears in both segments' label value lists.
+For example, a tumor that partially overlaps the liver is decomposed into three islands: liver-only voxels (label 1), tumor-only voxels (label 2), and the overlap region (label 3). Each island is a leaf. "Liver" is then a group with `"members": ["liver_only", "overlap"]` and "Tumor" a group with `"members": ["tumor_only", "overlap"]`. The overlap island belongs to both groups, which is how the overlap is represented without a second volume.
 
-Islands are implicit: they exist as label values in the voxel data and do not require their own segment entries. However, an island *may* have an explicit segment entry if metadata is needed for it — for instance, to name the tumor-liver intersection zone or attach designations to it. In that case, its label value will appear both in its own entry and in the composite segments that include it.
+Islands are explicit: every one is a leaf, so it can carry a name, a color and designations of its own, and so every value in the data resolves to a segment. A group owns no voxels directly; its effective voxel set is the union of its members'.
 
-Not all label values in the volume need to be described by a segment entry. Undescribed labels are implementation-defined (e.g., treated as "background" or "unknown"); a reader that must map every voxel to a segment should say what it does with them.
+The layer and island mechanisms are independent and may coexist in the same segmentation. They address overlapping segments through different strategies: layers duplicate the spatial volume; islands partition it.
 
-The layer and label-union mechanisms are independent and may coexist in the same segmentation. They address overlapping segments through different strategies: layers duplicate the spatial volume; label unions partition it.
+### Hierarchical segments: groups of groups
 
-### Hierarchical segments: segment references
+A group's `members` may name other groups. A parent region is defined by listing its direct children; the full set of voxels belonging to the parent is the transitive union of all descendant leaves — without materializing that list of integers in the file. Leaves carry `label_value`; interior nodes carry `members`. A segment may appear in any number of groups, so the reference graph is a directed acyclic graph, not a tree.
 
-A segment's `label_value` may contain string entries that reference other segments by their `id`. A segment defined this way is the union of the effective voxel sets of all referenced segments, plus any integer label values it also directly lists.
+### Claims a group can make: coverage and partition
 
-This allows hierarchical ontologies to be expressed compactly. A parent region is defined by listing its children by `id`; the full set of voxels belonging to the parent is the transitive union of all descendant leaf segments — without materializing that full list of integers in the file. Leaf segments have only integer `label_value` entries; interior nodes reference other segments by `id`.
+A group is a union of its members and, by default, claims nothing more. Two optional boolean fields let it claim more (§3.2):
+
+- `"disjoint": true` — no two members share a voxel. The members' volumes add, and a layer of disjoint members exports as a labelmap.
+- `"exhaustive": true` — the members exhaust the thing the group names: every voxel of that thing in this volume carries some member's label, and nothing else in the volume is that thing.
+
+A group that claims both is a **partition** of what it names — mutually exclusive and collectively exhaustive — which is the case under which statistical statements about the group reduce to statements about disjoint atoms: probabilities sum to one, and the whole is the sum of its parts. The classes of a softmax segmentation model are a partition of the model's domain, background included; the eight Couinaud segments are a partition of the liver.
+
+`disjoint` is a structural claim and a validator checks it from the metadata (§5). `exhaustive` is a claim about a concept and is checked against data, where a leaf denoting the same thing exists to compare with.
 
 ### Fractional labelmaps
 
@@ -65,7 +74,7 @@ When `source_representation` is `"fractional-labelmap"`, voxel values are contin
 
 Each segment therefore needs its own volume of fractional values, so a fractional segmentation **must** carry a `list` axis and assign every segment a distinct `layer`. `label_value` still identifies the segment within its layer and is conventionally `1`, but it selects a layer's worth of fractional values rather than matching voxels by equality.
 
-The island and segment-reference mechanisms (label unions, hierarchical references) are defined only for binary labelmaps: both are set operations over integer labels, and neither has a defined meaning over fractional values. A fractional segmentation must give each segment a single integer `label_value`.
+Islands and groups are defined only for binary labelmaps: both are set operations over integer labels, and neither has a defined meaning over fractional values. Every segment of a fractional segmentation is a leaf.
 
 The value range is not constrained here — `[0, 1]` is typical, but an application storing 0–255 or 0–100 should record the scaling with the duckn convention's `value_transforms` rather than inventing a convention in this extension.
 
@@ -88,12 +97,14 @@ The `seg` extension is declared at the top level of the `"duckn"` object's `"ext
 Required. The version of this extension specification.
 
 ```json
-"version": "0.6"
+"version": "0.7"
 ```
 
 **Version semantics.** While the major version is `0`, the *minor* version may introduce breaking changes; this overrides the duckn convention's default rule that minor increments are additive. From 1.0 onward, major increments signal breaking changes and minor increments are additive.
 
-Version 0.6 is a breaking change from 0.5: the `identifiers` field was removed in favor of `designations`, `dicom` moved from `metadata.dicom` to a first-class segment field, and 3D Slicer application state moved under `metadata.slicer`. A reader for 0.5 must not assume it can read 0.6, and a reader for 0.6 that wants to accept older files should migrate those three shapes on load.
+Version 0.7 is a breaking change from 0.6: `label_value` is a single integer and membership moved to its own `members` field; a segment is either a leaf or a group. A reader for 0.7 that accepts older files migrates on load: string entries in a 0.6 `label_value` become `members`, and a list of integers becomes a group over island leaves, one per distinct value in the layer, synthesized when the file did not name them. A migrated file therefore has more segments than it was written with.
+
+Version 0.6 was a breaking change from 0.5: the `identifiers` field was removed in favor of `designations`, `dicom` moved from `metadata.dicom` to a first-class segment field, and 3D Slicer application state moved under `metadata.slicer`.
 
 #### `source_representation`
 
@@ -247,39 +258,57 @@ Display color as an RGB array with values in [0.0, 1.0].
 
 #### `label_value`
 
-The label value or values identifying the voxels belonging to this segment. Required.
+The single integer voxel value identifying the voxels belonging to this **leaf** segment: all voxels in its layer whose value equals this integer. Required on a leaf; absent on a group (a segment has exactly one of `label_value` and `members`, §5).
 
-Each element is either an **integer** or a **string**:
-
-- An **integer** is a literal voxel label value. The segment includes all voxels in its layer whose value equals this integer.
-- A **string** is a reference to another segment by its `id`. The segment includes the full effective voxel set of the referenced segment, resolved recursively.
-
-A scalar value follows the same rule: a bare integer is a literal; a bare string is a reference.
-
-```jsonc
-"label_value": 1                          // leaf: single literal voxel value
-"label_value": [1, 3, 7]                  // leaf: literal label union (island model)
-"label_value": ["child-a", "child-b"]     // interior node: references only
-"label_value": [1, "child-a", "child-b"]  // mixed: own voxels plus referenced children
+```json
+"label_value": 1
 ```
 
-Integer entries must not be 0, which is reserved for background (§2).
+Within a layer no two segments have the same `label_value` (§5): a value resolves to exactly one leaf. A leaf may not claim its layer's background value unless it is the background segment (§3.2 `background`).
 
-The **effective voxel set** of a segment is the union of:
-- all voxels whose label value matches any integer in `label_value`, and
-- the effective voxel sets of all segments referenced by string entries in `label_value`.
+The **effective voxel set** of a segment is a set of *(layer, label value)* pairs — a label value only identifies voxels within a layer. For a leaf it is the one pair formed from its `layer` and `label_value`. For a group it is the union of its members' effective voxel sets, resolved recursively; each pair carries the layer of the leaf that contributed it.
 
-Because a label value only identifies voxels within a layer, an element of an effective voxel set is a *(layer, label value)* pair, not a bare integer. Integers contributed directly by a segment take that segment's own `layer`; those contributed through a reference take the referenced segment's layer (§3.2 `layer`).
+#### `members`
 
-Resolution is recursive and terminates at leaf segments (those with no string entries). Circular references are forbidden.
+The segments this **group** is the union of, as an array of segment `id`s. Required on a group; absent on a leaf. Every entry must name a segment in the same `segments` array, and the graph of memberships must be acyclic (§5). A segment may be a member of any number of groups.
 
-A reader that does not support string references may still process segments whose `label_value` contains only integers. Segments with string entries are opaque to such a reader, but their presence does not invalidate the file.
+```json
+"members": ["liver_only", "overlap"]
+```
+
+A reader that does not support groups may still process every leaf and render the full-resolution labelmap; it cannot resolve the aggregate segments, but their presence does not invalidate the file.
+
+#### `disjoint`
+
+Optional, groups only. `true` claims that no two members share a voxel — their effective voxel sets are pairwise disjoint. Omit when not claimed; never write `false`. A validator checks the claim from the metadata (§5).
+
+```json
+"disjoint": true
+```
+
+#### `exhaustive`
+
+Optional, groups only. `true` claims that the members exhaust the thing the group names: every voxel of that thing in this volume carries a member's label, and nothing else in the volume is that thing. Omit when not claimed; never write `false`. The claim is about a concept, so it is checked against data, not metadata — by comparing the group's effective voxel set with a leaf that denotes the same thing, identified by a shared designation.
+
+A group with both `disjoint` and `exhaustive` is a partition of what it names (§2).
+
+```json
+"exhaustive": true
+```
+
+#### `background`
+
+Optional, leaves only. `true` marks this leaf as its layer's background: the value unwritten voxels carry, or a catch-all such as FreeSurfer's "Unknown". At most one leaf per layer may carry it. A layer with no background segment has background 0 (§2). Omit when not the background; never write `false`.
+
+```json
+"background": true
+```
 
 #### `layer`
 
-The zero-based index of the layer (position along the `list` axis) that contains this segment's literal voxel values. Omit for non-overlapping segmentations where there is only one layer; an absent `layer` means layer 0.
+The zero-based index of the layer (position along the `list` axis) that contains this leaf's voxel value. Omit for non-overlapping segmentations where there is only one layer; an absent `layer` means layer 0.
 
-The `layer` field applies only to integer label values within this segment. Referenced segments have their own `layer` assignments, which are respected during recursive resolution. A segment whose `label_value` holds only references owns no voxels directly, so its own `layer` is meaningless and should be omitted.
+`layer` belongs to leaves. A group owns no voxels directly, its members carry their own `layer` assignments, and those are respected during recursive resolution — so a group omits `layer`.
 
 When an array has more than one `list`-kind axis, `layer` indexes the first one.
 
@@ -289,7 +318,7 @@ When an array has more than one `list`-kind axis, `layer` indexes the first one.
 
 #### `extent`
 
-The bounding box of the non-empty region within the segment, as a 6-element array: `[min_i, max_i, min_j, max_j, min_k, max_k]` in voxel coordinates. For segments defined by references, `extent` describes the bounding box of the full effective voxel set, not only any directly-owned integer label values.
+The bounding box of the non-empty region within the segment, as a 6-element array: `[min_i, max_i, min_j, max_j, min_k, max_k]` in voxel coordinates. For a group, `extent` describes the bounding box of the full effective voxel set.
 
 Both bounds are **inclusive** — a single-voxel segment at the origin has extent `[0, 0, 0, 0, 0, 0]` — matching the `.seg.nrrd` convention this field is converted from. `i`, `j`, `k` are the array's three spatial axes in storage order, whatever they are named in `dimension_names`; a non-spatial axis such as `list` is not counted.
 
@@ -452,34 +481,40 @@ Following the duckn specification's "absent means unknown" principle:
 
 ## 5. Consistency Rules
 
-Throughout this section, a segment's **effective voxel set** is the set of *(layer, label value)* pairs defined in §3.2, and the *scalar-vs-array* spelling of `label_value` carries no meaning: `1`, `[1]`, and a reference resolving to the same single pair are all the same set.
+Throughout this section, a segment's **effective voxel set** is the set of *(layer, label value)* pairs defined in §3.2. Two segments may have the same effective voxel set: identity is the `id` (rule 5), never the voxels. A group whose only member in this file is one leaf, or a concept that happens to map onto a single structure, is a distinct statement from that leaf and is valid.
 
 **Structure**
 
 1. The length of `segments` is independent of any axis size — multiple segments can share a label value across layers, and multiple segments can exist in the same layer with different label values.
 2. Where a segment specifies a `layer`, there must be a `list`-kind axis in the array, and the `layer` value must be a valid index into that axis. It follows that a segment in an array with no `list` axis must omit `layer` entirely rather than specifying 0 — the two are equivalent (§3.2), but only the omission is representable.
 3. Where a `kind` constraint requires a specific axis size (from the duckn convention), the corresponding `shape` element must match.
-4. A fractional segmentation (`"source_representation": "fractional-labelmap"`) must have a `list` axis, and each of its segments must specify a distinct `layer` and a single integer `label_value` (§2).
+4. A fractional segmentation (`"source_representation": "fractional-labelmap"`) must have a `list` axis, and each of its segments must be a leaf with a distinct `layer` (§2).
 
 **Identity**
 
 5. `id` must be unique across all segments in the segmentation.
 6. `scheme` values used in `designations` or `dicom` coded entries should have a corresponding key in the top-level `terminologies` registry. This is a recommendation, not a requirement (§3.1).
 
-**Label values**
+**Leaves**
 
-7. Integer entries in `label_value` must not be 0, which is reserved for background (§2).
-8. No two segments may have the same effective voxel set. Comparing whole sets — rather than individual values — is what allows an island to be shared: a given *(layer, label)* pair may appear in the effective sets of any number of segments, which is the mechanism for representing overlapping structures (§2). What must be unique is the *combination* a segment claims, since two segments claiming exactly the same voxels are indistinguishable.
-9. Not all integer label values present in the voxel data need to appear in a segment entry. Undescribed label values are implementation-defined (§2).
+7. A segment has exactly one of `label_value` (a leaf) and `members` (a group). `background` may appear only on a leaf; `disjoint` and `exhaustive` only on a group.
+8. Within a layer, no two segments have the same `label_value`. A value resolves to exactly one leaf.
+9. Every value present in a layer's voxel data, other than that layer's background, has a leaf whose `label_value` it is. This is a writer's obligation: it is the one rule that cannot be checked without the data, and a validator working from metadata alone cannot tell an undescribed value from a mistake.
 
-**References**
+**Background**
 
-10. String entries in `label_value` must match the `id` of a segment within the same `segments` array.
-11. The segment reference graph formed by string entries in `label_value` must be acyclic. A segment may not directly or transitively reference itself.
+10. At most one segment per layer carries `"background": true`. A layer's background value is that segment's `label_value`, or 0 when the layer has none. No other leaf in the layer may claim the background value.
 
-Rules 5–11 constrain the metadata alone and are cheap to check; rules 2–4 additionally require the array's shape and axes. None of them can be verified from the voxel data, which this extension never requires a reader to load — in particular, rule 9 means a validator cannot tell a legal undescribed label from a mistake.
+**Groups**
 
-Writers should validate before serializing. Readers should not assume a file is valid: a segmentation that violates rule 10 or 11 has no well-defined effective voxel set, and a reader encountering one should report the error rather than resolving references partially.
+11. Every entry in `members` must match the `id` of a segment within the same `segments` array.
+12. The membership graph must be acyclic. A segment may not directly or transitively contain itself.
+13. A group with `"disjoint": true` must have members whose effective voxel sets are pairwise disjoint.
+14. `exhaustive` is not checked from the metadata. Where a group and a leaf carry the same designation, a data-aware checker compares their effective voxel sets and reports the disagreement.
+
+Rules 5–8 and 10–13 constrain the metadata alone and are cheap to check; rules 2–4 additionally require the array's shape and axes; rules 9 and 14 require the voxel data, which this extension never requires a reader to load.
+
+Writers should validate before serializing. Readers should not assume a file is valid: a segmentation that violates rule 11 or 12 has no well-defined effective voxel set, and a reader encountering one should report the error rather than resolving memberships partially.
 
 ---
 
@@ -497,14 +532,14 @@ Writers should validate before serializing. Readers should not assume a file is 
 | `SegmentN_NameAutoGenerated` | `segments[n].metadata.slicer.name_auto_generated` (boolean) |
 | `SegmentN_Color` | `segments[n].color` (RGB array) |
 | `SegmentN_ColorAutoGenerated` | `segments[n].metadata.slicer.color_auto_generated` (boolean) |
-| `SegmentN_LabelValue` | `segments[n].label_value` (integer, string, or mixed array) |
+| `SegmentN_LabelValue` | `segments[n].label_value` (integer) |
 | `SegmentN_Layer` | `segments[n].layer` (integer; omitted when 0 — see Parsing Notes) |
 | `SegmentN_Extent` | `segments[n].extent` (6-element array) |
 | `SegmentN_Tags` (minus TerminologyEntry) | `segments[n].metadata.slicer.tags` (object) |
 | `SegmentN_Tags` TerminologyEntry — category/type/modifier/region | `segments[n].dicom` (object) |
 | `SegmentN_Tags` TerminologyEntry — type code + type modifier | `segments[n].designations` (first entry, modifier included) |
 | `SegmentN_Tags` TerminologyEntry — context names | Omitted (application state) |
-| — (no `.seg.nrrd` equivalent) | `segments[n].label_value` string entries (segment references) |
+| — (no `.seg.nrrd` equivalent) | `segments[n].members`, `disjoint`, `exhaustive`, `background` (groups, their claims, and the background role) |
 
 ### Parsing Notes
 
@@ -556,7 +591,7 @@ A 256×256×128 binary labelmap segmentation with two segments in LPS space. Eac
       ],
       "extensions": {
         "seg": {
-          "version": "0.6",
+          "version": "0.7",
           "source_representation": "binary-labelmap",
           "terminologies": {
             "SCT": {
@@ -666,7 +701,7 @@ A tumor partially overlapping the liver, represented as two segments in separate
       ],
       "extensions": {
         "seg": {
-          "version": "0.6",
+          "version": "0.7",
           "source_representation": "binary-labelmap",
           "segments": [
             {
@@ -695,9 +730,9 @@ A tumor partially overlapping the liver, represented as two segments in separate
 
 Note that both segments use `label_value: 1` — this is valid because they are in different layers.
 
-### 7.3 Overlapping Segments with Label Unions
+### 7.3 Overlapping Segments with Islands and Groups
 
-The same tumor-liver overlap, represented as label unions in a single 3D volume:
+The same tumor-liver overlap, represented as islands in a single 3D volume and two groups over them:
 
 ```json
 {
@@ -728,20 +763,25 @@ The same tumor-liver overlap, represented as label unions in a single 3D volume:
       ],
       "extensions": {
         "seg": {
-          "version": "0.6",
+          "version": "0.7",
           "source_representation": "binary-labelmap",
           "segments": [
+            { "id": "liver_only", "name": "Liver outside the tumor", "label_value": 1 },
+            { "id": "tumor_only", "name": "Tumor outside the liver", "label_value": 2 },
+            { "id": "overlap",    "name": "Tumor within the liver",  "label_value": 3 },
             {
               "id": "Segment_1",
               "name": "Tumor",
-              "label_value": [2, 3],
+              "members": ["tumor_only", "overlap"],
+              "exhaustive": true,
               "color": [0.8, 0.2, 0.2],
               "designations": [{ "scheme": "SCT", "code": "108369006", "meaning": "Neoplasm" }]
             },
             {
               "id": "Segment_2",
               "name": "Liver",
-              "label_value": [1, 3],
+              "members": ["liver_only", "overlap"],
+              "exhaustive": true,
               "color": [0.2, 0.6, 0.8],
               "designations": [{ "scheme": "SCT", "code": "10200004", "meaning": "Liver" }]
             }
@@ -753,7 +793,7 @@ The same tumor-liver overlap, represented as label unions in a single 3D volume:
 }
 ```
 
-Label 1 is liver-only voxels, label 2 is tumor-only voxels, label 3 is the overlap region. The island at label 3 has no explicit segment entry — it exists only as a shared integer in the two composite segments.
+Label 1 is liver-only voxels, label 2 is tumor-only voxels, label 3 is the overlap region. Each island is a leaf, so every value in the data resolves to a segment; the overlap island belongs to both groups. Neither group is `disjoint` (they share `overlap`); each is `exhaustive` — the whole tumor and the whole liver in this volume are their members. The island leaves carry no color, so a reader that colors the labelmap takes each leaf's color from the first group that contains it and has one (§8), which paints the overlap as tumor.
 
 ### 7.4 Research Segmentation Without DICOM
 
@@ -762,7 +802,7 @@ A segmentation from a research pipeline using only FMA codes, no DICOM classific
 ```json
 "extensions": {
   "seg": {
-    "version": "0.6",
+    "version": "0.7",
     "source_representation": "binary-labelmap",
     "terminologies": {
       "FMA": {
@@ -791,14 +831,14 @@ A segmentation from a research pipeline using only FMA codes, no DICOM classific
 
 ### 7.5 Hierarchical Ontology (Allen Mouse Brain CCF)
 
-A whole-brain mouse atlas segmentation where voxel label values are Allen CCF structure IDs. Leaf segments carry integer `label_value`; parent structures are defined by referencing their direct children by `id`. The full hierarchy is expressed compactly — the voxel set of each interior node is the transitive union of its descendants without any redundant integer lists.
+A whole-brain mouse atlas segmentation where voxel label values are Allen CCF structure IDs. Leaf segments carry `label_value`; parent structures are groups whose `members` are their direct children. The full hierarchy is expressed compactly — the voxel set of each interior node is the transitive union of its descendants without any redundant integer lists — and every level is a partition of its parent, so each group claims `disjoint` and `exhaustive`.
 
-*The listing below is an excerpt: most of the referenced child segments are elided for brevity. In a complete file, every `id` referenced from a `label_value` must resolve to a segment in the same array (§5).*
+*The listing below is an excerpt: most of the member segments are elided for brevity. In a complete file, every `id` named in `members` must resolve to a segment in the same array (§5).*
 
 ```json
 "extensions": {
   "seg": {
-    "version": "0.6",
+    "version": "0.7",
     "source_representation": "binary-labelmap",
     "terminologies": {
       "CCF": {
@@ -811,28 +851,36 @@ A whole-brain mouse atlas segmentation where voxel label values are Allen CCF st
       {
         "id": "997",
         "name": "root",
-        "label_value": ["8", "1009", "73", "1024", "304325711"],
+        "members": ["8", "1009", "73", "1024", "304325711"],
+        "disjoint": true,
+        "exhaustive": true,
         "color": [1.0, 1.0, 1.0],
         "designations": [{ "scheme": "CCF", "code": "997", "meaning": "root" }]
       },
       {
         "id": "8",
         "name": "Basic cell groups and regions",
-        "label_value": ["567", "343", "512"],
+        "members": ["567", "343", "512"],
+        "disjoint": true,
+        "exhaustive": true,
         "color": [0.749, 0.855, 0.890],
         "designations": [{ "scheme": "CCF", "code": "8", "meaning": "Basic cell groups and regions" }]
       },
       {
         "id": "315",
         "name": "Isocortex",
-        "label_value": ["184", "500", "453", "1057", "677", "247", "669", "31", "972", "44", "714", "95", "254", "22", "541", "922", "895"],
+        "members": ["184", "500", "453", "1057", "677", "247", "669", "31", "972", "44", "714", "95", "254", "22", "541", "922", "895"],
+        "disjoint": true,
+        "exhaustive": true,
         "color": [0.439, 1.0, 0.443],
         "designations": [{ "scheme": "CCF", "code": "315", "meaning": "Isocortex" }]
       },
       {
         "id": "184",
         "name": "Frontal pole, cerebral cortex",
-        "label_value": ["68", "667", "526157192", "526157196", "526322264"],
+        "members": ["68", "667", "526157192", "526157196", "526322264"],
+        "disjoint": true,
+        "exhaustive": true,
         "color": [0.149, 0.561, 0.271],
         "designations": [{ "scheme": "CCF", "code": "184", "meaning": "Frontal pole, cerebral cortex" }]
       },
@@ -855,7 +903,7 @@ A whole-brain mouse atlas segmentation where voxel label values are Allen CCF st
 }
 ```
 
-The full CCF ontology follows this pattern for all 1327 structures. A reader that supports string references can reconstruct the complete hierarchy from the `label_value` arrays alone. A reader that does not support string references can still process the leaf segments and render the full-resolution labelmap; it simply cannot resolve the aggregate regions.
+The full CCF ontology follows this pattern for all 1327 structures. A reader that supports groups can reconstruct the complete hierarchy from the `members` arrays alone. A reader that does not can still process the leaf segments and render the full-resolution labelmap; it simply cannot resolve the aggregate regions.
 
 ### 7.6 Minimal
 
@@ -864,7 +912,7 @@ A segmentation with the smallest useful metadata:
 ```json
 "extensions": {
   "seg": {
-    "version": "0.6",
+    "version": "0.7",
     "segments": [
       { "id": "S1", "label_value": 1, "name": "Liver" },
       { "id": "S2", "label_value": 2, "name": "Spleen" }
@@ -897,10 +945,16 @@ A segmentation with the smallest useful metadata:
 
 Note that `metadata.dicom` (a converter's scratch space for unmapped DICOM attributes) is distinct from the first-class `dicom` field (the classification). In version 0.5 the classification itself lived under `metadata.dicom`; readers accepting older files should migrate it.
 
-**Why `label_value` accepts arrays.** Overlapping structures are common in medical imaging — a tumor invading an organ, nested anatomical regions, or probabilistic boundaries. The layer mechanism handles this by duplicating the spatial volume, which is correct but expensive. Label unions offer an alternative: decompose the scene into non-overlapping islands (each with a unique label value in a single volume), then define each semantic segment as the union of one or more islands. The overlap region becomes a shared island. This is lossless, compact, and scales to many overlapping structures without adding dimensions. The two mechanisms coexist because they serve different workflows: layers are natural when segments are authored independently; label unions are natural when the decomposition into non-overlapping regions is computed upfront (e.g., by a segmentation pipeline that produces disjoint partitions).
+**Why leaves are atoms and membership is its own field.** Through 0.6 a `label_value` could be an integer, a list of integers (a union of islands), or a list mixing integers with segment ids (references). One field carried two kinds of thing — values in the data and edges in a graph — and every reader detected a group by asking whether the field was a list. 0.7 separates them: a leaf names one value, a group names its `members`. That gives each layer a clean structure: its leaves never share a value, so they partition the described voxels, and every group is a union of atoms. Overlap is still cheap — decompose the scene into islands (each a leaf) and define each structure as a group over them, the overlap region being a shared island — and it is now lossless in the metadata as well as the data, because every island has a segment. The layer mechanism coexists with islands because they serve different workflows: layers are natural when segments are authored independently; islands are natural when the decomposition into non-overlapping regions is computed upfront (e.g., by a segmentation pipeline that produces disjoint partitions).
 
-**Why string entries in `label_value` reference by `id`, not by array index.** Array indices are positional and change when segments are reordered, inserted, or deleted. The `id` field is defined as stable — it does not change when the segment is renamed or reordered. Using `id` as the reference target means the reference graph remains valid across edits that do not change segment identity.
+**Why a leaf's color is inherited from its groups.** An island leaf synthesized by a pipeline, or by migration, often has no color of its own, while the structures it belongs to do. A reader that needs a color per label value takes the leaf's own color when present, otherwise the color of the first group in `segments` order that contains the leaf (directly or through nested groups) and has a color. First-in-order is a deliberate tie-break for an island shared by two colored groups: it makes the answer depend on the file and not on the reader.
 
-**Why the reference graph must be acyclic.** A cycle would make the effective voxel set of a segment depend on itself, which is undefined. An acyclic directed graph is sufficient to represent all biologically meaningful hierarchies, including ontologies with multiple inheritance (a segment may be referenced by any number of parents), as long as there is no circularity. Writers should validate acyclicity before serializing; readers encountering a cycle should treat the affected segments' effective voxel sets as undefined and report an error (§5).
+**Why `members` reference by `id`, not by array index.** Array indices are positional and change when segments are reordered, inserted, or deleted. The `id` field is defined as stable — it does not change when the segment is renamed or reordered. Using `id` as the reference target means the membership graph remains valid across edits that do not change segment identity.
 
-**Why string references do not carry layer information.** The `layer` field of a referenced segment is authoritative for that segment's voxel data. When resolving a reference chain, each segment's layer is taken from its own definition. This avoids needing to re-specify layer context at every reference site and ensures that layer assignments are defined once, close to the data they describe.
+**Why coverage and partition are claims on a group.** A union says what is in it; it does not say that nothing else is. Whether the members exhaust the thing the group names — the Couinaud segments exhaust the liver, the lobes exhaust the lung — is a separate fact, and whether the members are disjoint is another. Both matter: a partition is what makes a group representable as a single labelmap and what makes probabilities over its members sum to one, so statistical statements about a group reduce to statements about disjoint atoms. They are two booleans rather than one enumeration because they are independent — a union of listed vertebrae is disjoint without being exhaustive of the column — and each maps to exactly one check: disjointness is structural, exhaustiveness is measured.
+
+**Why background is a segment.** Background is a role a value plays in a layer, not a property of the number 0. Some data uses 0 for a named catch-all ("Unknown"), some uses another fill value, and a partition of a whole layer needs background among its members. Declaring the background as a leaf flagged `background` puts the role where the layer already is — on the segment — with no top-level structure to keep in step with the `list` axis, and the default of 0 keeps every earlier file meaning what it meant.
+
+**Why the membership graph must be acyclic.** A cycle would make the effective voxel set of a segment depend on itself, which is undefined. An acyclic directed graph is sufficient to represent all biologically meaningful hierarchies, including ontologies with multiple inheritance (a segment may be a member of any number of groups), as long as there is no circularity. Writers should validate acyclicity before serializing; readers encountering a cycle should treat the affected segments' effective voxel sets as undefined and report an error (§5).
+
+**Why groups do not carry layer information.** The `layer` field of a leaf is authoritative for that leaf's voxel data. When resolving a group, each leaf's layer is taken from its own definition. This avoids re-specifying layer context at every membership and ensures that layer assignments are defined once, close to the data they describe.

@@ -233,8 +233,11 @@ Cheap, metadata-only, and worth running before you write:
 
 - `len(axes) == len(shape)`, and any `kind` with a required size matches
 - a `lut` is first in its chain and has a non-empty table
-- for segmentations: `validate_seg_extension()` — unique ids, no label 0,
-  no dangling or circular references, no duplicate effective label sets
+- for segmentations: `validate_seg_extension()` — unique ids, one leaf per
+  label value in a layer, no leaf on its layer's background value, members
+  that resolve, no cycles, and `disjoint` claims that hold; with the voxels
+  in hand, `validate_seg_data()` for every present value described and
+  `coverage_report()` for `exhaustive` claims
 
 ```python
 from duckn.models import duckn_attrs          # re-validates on the way out

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from duckn.models import SEG_EXTENSION_VERSION, Designation, SegmentationExtension
+from duckn.models import SEG_EXTENSION_VERSION, Designation, Segment, SegmentationExtension
 
 SPEC_PATH = Path(__file__).parent.parent / "docs" / "segmentation-ext-spec.md"
 
@@ -20,7 +20,7 @@ SPEC_PATH = Path(__file__).parent.parent / "docs" / "segmentation-ext-spec.md"
 # -- §7.1 Non-Overlapping Labelmap with Multi-Ontology Designations ----------
 
 EXAMPLE_7_1 = {
-    "version": "0.6",
+    "version": "0.7",
     "source_representation": "binary-labelmap",
     "terminologies": {
         "SCT": {
@@ -137,7 +137,7 @@ EXAMPLE_7_1 = {
 # -- §7.2 Overlapping Segments with Layers -----------------------------------
 
 EXAMPLE_7_2 = {
-    "version": "0.6",
+    "version": "0.7",
     "source_representation": "binary-labelmap",
     "segments": [
         {
@@ -166,13 +166,17 @@ EXAMPLE_7_2 = {
 # -- §7.3 Overlapping Segments with Label Unions ------------------------------
 
 EXAMPLE_7_3 = {
-    "version": "0.6",
+    "version": "0.7",
     "source_representation": "binary-labelmap",
     "segments": [
+        {"id": "liver_only", "name": "Liver outside the tumor", "label_value": 1},
+        {"id": "tumor_only", "name": "Tumor outside the liver", "label_value": 2},
+        {"id": "overlap", "name": "Tumor within the liver", "label_value": 3},
         {
             "id": "Segment_1",
             "name": "Tumor",
-            "label_value": [2, 3],
+            "members": ["tumor_only", "overlap"],
+            "exhaustive": True,
             "color": [0.8, 0.2, 0.2],
             "designations": [
                 {"scheme": "SCT", "code": "108369006", "meaning": "Neoplasm"}
@@ -181,7 +185,8 @@ EXAMPLE_7_3 = {
         {
             "id": "Segment_2",
             "name": "Liver",
-            "label_value": [1, 3],
+            "members": ["liver_only", "overlap"],
+            "exhaustive": True,
             "color": [0.2, 0.6, 0.8],
             "designations": [
                 {"scheme": "SCT", "code": "10200004", "meaning": "Liver"}
@@ -193,7 +198,7 @@ EXAMPLE_7_3 = {
 # -- §7.4 Research Segmentation Without DICOM ---------------------------------
 
 EXAMPLE_7_4 = {
-    "version": "0.6",
+    "version": "0.7",
     "source_representation": "binary-labelmap",
     "terminologies": {
         "FMA": {
@@ -228,7 +233,7 @@ EXAMPLE_7_4 = {
 # test_spec_document_examples_validate below.
 
 EXAMPLE_7_5 = {
-    "version": "0.6",
+    "version": "0.7",
     "source_representation": "binary-labelmap",
     "terminologies": {
         "CCF": {
@@ -241,7 +246,9 @@ EXAMPLE_7_5 = {
         {
             "id": "184",
             "name": "Frontal pole, cerebral cortex",
-            "label_value": ["68", "667"],
+            "members": ["68", "667"],
+            "disjoint": True,
+            "exhaustive": True,
             "color": [0.149, 0.561, 0.271],
             "designations": [
                 {
@@ -275,7 +282,7 @@ EXAMPLE_7_5 = {
 # -- §7.6 Minimal --------------------------------------------------------------
 
 EXAMPLE_7_6 = {
-    "version": "0.6",
+    "version": "0.7",
     "segments": [
         {"id": "S1", "label_value": 1, "name": "Liver"},
         {"id": "S2", "label_value": 2, "name": "Spleen"},
@@ -305,7 +312,7 @@ def test_spec_example_round_trip(name: str, data: dict) -> None:
 
 def test_spec_version_constant_matches_examples() -> None:
     """The version written by converters should match the spec examples."""
-    assert SEG_EXTENSION_VERSION == "0.6"
+    assert SEG_EXTENSION_VERSION == "0.7"
 
 
 def _spec_seg_extensions() -> list[tuple[int, dict]]:
@@ -405,16 +412,39 @@ def test_designation_modifier_depth_one() -> None:
         )
 
 
-def test_label_value_string_references() -> None:
-    """String entries in label_value reference other segments by id."""
+def test_groups_name_their_members() -> None:
+    """0.7: a group lists members; a leaf owns one value. Never both."""
     ext = SegmentationExtension(
-        version="0.6",
+        version="0.7",
         segments=[
-            {"id": "parent", "label_value": [1, "child"]},
+            {"id": "parent", "members": ["own", "child"]},
+            {"id": "own", "label_value": 1},
             {"id": "child", "label_value": 2},
         ],
     )
-    assert ext.segments[0].label_value == [1, "child"]
+    assert ext.segments[0].members == ["own", "child"]
+    assert ext.segments[0].label_value is None and ext.segments[0].is_group
+    with pytest.raises(Exception, match="exactly one of"):
+        Segment(id="both", label_value=1, members=["child"])
+    with pytest.raises(Exception, match="exactly one of"):
+        Segment(id="neither")
+
+
+def test_a_0_6_mixed_label_value_migrates_to_members_and_islands() -> None:
+    """A 0.6 file's `[1, "child"]` becomes a group over a synthesized island
+    leaf for value 1 and the referenced child; the file's version is now 0.7."""
+    ext = SegmentationExtension(
+        version="0.6",
+        segments=[
+            {"id": "parent", "label_value": [1, "child"], "layer": 0},
+            {"id": "child", "label_value": 2},
+        ],
+    )
+    assert ext.version == "0.7"
+    parent = ext.segments[0]
+    assert parent.members == ["label_1", "child"] and parent.layer is None
+    island = ext.segments[-1]
+    assert island.id == "label_1" and island.label_value == 1 and island.layer is None
 
 
 # -- Backward compatibility with seg extension 0.5 and earlier ----------------

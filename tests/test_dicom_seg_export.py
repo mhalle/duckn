@@ -146,8 +146,8 @@ class TestSegmentSequenceIsNeverEmpty:
             tmp_path / "in.zarr",
             data,
             [
-                {"id": "A", "label_value": ["B"]},
-                {"id": "B", "label_value": ["A"]},
+                {"id": "A", "members": ["B"]},
+                {"id": "B", "members": ["A"]},
             ],
         )
         with pytest.raises(ValueError, match="reference"):
@@ -160,7 +160,7 @@ class TestSegmentSequenceIsNeverEmpty:
             tmp_path / "in.zarr",
             data,
             [
-                {"id": "parent", "name": "Parent", "label_value": ["leaf"]},
+                {"id": "parent", "name": "Parent", "members": ["leaf"]},
                 {"id": "leaf", "name": "Leaf", "label_value": 1},
             ],
         )
@@ -173,17 +173,25 @@ class TestSegmentSequenceIsNeverEmpty:
 
 
 class TestUnrepresentableSegmentations:
-    def test_label_union_raises(self, tmp_path):
-        """The island model (§7.3) has no LABELMAP representation."""
+    def test_island_group_exports_its_islands_not_itself(self, tmp_path):
+        """The island model (§7.3): a structure that is a group over islands has
+        no LABELMAP row of its own; its islands export as the segments."""
         data = np.zeros((1, 4, 4), dtype=np.uint8)
         data[0, 0, 0] = 2
+        data[0, 1, 1] = 3
         src = _write_labelmap(
             tmp_path / "in.zarr",
             data,
-            [{"id": "tumor", "name": "Tumor", "label_value": [2, 3]}],
+            [
+                {"id": "tumor_only", "name": "Tumor only", "label_value": 2},
+                {"id": "overlap", "name": "Overlap", "label_value": 3},
+                {"id": "tumor", "name": "Tumor", "members": ["tumor_only", "overlap"]},
+            ],
         )
-        with pytest.raises(ValueError, match="multiple label values"):
-            zarr_to_dicom_seg(src, tmp_path / "out.dcm")
+        out = tmp_path / "out.dcm"
+        zarr_to_dicom_seg(src, out)
+        ds = pydicom.dcmread(str(out))
+        assert [str(s.SegmentLabel) for s in ds.SegmentSequence] == ["Tumor only", "Overlap"]
 
     def test_layered_segment_raises(self, tmp_path):
         data = np.zeros((1, 4, 4), dtype=np.uint8)
