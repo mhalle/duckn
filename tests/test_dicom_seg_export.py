@@ -317,7 +317,6 @@ class TestRoundTrip:
         return arr, arr.attrs["duckn"]["extensions"]["seg"], arr.attrs["duckn"]
 
     def test_binary(self, tmp_path):
-        # BINARY omits empty frames, so a slice with no segment would not come back
         data = np.zeros((2, 2, 4), dtype=np.uint8)
         data[0, 0] = [0, 10, 20, 30]
         data[1, 1] = [10, 0, 0, 20]
@@ -333,6 +332,16 @@ class TestRoundTrip:
         assert seg["segments"][1]["designations"][0]["code"] == "4147007"
         assert np.array_equal(arr[0] == 1, np.isin(data, [10, 30]))
         assert np.array_equal(arr[1] == 1, np.isin(data, [20, 30]))
+
+    def test_slices_empty_in_every_segment_come_back(self, tmp_path):
+        data = np.zeros((5, 2, 4), dtype=np.uint8)
+        data[2, 0] = [0, 10, 20, 30]                   # slices 0, 1, 3, 4 hold nothing
+        ds, _ = _export(tmp_path, data, LIVER_TUMOR)
+        # one frame per segment for slice 2, one empty frame for each other slice
+        assert [n for n, _ in _frames(ds)] == [1, 1, 1, 1, 1, 2]
+        arr, _, duckn = self._back(tmp_path, tmp_path / "out.dcm")
+        assert arr.shape == (2, 5, 2, 4) and duckn["space_origin"] == [0.0, 0.0, 0.0]
+        assert np.array_equal(arr[0] == 1, np.isin(data, [10, 30]))
 
     def test_disjoint_binary_is_one_layer(self, tmp_path):
         data = np.zeros((2, 2, 4), dtype=np.uint8)

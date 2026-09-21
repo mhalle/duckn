@@ -2943,7 +2943,7 @@ def zarr_to_dicom_seg(
     ds.SegmentSequence = Sequence(seg_sequence)
 
     # Frames. A LABELMAP has one per slice (TILED_FULL); the other types have
-    # one per segment and slice, empty frames omitted, each naming its segment.
+    # one per segment and slice, each naming its segment.
     per_frame = []
     frames = []
     if is_labelmap:
@@ -2956,10 +2956,14 @@ def zarr_to_dicom_seg(
             per_frame.append(frame_fg)
             frames.append(plan.frames[k])
     else:
+        # Empty frames are omitted, except that every slice is written at least
+        # once: a reader rebuilds the grid from the frames' positions, so a slice
+        # that is empty in every segment keeps one empty frame, of the first segment.
+        covered = plan.frames.reshape(len(plan.items), n_slices, -1).any(axis=(0, 2))
         for index, planned in enumerate(plan.items):
             for k in range(n_slices):
                 frame = plan.frames[index, k]
-                if not frame.any():
+                if not frame.any() and (index > 0 or covered[k]):
                     continue
                 frame_fg = Dataset()
                 pos_item = Dataset()
@@ -2970,17 +2974,6 @@ def zarr_to_dicom_seg(
                 frame_fg.SegmentIdentificationSequence = Sequence([ident])
                 per_frame.append(frame_fg)
                 frames.append(frame)
-        if not frames:
-            # DICOM needs at least one frame: an empty one for the first segment
-            frame_fg = Dataset()
-            pos_item = Dataset()
-            pos_item.ImagePositionPatient = origin.tolist()
-            frame_fg.PlanePositionSequence = Sequence([pos_item])
-            ident = Dataset()
-            ident.ReferencedSegmentNumber = plan.items[0].number
-            frame_fg.SegmentIdentificationSequence = Sequence([ident])
-            per_frame.append(frame_fg)
-            frames.append(np.zeros((rows, cols), dtype=plan.frames.dtype))
 
     ds.NumberOfFrames = len(frames)
     ds.PerFrameFunctionalGroupsSequence = Sequence(per_frame)
