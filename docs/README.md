@@ -26,6 +26,10 @@ that does not recognize an extension ignores it.
 | Extension | Document | Purpose |
 |---|---|---|
 | `seg` | [segmentation-ext-spec.md](segmentation-ext-spec.md) | Segmentations: segments, label values, designations, DICOM SEG classification. |
+| `seg` 0.8 (draft) | [segmentation-ext-v08-spec.md](segmentation-ext-v08-spec.md) | Proposed next version, not implemented: value sets, roles, labeling scheme, CSS colors; groups, renditions, and cross-walks move outside the file. |
+| `semantic` | [semantic-ext-spec.md](semantic-ext-spec.md) | Domain meaning for bound data: entities, designations, mappings, terminologies, groups and their claims. |
+| `rendition` | [rendition-ext-spec.md](rendition-ext-spec.md) | Presentation choices, in-file or as external stylesheets: named renditions of segments and images — color, opacity, visibility, stacking, window. |
+| `presentation` (draft) | [presentation-extension.md](presentation-extension.md) | Recommended grayscale presentation carried by imaging formats: display windows and inversion. Survives derivation while the quantity does. Not implemented. |
 | `dicom` | [dicom-spec.md](dicom-spec.md) | DICOM provenance — describes the *source object*, never the array it is attached to. |
 | `nifti` | [nifti-spec.md](nifti-spec.md) | NIfTI header provenance. |
 | `dwmri` | [dwi-extension.md](dwi-extension.md) | Diffusion-weighted MRI: gradients, b-values, B-matrices. |
