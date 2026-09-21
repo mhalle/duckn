@@ -136,9 +136,11 @@ def migrate_seg_extension(raw: dict[str, Any]) -> tuple[dict[str, Any], list[Dia
     out.extend(_set_aside_colliding_designations(segs))
 
     # 5. Ids are made tokens. Reported against the new id, the one the file has.
-    new_ids = derive_token_ids([str(s.get("id")) for s in segs])
-    for seg, new_id in zip(segs, new_ids):
-        if new_id != seg.get("id"):
+    # A segment with no id, or one that is not a string, is the model's to refuse.
+    named = [s for s in segs if isinstance(s.get("id"), str)]
+    new_ids = derive_token_ids([s["id"] for s in named])
+    for seg, new_id in zip(named, new_ids):
+        if new_id != seg["id"]:
             _duckn_metadata(seg)["id"] = seg.get("id")
             out.append(_warn("id-changed", About.segment(new_id), f"was {seg.get('id')!r}"))
             out = [_renamed(d, str(seg.get("id")), new_id) for d in out]

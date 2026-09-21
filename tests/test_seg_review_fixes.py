@@ -26,18 +26,20 @@ def _ext(segments, **kw):
 
 
 class TestAccessorAnswersFromOneShape:
-    def test_a_0_6_union_is_a_group_everywhere_the_accessor_looks(self):
+    def test_a_0_6_union_is_shared_values_everywhere_the_accessor_looks(self):
         raw = {"version": "0.6", "segments": [
             {"id": "liver", "name": "Liver", "label_value": [1, 3]},
             {"id": "tumor", "name": "Tumor", "label_value": [2, 3]}]}
         a = SegAccessor(raw)
-        assert a.version == "0.7"
+        assert a.version == "0.8" and a.file_version == "0.6"
         by = {s.id: s for s in a.segments}
-        assert by["liver"].is_group and by["liver"].members == ["label_1", "label_3"]
-        assert by["liver"].label_value is None
-        assert a.name_for(1) == "label 1" and a.name_for(3) == "label 3"
-        assert a.effective_label_values("liver") == {(0, 1), (0, 3)}
-        assert set(a.members_of("tumor")) == {"label_2", "label_3"}    # segments order
+        assert by["liver"].label_values == [1, 3] and a.label_for("Tumor") == [2, 3]
+        assert a.name_for(1) == "Liver"
+        assert [s.id for s in a.segments_for(3)] == ["liver", "tumor"]
+        assert a.name_for(3) == "Tumor"                              # the topmost answers
+        assert a.segment(label_value=3).id == "tumor" and a.segment(label_value=3, layer=1) is None
+        assert a.model.segments[0].effective_value_set == {(0, 1), (0, 3)}
+        assert a.diagnostics == []
         assert raw["segments"][0]["label_value"] == [1, 3]          # the caller's dict is untouched
 
     def test_an_unreadable_dict_is_kept_raw_and_model_says_why(self):
@@ -197,7 +199,7 @@ class TestSecondRound:
             {"id": "a", "label_value": 1, "tags": {"x": "y"},
              "metadata": {"dicom": {"category": {"scheme": "SCT", "code": "1"}}}}]}
         a = SegAccessor(raw)
-        assert a.version == "0.7" and a.file_version == "0.5"
+        assert a.version == "0.8" and a.file_version == "0.5"
         assert a.segments[0].dicom["category"]["code"] == "1"       # the view hands dicts back
         assert a.segments[0].metadata == {"slicer": {"tags": {"x": "y"}}}
         m = a.model.segments[0]

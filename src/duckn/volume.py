@@ -100,7 +100,12 @@ class Volume:
     @property
     def extensions(self) -> Extensions:
         """Typed access to extensions."""
-        return Extensions(self.metadata.extensions)
+        return Extensions(
+            self.metadata.extensions,
+            seg_context=dict(
+                axes=self.metadata.axes, shape=self.raw.shape, dtype=self.raw.dtype
+            ),
+        )
 
     def get_extension(self, name: str) -> Any | None:
         """Get a top-level extension by name, or None if not present."""
