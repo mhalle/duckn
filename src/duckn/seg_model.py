@@ -662,6 +662,35 @@ def undescribed_values(
 # ---------------------------------------------------------------------------
 
 
+def is_token(segment_id: str) -> bool:
+    return bool(_TOKEN_RE.match(segment_id))
+
+
+def derive_token_ids(ids: Sequence[str]) -> list[str]:
+    """Ids made tokens, deterministically (§6.1). An id that is a token is
+    kept, and all of those are reserved first. Each other, in order, has every
+    run of characters outside the token alphabet replaced by ``_``, becomes
+    ``Segment_<index>`` if nothing but ``_`` is left, and takes the first of
+    the suffixes ``_2``, ``_3``, ... that makes it differ from every reserved
+    and every already-derived id."""
+    taken = {i for i in ids if is_token(i)}
+    out: list[str] = []
+    for index, original in enumerate(ids):
+        if is_token(original):
+            out.append(original)
+            continue
+        base = re.sub(r"[^A-Za-z0-9_-]+", "_", original)
+        if not re.search(r"[A-Za-z0-9]", base):
+            base = f"Segment_{index}"
+        candidate, n = base, 1
+        while candidate in taken:
+            n += 1
+            candidate = f"{base}_{n}"
+        taken.add(candidate)
+        out.append(candidate)
+    return out
+
+
 def normalized_for_writing(
     ext: SegmentationExtension,
 ) -> tuple[SegmentationExtension, list[Diagnostic]]:
