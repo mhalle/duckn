@@ -15,7 +15,7 @@ import zarr
 from .models import (
     duckn_attrs,
     AxisKind, AxisMetadata, Centering, DwmriAxisExtension, DwmriExtension,
-    DucknMetadata, SegmentationExtension, SpaceName, _SPACE_ABBREVS,
+    DucknMetadata, SpaceName, _SPACE_ABBREVS,
 )
 from .diagnostics import Diagnostic
 from .dwi_nrrd import parse_dwi_keyvalues, serialize_dwi_extension

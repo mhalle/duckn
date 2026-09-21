@@ -21,21 +21,14 @@ from .convert import _auto_chunks, _build_compressors
 from .zarr_io import _is_zip_path, open_store
 from .models import (
     duckn_attrs,
-    SEG_EXTENSION_VERSION,
     AxisKind,
     AxisMetadata,
     Centering,
     CodedEntry,
-    Designation,
-    DicomClassification,
     DicomExtension,
     DucknMetadata,
     SampleMetadata,
-    Segment,
-    SegmentationExtension,
-    SourceRepresentation,
     SpaceName,
-    TerminologyEntry,
     ValueTransform,
 )
 
@@ -1065,12 +1058,24 @@ def _load_seg(
     z_to_idx = {z: i for i, z in enumerate(z_sorted)}
     n_z = len(z_sorted)
 
-    # Build 4D volume: (n_segments, n_z, rows, cols)
+    # Build 4D volume: (n_segments, n_z, rows, cols), layers in Segment Number order
+    numbers = sorted(int(item.SegmentNumber) for item in ds.SegmentSequence)
+    layer_of = {number: i for i, number in enumerate(numbers)}
     volume = np.zeros((n_segments, n_z, rows, cols), dtype=np.uint8)
     for fr in frame_records:
-        seg_idx = fr["seg_num"] - 1  # 0-based
+        seg_idx = layer_of[fr["seg_num"]]
         z_idx = z_to_idx[fr["z_proj"]]
         volume[seg_idx, z_idx, :, :] = pixel_array[fr["_frame_index"]]
+
+    from .dicom_seg import fractional_slope, seg_import_layout
+
+    if seg_import_layout(ds) == "one-layer":
+        # The object declares its segments disjoint (SegmentsOverlap NO): one
+        # layer, valued by Segment Number (seg spec §6.2).
+        labelmap = np.zeros(volume.shape[1:], dtype=np.uint8 if numbers[-1] <= 255 else np.uint16)
+        for number, i in layer_of.items():
+            labelmap[volume[i] > 0] = number
+        volume = labelmap
 
     # Compute spatial geometry from Z positions
     ps = shared_ps or [1.0, 1.0]
@@ -1112,16 +1117,19 @@ def _load_seg(
         z_to_origin[fr["z_proj"]] = fr["position"]
     seg_bin_samples = [{"origin": z_to_origin[z]} for z in z_sorted]
 
+    # A FRACTIONAL object's stored integers are kept; a linear transform
+    # makes the calibrated values fractions.
+    slope = fractional_slope(ds)
     geometry = DicomImageInfo(
         shape=volume.shape,
-        dtype=np.dtype(np.uint8),
+        dtype=volume.dtype,
         space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
         space_origin=space_origin,
         space_directions=space_directions,
         slice_thickness=slice_thickness,
         samples=seg_bin_samples,
-        rescale_slope=None,
-        rescale_intercept=None,
+        rescale_slope=slope,
+        rescale_intercept=None if slope is None else 0.0,
         rescale_type=None,
     )
 
@@ -1411,202 +1419,25 @@ _LOSSLESS_TRANSFER_SYNTAXES = frozenset({
 
 # SOP Class UID for Segmentation Storage
 _SEG_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.66.4"
-
-# Coding scheme designator → human-readable name, for the terminologies registry.
-_KNOWN_CODING_SCHEMES: dict[str, str] = {
-    "SCT": "SNOMED Clinical Terms",
-    "SRT": "DICOM SR Coding Scheme",
-    "DCM": "DICOM Controlled Terminology",
-    "LN": "LOINC",
-    "UCUM": "Unified Code for Units of Measure",
-    "FMA": "Foundational Model of Anatomy",
-    "NCIt": "NCI Thesaurus",
-    "RADLEX": "RadLex",
-}
-
-
-def _coded_entry_from_sequence(seq: Any) -> CodedEntry | None:
-    """Extract a CodedEntry from a DICOM code sequence item."""
-    if seq is None or len(seq) == 0:
-        return None
-    item = seq[0]
-    scheme = str(getattr(item, "CodingSchemeDesignator", "") or "")
-    code = str(getattr(item, "CodeValue", "") or "")
-    meaning = str(getattr(item, "CodeMeaning", "") or "")
-    if not scheme or not code:
-        return None
-    return CodedEntry(scheme=scheme, code=code, meaning=meaning)
-
+_LABELMAP_SEG_SOP_CLASS_UID = "1.2.840.10008.5.1.4.1.1.66.7"  # Label Map Segmentation
 
 def _is_dicom_seg(ds: Any) -> bool:
     """Check if a dataset is a DICOM Segmentation object."""
     sop_class = str(getattr(getattr(ds, "file_meta", None), "MediaStorageSOPClassUID", ""))
-    if sop_class == _SEG_SOP_CLASS_UID:
+    if sop_class in (_SEG_SOP_CLASS_UID, _LABELMAP_SEG_SOP_CLASS_UID):
         return True
     sop_class2 = str(getattr(ds, "SOPClassUID", ""))
-    if sop_class2 == _SEG_SOP_CLASS_UID:
+    if sop_class2 in (_SEG_SOP_CLASS_UID, _LABELMAP_SEG_SOP_CLASS_UID):
         return True
     return hasattr(ds, "SegmentSequence")
 
 
-def _cielab_to_rgb(L: float, a: float, b: float) -> list[float]:
-    """Convert CIELab (as stored in DICOM, scaled 0-65535) to RGB [0-1]."""
-    import math
+def _extract_seg_extension(ds: Any, *, cielab: str | None = None,
+                           diagnostics: list | None = None) -> Any:
+    """Extract a 0.8 seg extension from a DICOM SEG dataset (seg spec §6.2)."""
+    from .dicom_seg import extract_seg_extension
 
-    # DICOM stores CIELab with L in [0, 65535] mapping to [0, 100],
-    # a and b in [0, 65535] mapping to [-128, 127]
-    L_norm = L * 100.0 / 65535.0
-    a_norm = a * 255.0 / 65535.0 - 128.0
-    b_norm = b * 255.0 / 65535.0 - 128.0
-
-    # CIELab → XYZ (D65 illuminant)
-    fy = (L_norm + 16.0) / 116.0
-    fx = a_norm / 500.0 + fy
-    fz = fy - b_norm / 200.0
-
-    delta = 6.0 / 29.0
-    delta3 = delta ** 3
-
-    x = 0.9505 * (fx ** 3 if fx > delta else (fx - 16.0 / 116.0) * 3 * delta ** 2)
-    y = 1.0000 * (fy ** 3 if fy > delta else (fy - 16.0 / 116.0) * 3 * delta ** 2)
-    z = 1.0890 * (fz ** 3 if fz > delta else (fz - 16.0 / 116.0) * 3 * delta ** 2)
-
-    # XYZ → linear sRGB
-    r_lin = 3.2406 * x - 1.5372 * y - 0.4986 * z
-    g_lin = -0.9689 * x + 1.8758 * y + 0.0415 * z
-    b_lin = 0.0557 * x - 0.2040 * y + 1.0570 * z
-
-    # Linear → sRGB gamma
-    def gamma(c: float) -> float:
-        c = max(0.0, min(1.0, c))
-        return 12.92 * c if c <= 0.0031308 else 1.055 * math.pow(c, 1.0 / 2.4) - 0.055
-
-    return [round(gamma(r_lin), 4), round(gamma(g_lin), 4), round(gamma(b_lin), 4)]
-
-
-def _extract_seg_extension(ds: Any) -> SegmentationExtension | None:
-    """Extract a seg extension from a DICOM SEG dataset."""
-    seg_seq = getattr(ds, "SegmentSequence", None)
-    if seg_seq is None or len(seg_seq) == 0:
-        return None
-
-    # Determine source representation
-    seg_type = str(getattr(ds, "SegmentationType", "BINARY"))
-    if seg_type == "FRACTIONAL":
-        source_rep = SourceRepresentation.FRACTIONAL_LABELMAP
-    else:
-        source_rep = SourceRepresentation.BINARY_LABELMAP
-
-    segments: list[Segment] = []
-    for seg_item in seg_seq:
-        seg_number = int(getattr(seg_item, "SegmentNumber", 0))
-        seg_label = str(getattr(seg_item, "SegmentLabel", ""))
-        seg_id = seg_label or f"Segment_{seg_number}"
-
-        # Color from RecommendedDisplayCIELabValue
-        color = None
-        cielab = getattr(seg_item, "RecommendedDisplayCIELabValue", None)
-        if cielab is not None and len(cielab) == 3:
-            color = _cielab_to_rgb(float(cielab[0]), float(cielab[1]), float(cielab[2]))
-
-        # DICOM classification
-        category = _coded_entry_from_sequence(
-            getattr(seg_item, "SegmentedPropertyCategoryCodeSequence", None)
-        )
-        seg_type_entry = _coded_entry_from_sequence(
-            getattr(seg_item, "SegmentedPropertyTypeCodeSequence", None)
-        )
-        # Type modifier from within the type sequence
-        type_modifier = None
-        type_seq = getattr(seg_item, "SegmentedPropertyTypeCodeSequence", None)
-        if type_seq and len(type_seq) > 0:
-            mod_seq = getattr(type_seq[0], "SegmentedPropertyTypeModifierCodeSequence", None)
-            type_modifier = _coded_entry_from_sequence(mod_seq)
-
-        anatomic_region = _coded_entry_from_sequence(
-            getattr(seg_item, "AnatomicRegionSequence", None)
-        )
-        anatomic_region_modifier = None
-        anat_seq = getattr(seg_item, "AnatomicRegionSequence", None)
-        if anat_seq and len(anat_seq) > 0:
-            mod_seq = getattr(anat_seq[0], "AnatomicRegionModifierSequence", None)
-            anatomic_region_modifier = _coded_entry_from_sequence(mod_seq)
-
-        dicom_class = None
-        if any(x is not None for x in (category, seg_type_entry, type_modifier,
-                                        anatomic_region, anatomic_region_modifier)):
-            dicom_class = DicomClassification(
-                category=category,
-                type=seg_type_entry,
-                type_modifier=type_modifier,
-                anatomic_region=anatomic_region,
-                anatomic_region_modifier=anatomic_region_modifier,
-            )
-
-        seg_kwargs: dict[str, Any] = {"id": seg_id}
-        if seg_type == "LABELMAP":
-            seg_kwargs["label_value"] = seg_number
-        else:
-            seg_kwargs["label_value"] = 1
-            seg_kwargs["layer"] = seg_number - 1  # 0-based layer index
-        if seg_label:
-            seg_kwargs["name"] = seg_label
-        if color is not None:
-            seg_kwargs["color"] = color
-        if dicom_class is not None:
-            seg_kwargs["dicom"] = dicom_class
-
-        # The property type code is the primary concept: surface it as a
-        # designation so ontology lookup does not require DICOM knowledge.
-        if seg_type_entry is not None:
-            modifier = None
-            if type_modifier is not None:
-                modifier = Designation(
-                    scheme=type_modifier.scheme,
-                    code=type_modifier.code,
-                    meaning=type_modifier.meaning,
-                )
-            seg_kwargs["designations"] = [
-                Designation(
-                    scheme=seg_type_entry.scheme,
-                    code=seg_type_entry.code,
-                    meaning=seg_type_entry.meaning,
-                    modifier=modifier,
-                )
-            ]
-
-        segments.append(Segment(**seg_kwargs))
-
-    # Register the coding systems the segments actually reference, matching
-    # what the .seg.nrrd path does (spec §3.1).
-    schemes: set[str] = set()
-    for seg in segments:
-        for des in seg.designations or []:
-            schemes.add(des.scheme)
-            if des.modifier is not None:
-                schemes.add(des.modifier.scheme)
-        if seg.dicom is not None:
-            for entry in (
-                seg.dicom.category,
-                seg.dicom.type,
-                seg.dicom.type_modifier,
-                seg.dicom.anatomic_region,
-                seg.dicom.anatomic_region_modifier,
-            ):
-                if entry is not None:
-                    schemes.add(entry.scheme)
-
-    terminologies = (
-        {s: TerminologyEntry(name=_KNOWN_CODING_SCHEMES.get(s)) for s in sorted(schemes)}
-        or None
-    )
-
-    return SegmentationExtension(
-        version=SEG_EXTENSION_VERSION,
-        source_representation=source_rep,
-        terminologies=terminologies,
-        segments=segments,
-    )
+    return extract_seg_extension(ds, cielab=cielab, diagnostics=diagnostics)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -2015,6 +1846,15 @@ def dicom_to_zarr(
     else:
         dim_names = ["k", "j", "i"]
 
+    # A segmentation's fill_value must be a value its layers describe (seg
+    # spec rule 15): a DICOM LABELMAP has no background unless it names one.
+    fill_value = 0
+    if meta.extensions and "seg" in meta.extensions:
+        from .dicom_seg import seg_fill_value
+        from .seg_model import SegmentationExtension as _Seg08
+
+        fill_value = seg_fill_value(_Seg08.model_validate(meta.extensions["seg"]))
+
     is_zip = _is_zip_path(output_path)
     with open_store(output_path, mode="w", overwrite=overwrite) as store:
         zarr.create_array(
@@ -2025,7 +1865,7 @@ def dicom_to_zarr(
             dimension_names=dim_names,
             attributes=attrs,
             overwrite=False if is_zip else overwrite,
-            fill_value=0,
+            fill_value=fill_value,
         )
 
 
@@ -2872,24 +2712,56 @@ def zarr_to_dicom_seg(
     output_path: str | Path,
     *,
     overwrite: bool = False,
-) -> None:
-    """Convert a duckn 3D labelmap to a DICOM LABELMAP Segmentation.
+    segmentation_type: str | None = None,
+    cielab: str = "d65",
+    default_dicom: Any = None,
+    algorithm_type: str | None = None,
+    algorithm_name: str | None = None,
+    fractional_type: str | None = None,
+    maximum_fractional_value: int = 255,
+    background_dicom: Any = None,
+) -> list[Any]:
+    """Convert a duckn segmentation to a DICOM Segmentation (seg spec §6.2).
 
-    Creates a DICOM Segmentation IOD file using the LABELMAP type
-    (Supplement 243). Each voxel value is a segment number. One frame
-    per slice.
+    Writes ``BINARY`` by default (``FRACTIONAL`` for a fractional labelmap):
+    segments are numbered from 1 in ``segments`` order, each with the voxels of
+    all its values, and may overlap. ``LABELMAP`` (Label Map Segmentation
+    Storage) is written only when asked for, and needs a single nested layer;
+    its pixel data is the array unchanged.
 
     Parameters
     ----------
-    input_path : path to the input duckn Zarr store (3D labelmap)
+    input_path : path to the input duckn Zarr store
     output_path : path for the output .dcm file
     overwrite : if True, overwrite existing file
+    segmentation_type : "BINARY", "FRACTIONAL" or "LABELMAP"; None chooses
+    cielab : "d65" writes RecommendedDisplayCIELabValue as dcmqi-based readers
+        expect and marks the object with ``cielab-d65`` in SoftwareVersions;
+        "d50" writes what the standard intends
+    default_dicom : ``dicom`` content (category, type, algorithm attributes)
+        for segments whose own ``dicom`` field lacks it. DICOM requires a
+        category, a type, and an algorithm type of every segment, and they are
+        not invented: the export fails where neither the file nor the caller
+        supplies one.
+    algorithm_type, algorithm_name : shorthand for those two fields of
+        ``default_dicom``
+    fractional_type : "PROBABILITY" or "OCCUPANCY", when the extension's
+        ``metadata.dicom`` does not record it
+    background_dicom : ``dicom`` content for a LABELMAP's background item when
+        the background is the implicit 0 and has no segment of its own
+
+    Returns what the export reports (seg spec §10).
     """
     _require_pydicom()
     import pydicom
     from pydicom.dataset import Dataset
     from pydicom.sequence import Sequence
     from pydicom.uid import generate_uid, ExplicitVRLittleEndian
+
+    from .dicom_seg import DICOM_D65_MARKER, code_meaning, plan_dicom_seg, resolve_item_content
+    from .seg_model import Segment as Segment08, SegmentationExtension as SegExt08
+    from .seg_read import read_seg_extension
+    from .zarr_io import _compose_linear_transforms, has_nonlinear_transforms
 
     input_path = Path(input_path)
     output_path = Path(output_path)
@@ -2900,21 +2772,21 @@ def zarr_to_dicom_seg(
     with open_store(input_path, mode="r") as store:
         arr = zarr.open_array(store, mode="r")
         data = arr[:]
+        fill_value = arr.fill_value
         duckn_attrs = arr.attrs.get("duckn", {})
         meta = DucknMetadata(**duckn_attrs)
 
-    if data.ndim != 3:
-        raise ValueError(f"Expected 3D labelmap, got {data.ndim}D")
+    axes = list(meta.axes or [])
+    list_axis = next((i for i, ax in enumerate(axes) if ax.kind == AxisKind.LIST), None)
+    spatial = [ax for ax in axes if ax.space_direction is not None]
+    if len(spatial) != 3 or data.ndim != 3 + (list_axis is not None):
+        raise ValueError(
+            f"expected three spatial axes and at most one 'list' axis, got a {data.ndim}D array"
+        )
 
-    n_slices, rows, cols = data.shape
-
-    # Decompose geometry
-    if not meta.axes or len(meta.axes) < 3:
-        raise ValueError("Missing spatial axis metadata")
-
-    slice_dir = np.array(meta.axes[0].space_direction)
-    row_dir = np.array(meta.axes[1].space_direction)
-    col_dir = np.array(meta.axes[2].space_direction)
+    slice_dir = np.array(spatial[0].space_direction)
+    row_dir = np.array(spatial[1].space_direction)
+    col_dir = np.array(spatial[2].space_direction)
 
     row_spacing = float(np.linalg.norm(row_dir))
     col_spacing = float(np.linalg.norm(col_dir))
@@ -2926,123 +2798,76 @@ def zarr_to_dicom_seg(
 
     iop = row_cosines.tolist() + col_cosines.tolist()
 
-    # Get segment metadata
-    seg_ext = None
-    segments = []
+    # Segment metadata: any supported version, migrated and checked on the way in.
+    diagnostics: list[Any] = []
     if meta.extensions and "seg" in meta.extensions:
-        seg_ext = SegmentationExtension(**meta.extensions["seg"])
-        segments = seg_ext.segments
-
-    # --- Plan segment numbering ------------------------------------------
-    # In a LABELMAP segmentation each voxel value *is* a segment number, and
-    # DICOM requires segment numbers to start at 1 and increase monotonically
-    # (PS3.3 C.8.20.2.1). duckn label values are arbitrary — sparse atlas ids,
-    # values not starting at 1 — so build a label → segment-number map and
-    # remap the voxel data to match it.
-    present = {int(v) for v in np.unique(data)} - {0}
-
-    plan: list[tuple[Segment, int]] = []
-    reference_only: list[str] = []
-    for seg in segments:
-        labels = [seg.label_value] if seg.label_value is not None else []
-
-        if not labels:
-            # A group: it owns no voxels of its own, so it has no row of its own
-            # here - its member leaves export instead. When the group is what
-            # carries the anatomy (a migrated 0.6 island union, whose islands are
-            # named "label <v>"), say so: the output keeps the voxels and loses
-            # the names, colors, designations and classification.
-            reference_only.append(seg.id)
-            if seg.name or seg.designations or seg.dicom:
-                warnings.warn(
-                    f"segment {seg.id!r} ({seg.name or 'unnamed'}) is a group and has no "
-                    "row in a DICOM LABELMAP segmentation; its member leaves export "
-                    "without its name, color, designations or classification",
-                    stacklevel=2,
-                )
-            continue
-        if seg.layer not in (None, 0):
-            raise ValueError(
-                f"segment {seg.id!r} is on layer {seg.layer}: layered "
-                "(overlapping) segmentations cannot be represented in a DICOM "
-                "LABELMAP segmentation"
-            )
-        plan.append((seg, labels[0]))
-
-    claimed: dict[int, str] = {}
-    for seg, label in plan:
-        if label in claimed:
-            raise ValueError(
-                f"segments {claimed[label]!r} and {seg.id!r} both claim label "
-                f"value {label} in the same layer"
-            )
-        claimed[label] = seg.id
-
-    if not plan:
-        if reference_only:
-            raise ValueError(
-                "every segment is defined only by reference to other segments "
-                f"({', '.join(reference_only)}); none owns voxel data to export"
-            )
-        # No segment metadata at all: synthesize one segment per label present
-        # so the required Segment Sequence is never empty.
-        plan = [
-            (Segment(id=f"Segment_{v}", name=f"Segment {v}", label_value=v), v)
-            for v in sorted(present)
-        ]
-
-    if not plan:
-        raise ValueError(
-            "segmentation is empty: a DICOM Segmentation requires at least one "
-            "segment (Segment Sequence is Type 1)"
+        seg_ext, found = read_seg_extension(
+            meta.extensions["seg"], axes=axes, shape=data.shape, dtype=data.dtype,
+            fill_value=fill_value,
         )
+        diagnostics.extend(found)
+    else:
+        # No segment metadata at all: one segment per value present, so the
+        # required Segment Sequence is never empty.
+        present = sorted({int(v) for v in np.unique(data)} - {0})
+        seg_ext = SegExt08(version="0.8", segments=[
+            Segment08(id=f"Segment_{v}", name=f"Segment {v}", label_values=[v]) for v in present
+        ])
 
-    label_to_number = {label: i + 1 for i, (_, label) in enumerate(plan)}
+    value_scale = (1.0, 0.0)
+    if meta.value_transforms:
+        if has_nonlinear_transforms(meta.value_transforms):
+            raise ValueError("a non-linear value transform cannot be exported to DICOM SEG")
+        value_scale = _compose_linear_transforms(meta.value_transforms)
 
-    undescribed = sorted(present - set(label_to_number))
-    if undescribed:
-        warnings.warn(
-            f"label values {undescribed} appear in the voxel data but are not "
-            "described by any segment; they are written as background (0)",
-            stacklevel=2,
-        )
-
-    if label_to_number != {v: v for v in label_to_number} or undescribed:
-        uniq, inverse = np.unique(data, return_inverse=True)
-        lut = np.array(
-            [label_to_number.get(int(v), 0) for v in uniq], dtype=np.uint32
-        )
-        data = lut[inverse].reshape(data.shape)
-
-    data = data.astype(np.uint16 if len(plan) > 255 else np.uint8)
+    plan = plan_dicom_seg(
+        seg_ext, data, list_axis=list_axis,
+        segmentation_type=segmentation_type,  # type: ignore[arg-type]
+        cielab=cielab,  # type: ignore[arg-type]
+        value_scale=value_scale,
+        maximum_fractional_value=maximum_fractional_value,
+        fractional_type=fractional_type,
+        background_dicom=background_dicom,
+    )
+    diagnostics.extend(plan.diagnostics)
+    is_labelmap = plan.segmentation_type == "LABELMAP"
+    n_slices, rows, cols = plan.frames.shape[-3:]
 
     # Build DICOM dataset
     ds = Dataset()
-    sop_class_uid = "1.2.840.10008.5.1.4.1.1.66.4"  # Segmentation Storage
+    sop_class_uid = plan.sop_class_uid
     sop_instance_uid = generate_uid()
 
     ds.SOPClassUID = sop_class_uid
     ds.SOPInstanceUID = sop_instance_uid
     ds.Modality = "SEG"
     ds.Manufacturer = "duckn"
-    ds.SegmentationType = "LABELMAP"
+    ds.SegmentationType = plan.segmentation_type
     ds.ContentLabel = "DUCKN_SEG"
-    ds.ContentDescription = "duckn segmentation labelmap"
+    ds.ContentDescription = "duckn segmentation"
+    ds.SegmentsOverlap = plan.segments_overlap
+    if plan.segmentation_type == "FRACTIONAL":
+        ds.SegmentationFractionalType = plan.fractional_type
+        ds.MaximumFractionalValue = plan.maximum_fractional_value
+    if plan.pixel_padding_value is not None:
+        ds.PixelPaddingValue = plan.pixel_padding_value
+    if plan.wrote_d65:
+        # How an exporter following the seg spec marks the D65 CIELab encoding
+        versions = [v for v in [getattr(ds, "SoftwareVersions", None)] if v]
+        if DICOM_D65_MARKER not in versions:
+            versions.append(DICOM_D65_MARKER)
+        ds.SoftwareVersions = versions
 
+    binary = plan.segmentation_type == "BINARY"
     ds.Rows = rows
     ds.Columns = cols
-    ds.NumberOfFrames = n_slices
-    ds.BitsAllocated = 8 if data.dtype == np.uint8 else 16
+    ds.BitsAllocated = 1 if binary else 8 * plan.frames.dtype.itemsize
     ds.BitsStored = ds.BitsAllocated
     ds.HighBit = ds.BitsAllocated - 1
     ds.PixelRepresentation = 0
     ds.SamplesPerPixel = 1
     ds.PhotometricInterpretation = "MONOCHROME2"
     ds.LossyImageCompression = "00"
-    ds.SegmentsOverlap = "NO"
-
-    # Dimension Organization
-    ds.DimensionOrganizationType = "TILED_FULL"
 
     # Shared Functional Groups
     shared_fg = Dataset()
@@ -3052,86 +2877,121 @@ def zarr_to_dicom_seg(
 
     measures_item = Dataset()
     measures_item.PixelSpacing = [row_spacing, col_spacing]
-    measures_item.SliceThickness = meta.axes[0].thickness or slice_spacing
+    measures_item.SliceThickness = spatial[0].thickness or slice_spacing
     measures_item.SpacingBetweenSlices = slice_spacing
     shared_fg.PixelMeasuresSequence = Sequence([measures_item])
 
     ds.SharedFunctionalGroupsSequence = Sequence([shared_fg])
 
     # Segment Sequence
-    def _code_item(entry: CodedEntry, seg: Segment, field: str) -> Dataset:
+    def _code_item(entry: CodedEntry, seg: Any, field: str) -> Dataset:
         item = Dataset()
         item.CodeValue = entry.code
         item.CodingSchemeDesignator = entry.scheme
-        # CodeMeaning is Type 1. It is a property of the *code*, so the only
-        # honest fallback is the segment's own name — never its id, which
-        # would publish an identifier as if it were the concept's meaning.
-        meaning = entry.meaning or seg.name
-        if not meaning:
-            raise ValueError(
-                f"segment {seg.id!r}: dicom.{field} ({entry.scheme}:{entry.code}) "
-                "has no 'meaning' and the segment has no 'name'; DICOM requires "
-                "CodeMeaning for every coded entry"
-            )
-        item.CodeMeaning = meaning
+        item.CodeMeaning = code_meaning(entry, seg, field)
         return item
 
     seg_sequence = []
-    for seg, source_label in plan:
+    for planned in plan.items:
+        seg = planned.segment
+        dicom_class = resolve_item_content(
+            planned, default_dicom=default_dicom,
+            algorithm_type=algorithm_type, algorithm_name=algorithm_name,
+        )
         seg_item = Dataset()
-        seg_item.SegmentNumber = label_to_number[source_label]
-        seg_item.SegmentLabel = seg.name or seg.id
-        seg_item.SegmentAlgorithmType = "AUTOMATIC"
-        seg_item.SegmentAlgorithmName = "duckn"
+        seg_item.SegmentNumber = planned.number
+        seg_item.SegmentLabel = planned.label
+        seg_item.SegmentAlgorithmType = dicom_class.algorithm_type
+        if dicom_class.algorithm_name:
+            seg_item.SegmentAlgorithmName = dicom_class.algorithm_name
+        if planned.cielab is not None:
+            seg_item.RecommendedDisplayCIELabValue = list(planned.cielab)
 
-        # Restore DICOM classification if present
-        dicom_class = seg.dicom
-        if dicom_class is not None:
-            if dicom_class.category is not None:
-                seg_item.SegmentedPropertyCategoryCodeSequence = Sequence(
-                    [_code_item(dicom_class.category, seg, "category")]
+        seg_item.SegmentedPropertyCategoryCodeSequence = Sequence(
+            [_code_item(dicom_class.category, seg, "category")]
+        )
+        type_item = _code_item(dicom_class.type, seg, "type")
+        if dicom_class.type_modifier is not None:
+            type_item.SegmentedPropertyTypeModifierCodeSequence = Sequence(
+                [_code_item(dicom_class.type_modifier, seg, "type_modifier")]
+            )
+        seg_item.SegmentedPropertyTypeCodeSequence = Sequence([type_item])
+        if dicom_class.anatomic_region is not None:
+            anat_item = _code_item(dicom_class.anatomic_region, seg, "anatomic_region")
+            if dicom_class.anatomic_region_modifier is not None:
+                anat_item.AnatomicRegionModifierSequence = Sequence(
+                    [
+                        _code_item(
+                            dicom_class.anatomic_region_modifier,
+                            seg,
+                            "anatomic_region_modifier",
+                        )
+                    ]
                 )
-            if dicom_class.type is not None:
-                type_item = _code_item(dicom_class.type, seg, "type")
-                if dicom_class.type_modifier is not None:
-                    type_item.SegmentedPropertyTypeModifierCodeSequence = Sequence(
-                        [_code_item(dicom_class.type_modifier, seg, "type_modifier")]
-                    )
-                seg_item.SegmentedPropertyTypeCodeSequence = Sequence([type_item])
-            if dicom_class.anatomic_region is not None:
-                anat_item = _code_item(dicom_class.anatomic_region, seg, "anatomic_region")
-                if dicom_class.anatomic_region_modifier is not None:
-                    anat_item.AnatomicRegionModifierSequence = Sequence(
-                        [
-                            _code_item(
-                                dicom_class.anatomic_region_modifier,
-                                seg,
-                                "anatomic_region_modifier",
-                            )
-                        ]
-                    )
-                seg_item.AnatomicRegionSequence = Sequence([anat_item])
+            seg_item.AnatomicRegionSequence = Sequence([anat_item])
+
+        kept = (seg.metadata or {}).get("dicom") or {}
+        if kept.get("SegmentDescription"):
+            seg_item.SegmentDescription = kept["SegmentDescription"]
+        if kept.get("TrackingID") and kept.get("TrackingUID"):
+            # written only as a pair
+            seg_item.TrackingID = kept["TrackingID"]
+            seg_item.TrackingUID = kept["TrackingUID"]
 
         seg_sequence.append(seg_item)
 
     ds.SegmentSequence = Sequence(seg_sequence)
 
-    # Per-Frame Functional Groups
+    # Frames. A LABELMAP has one per slice (TILED_FULL); the other types have
+    # one per segment and slice, empty frames omitted, each naming its segment.
     per_frame = []
-    for k in range(n_slices):
-        frame_fg = Dataset()
+    frames = []
+    if is_labelmap:
+        ds.DimensionOrganizationType = "TILED_FULL"
+        for k in range(n_slices):
+            frame_fg = Dataset()
+            pos_item = Dataset()
+            pos_item.ImagePositionPatient = (origin + k * slice_dir).tolist()
+            frame_fg.PlanePositionSequence = Sequence([pos_item])
+            per_frame.append(frame_fg)
+            frames.append(plan.frames[k])
+    else:
+        for index, planned in enumerate(plan.items):
+            for k in range(n_slices):
+                frame = plan.frames[index, k]
+                if not frame.any():
+                    continue
+                frame_fg = Dataset()
+                pos_item = Dataset()
+                pos_item.ImagePositionPatient = (origin + k * slice_dir).tolist()
+                frame_fg.PlanePositionSequence = Sequence([pos_item])
+                ident = Dataset()
+                ident.ReferencedSegmentNumber = planned.number
+                frame_fg.SegmentIdentificationSequence = Sequence([ident])
+                per_frame.append(frame_fg)
+                frames.append(frame)
+        if not frames:
+            # DICOM needs at least one frame: an empty one for the first segment
+            frame_fg = Dataset()
+            pos_item = Dataset()
+            pos_item.ImagePositionPatient = origin.tolist()
+            frame_fg.PlanePositionSequence = Sequence([pos_item])
+            ident = Dataset()
+            ident.ReferencedSegmentNumber = plan.items[0].number
+            frame_fg.SegmentIdentificationSequence = Sequence([ident])
+            per_frame.append(frame_fg)
+            frames.append(np.zeros((rows, cols), dtype=plan.frames.dtype))
 
-        pos_item = Dataset()
-        frame_pos = origin + k * slice_dir
-        pos_item.ImagePositionPatient = frame_pos.tolist()
-        frame_fg.PlanePositionSequence = Sequence([pos_item])
-
-        per_frame.append(frame_fg)
-
+    ds.NumberOfFrames = len(frames)
     ds.PerFrameFunctionalGroupsSequence = Sequence(per_frame)
 
-    # Pixel data
-    ds.PixelData = data.tobytes()
+    # Pixel data: BINARY is one bit per pixel, packed across frame boundaries
+    stacked = np.stack(frames)
+    if binary:
+        packed = np.packbits(stacked.astype(bool).ravel(), bitorder="little").tobytes()
+    else:
+        packed = stacked.tobytes()
+    ds.PixelData = packed + (b"\x00" if len(packed) % 2 else b"")
 
     # File Meta
     ds.file_meta = Dataset()
@@ -3145,6 +3005,7 @@ def zarr_to_dicom_seg(
     ds.is_implicit_VR = False
 
     pydicom.dcmwrite(str(output_path), ds, write_like_original=False)
+    return diagnostics
 
 
 # ---------------------------------------------------------------------------

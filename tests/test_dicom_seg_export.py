@@ -1,10 +1,5 @@
-"""Tests for zarr_to_dicom_seg (duckn labelmap → DICOM LABELMAP Segmentation).
-
-The export writes a LABELMAP-type Segmentation, where each voxel value *is*
-a segment number. DICOM requires segment numbers to start at 1 and increase
-monotonically (PS3.3 C.8.20.2.1), while duckn label values are arbitrary, so
-the exporter remaps the voxel data — these tests pin that contract down.
-"""
+"""Tests for the DICOM Segmentation mapping of seg 0.8 (spec §6.2): export as
+BINARY by default, LABELMAP on request, FRACTIONAL; import; and the round trip."""
 
 from __future__ import annotations
 
@@ -14,326 +9,362 @@ import zarr
 
 pydicom = pytest.importorskip("pydicom")
 
-from duckn.dicom_convert import zarr_to_dicom_seg  # noqa: E402
-from duckn.models import SEG_EXTENSION_VERSION  # noqa: E402
+from duckn.diagnostics import About  # noqa: E402
+from duckn.dicom_convert import dicom_to_zarr, zarr_to_dicom_seg  # noqa: E402
+from duckn.dicom_seg import LABELMAP_SEG_SOP_CLASS_UID, SEG_SOP_CLASS_UID  # noqa: E402
+
+BODY = {"scheme": "SCT", "code": "123037004", "meaning": "Body structure"}
+KIDNEY = {"scheme": "SCT", "code": "64033007", "meaning": "Kidney"}
+MASS = {"scheme": "SCT", "code": "4147007", "meaning": "Mass"}
+DICOM = {"category": BODY, "type": KIDNEY, "algorithm_type": "MANUAL"}
+DEFAULTS = dict(default_dicom={"category": BODY, "type": MASS}, algorithm_type="MANUAL")
+
+_SPACE = [
+    {"kind": "space", "centering": "cell", "space_direction": [0, 0, 2.0], "unit": "mm"},
+    {"kind": "space", "centering": "cell", "space_direction": [0, 1.0, 0], "unit": "mm"},
+    {"kind": "space", "centering": "cell", "space_direction": [1.0, 0, 0], "unit": "mm"},
+]
 
 
-def _write_labelmap(path, data, segments, *, extra_ext=None):
-    """Write a minimal 3D duckn labelmap store with a seg extension."""
-    arr = zarr.create_array(
-        store=str(path),
-        shape=data.shape,
-        dtype=data.dtype,
-        chunks=data.shape,
-        zarr_format=3,
-    )
+def _write(path, data, segments, *, version="0.8", layered=False, fill_value=0, **ext):
+    """Write a minimal duckn segmentation store."""
+    arr = zarr.create_array(store=str(path), shape=data.shape, dtype=data.dtype,
+                            chunks=data.shape, zarr_format=3, fill_value=fill_value)
     arr[:] = data
-    ext = {"version": SEG_EXTENSION_VERSION, "source_representation": "binary-labelmap"}
-    if segments is not None:
-        ext["segments"] = segments
-    if extra_ext:
-        ext.update(extra_ext)
-    arr.attrs["duckn"] = {
+    duckn = {
         "version": "1.0",
         "space": "left-posterior-superior",
         "space_origin": [0.0, 0.0, 0.0],
-        "intent": "label-map",
-        "axes": [
-            {"kind": "space", "centering": "cell", "space_direction": [0, 0, 2.0], "unit": "mm"},
-            {"kind": "space", "centering": "cell", "space_direction": [0, 1.0, 0], "unit": "mm"},
-            {"kind": "space", "centering": "cell", "space_direction": [1.0, 0, 0], "unit": "mm"},
-        ],
-        "extensions": {"seg": ext} if segments is not None or extra_ext else {},
+        "axes": ([{"kind": "list"}] if layered else []) + _SPACE,
     }
+    if segments is not None:
+        ext.setdefault("terminologies", {"SCT": {"name": "SNOMED Clinical Terms",
+                                                 "uri": "http://snomed.info/sct"}})
+        duckn["extensions"] = {"seg": {"version": version, "segments": segments, **ext}}
+    arr.attrs["duckn"] = duckn
     return path
 
 
-def _seg_numbers(ds):
-    return [int(item.SegmentNumber) for item in ds.SegmentSequence]
+def _export(tmp_path, data, segments, **kwargs):
+    store_kwargs = {k: kwargs.pop(k) for k in list(kwargs)
+                    if k in ("version", "layered", "fill_value", "implicit_background",
+                             "source_representation", "metadata")}
+    n = len(list(tmp_path.glob("in*.zarr")))
+    src = _write(tmp_path / f"in{n}.zarr", data, segments, **store_kwargs)
+    out = tmp_path / "out.dcm"
+    kwargs.setdefault("overwrite", True)
+    reported = zarr_to_dicom_seg(src, out, **kwargs)
+    return pydicom.dcmread(str(out)), reported
 
 
-class TestSegmentNumbering:
-    def test_sparse_labels_are_renumbered_from_one(self, tmp_path):
-        """Atlas-style sparse ids become 1..N, and the voxels follow."""
-        data = np.zeros((2, 4, 4), dtype=np.uint16)
-        data[0, 0, 0] = 68
-        data[0, 1, 1] = 667
-        src = _write_labelmap(
-            tmp_path / "in.zarr",
-            data,
-            [
-                {"id": "a", "name": "Layer 1", "label_value": 68},
-                {"id": "b", "name": "Layer 2/3", "label_value": 667},
-            ],
-        )
-        out = tmp_path / "out.dcm"
-        zarr_to_dicom_seg(src, out)
-
-        ds = pydicom.dcmread(str(out))
-        assert _seg_numbers(ds) == [1, 2]
-
-        pixels = np.frombuffer(ds.PixelData, dtype=np.uint8).reshape(data.shape)
-        assert pixels[0, 0, 0] == 1  # was 68
-        assert pixels[0, 1, 1] == 2  # was 667
-        assert pixels.max() == 2
-
-    def test_numbering_is_monotonic_regardless_of_segment_order(self, tmp_path):
-        """A high label listed first must not produce a descending sequence."""
-        data = np.zeros((1, 4, 4), dtype=np.uint8)
-        data[0, 0, 0] = 3
-        data[0, 0, 1] = 1
-        src = _write_labelmap(
-            tmp_path / "in.zarr",
-            data,
-            [
-                {"id": "high", "name": "Three", "label_value": 3},
-                {"id": "low", "name": "One", "label_value": 1},
-            ],
-        )
-        out = tmp_path / "out.dcm"
-        zarr_to_dicom_seg(src, out)
-
-        ds = pydicom.dcmread(str(out))
-        numbers = _seg_numbers(ds)
-        assert numbers == [1, 2]
-        assert numbers == sorted(numbers)
-        labels = [str(i.SegmentLabel) for i in ds.SegmentSequence]
-        assert labels == ["Three", "One"]
-
-        # The voxel that was label 3 now carries this segment's new number.
-        pixels = np.frombuffer(ds.PixelData, dtype=np.uint8).reshape(data.shape)
-        assert pixels[0, 0, 0] == 1
-        assert pixels[0, 0, 1] == 2
-
-    def test_identity_mapping_leaves_data_untouched(self, tmp_path):
-        data = np.zeros((1, 4, 4), dtype=np.uint8)
-        data[0, 0, 0] = 1
-        data[0, 0, 1] = 2
-        src = _write_labelmap(
-            tmp_path / "in.zarr",
-            data,
-            [
-                {"id": "a", "name": "A", "label_value": 1},
-                {"id": "b", "name": "B", "label_value": 2},
-            ],
-        )
-        out = tmp_path / "out.dcm"
-        zarr_to_dicom_seg(src, out)
-
-        ds = pydicom.dcmread(str(out))
-        assert _seg_numbers(ds) == [1, 2]
-        pixels = np.frombuffer(ds.PixelData, dtype=np.uint8).reshape(data.shape)
-        np.testing.assert_array_equal(pixels, data)
+def _codes(diagnostics):
+    return [(d.code, d.about) for d in diagnostics]
 
 
-class TestSegmentSequenceIsNeverEmpty:
+def _frames(ds):
+    """(segment number, frame) pairs of a BINARY object, unpacked."""
+    n = int(ds.NumberOfFrames)
+    bits = np.unpackbits(np.frombuffer(ds.PixelData, dtype=np.uint8), bitorder="little")
+    frames = bits[: n * ds.Rows * ds.Columns].reshape(n, ds.Rows, ds.Columns)
+    numbers = [int(fg.SegmentIdentificationSequence[0].ReferencedSegmentNumber)
+               for fg in ds.PerFrameFunctionalGroupsSequence]
+    return list(zip(numbers, frames))
+
+
+LIVER_TUMOR = [
+    {"id": "liver", "name": "Liver", "label_values": [10, 30], "color": "#dd8265", "dicom": DICOM},
+    {"id": "tumor", "name": "Tumor", "label_values": [20, 30], "dicom": {**DICOM, "type": MASS}},
+]
+
+
+class TestBinary:
+    def test_default_type_numbers_from_one_and_allows_overlap(self, tmp_path):
+        data = np.zeros((1, 2, 4), dtype=np.uint8)
+        data[0, 0] = [0, 10, 20, 30]
+        ds, reported = _export(tmp_path, data, LIVER_TUMOR)
+        assert ds.SegmentationType == "BINARY" and ds.SOPClassUID == SEG_SOP_CLASS_UID
+        assert ds.BitsAllocated == 1
+        assert [int(i.SegmentNumber) for i in ds.SegmentSequence] == [1, 2]
+        assert [str(i.SegmentLabel) for i in ds.SegmentSequence] == ["Liver", "Tumor"]
+        assert ds.SegmentsOverlap == "YES"
+        frames = dict(_frames(ds))
+        assert frames[1][0].tolist() == [0, 1, 0, 1] and frames[2][0].tolist() == [0, 0, 1, 1]
+        assert reported == []
+
+    def test_segments_overlap_values(self, tmp_path):
+        data = np.zeros((1, 2, 4), dtype=np.uint8)
+        data[0, 0] = [0, 10, 20, 0]            # the shared value 30 does not occur
+        ds, _ = _export(tmp_path, data, LIVER_TUMOR)
+        assert ds.SegmentsOverlap == "UNDEFINED"
+        disjoint = [{**LIVER_TUMOR[0], "label_values": [10]}, {**LIVER_TUMOR[1], "label_values": [20]}]
+        ds, _ = _export(tmp_path, data, disjoint)
+        assert ds.SegmentsOverlap == "NO"
+
+    def test_layers_are_written_not_refused(self, tmp_path):
+        data = np.zeros((2, 1, 2, 2), dtype=np.uint8)
+        data[0, 0, 0, 0] = data[1, 0, 0, 0] = 1
+        segs = [{"id": "a", "label_values": [1], "dicom": DICOM},
+                {"id": "b", "label_values": [1], "layer": 1, "dicom": DICOM}]
+        ds, _ = _export(tmp_path, data, segs, layered=True)
+        assert [n for n, _ in _frames(ds)] == [1, 2] and ds.SegmentsOverlap == "UNDEFINED"
+
+    def test_roles(self, tmp_path):
+        data = np.array([[[0, 1, 9, 9]]], dtype=np.uint8)
+        segs = [{"id": "bg", "name": "Air", "label_values": [0], "role": "background"},
+                {"id": "a", "label_values": [1], "dicom": DICOM},
+                {"id": "unk", "label_values": [9], "role": "unknown", "dicom": DICOM}]
+        ds, reported = _export(tmp_path, data, segs)
+        assert [str(i.SegmentLabel) for i in ds.SegmentSequence] == ["a", "unk"]
+        assert _codes(reported) == [("background-not-written", About.segment("bg")),
+                                    ("role-lost", About.segment("unk"))]
+
+    def test_an_older_store_exports(self, tmp_path):
+        data = np.array([[[0, 5]]], dtype=np.uint8)
+        segs = [{"id": "a", "name": "A", "label_value": 5, "color": [1.0, 0.0, 0.0],
+                 "dicom": {"category": BODY, "type": KIDNEY}}]
+        ds, _ = _export(tmp_path, data, segs, version="0.7", algorithm_type="MANUAL")
+        assert [int(i.SegmentNumber) for i in ds.SegmentSequence] == [1]
+
     def test_no_seg_extension_synthesizes_segments(self, tmp_path):
-        """Segment Sequence is Type 1, so a bare labelmap still gets rows."""
-        data = np.zeros((1, 4, 4), dtype=np.uint8)
-        data[0, 0, 0] = 1
-        data[0, 0, 1] = 5
-        src = _write_labelmap(tmp_path / "in.zarr", data, None)
-        out = tmp_path / "out.dcm"
-        zarr_to_dicom_seg(src, out)
+        data = np.array([[[0, 3, 7]]], dtype=np.uint8)
+        ds, _ = _export(tmp_path, data, None, **DEFAULTS)
+        assert [str(i.SegmentLabel) for i in ds.SegmentSequence] == ["Segment 3", "Segment 7"]
 
-        ds = pydicom.dcmread(str(out))
-        assert _seg_numbers(ds) == [1, 2]
-        assert len(ds.SegmentSequence) == 2
+    def test_nothing_to_write_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="at least one segment"):
+            _export(tmp_path, np.zeros((1, 2, 2), dtype=np.uint8), None, **DEFAULTS)
 
-    def test_all_reference_only_segments_raises(self, tmp_path):
-        data = np.zeros((1, 4, 4), dtype=np.uint8)
-        src = _write_labelmap(
-            tmp_path / "in.zarr",
-            data,
-            [
-                {"id": "A", "members": ["B"]},
-                {"id": "B", "members": ["A"]},
-            ],
-        )
-        with pytest.raises(ValueError, match="reference"):
-            zarr_to_dicom_seg(src, tmp_path / "out.dcm")
-
-    def test_reference_only_segment_is_skipped_but_leaves_survive(self, tmp_path):
-        data = np.zeros((1, 4, 4), dtype=np.uint8)
-        data[0, 0, 0] = 1
-        src = _write_labelmap(
-            tmp_path / "in.zarr",
-            data,
-            [
-                {"id": "parent", "name": "Parent", "members": ["leaf"]},
-                {"id": "leaf", "name": "Leaf", "label_value": 1},
-            ],
-        )
-        out = tmp_path / "out.dcm"
-        zarr_to_dicom_seg(src, out)
-
-        ds = pydicom.dcmread(str(out))
-        assert _seg_numbers(ds) == [1]
-        assert str(ds.SegmentSequence[0].SegmentLabel) == "Leaf"
+    def test_label_falls_back_and_is_truncated(self, tmp_path):
+        data = np.array([[[0, 1, 2]]], dtype=np.uint8)
+        segs = [{"id": "a", "label_values": [1], "dicom": DICOM,
+                 "designations": [{"scheme": "SCT", "code": "1", "meaning": "x" * 70}]},
+                {"id": "only-an-id", "label_values": [2],
+                 "dicom": {"category": BODY, "type": {"scheme": "SCT", "code": "2", "meaning": "m"},
+                           "algorithm_type": "MANUAL"}}]
+        ds, reported = _export(tmp_path, data, segs)
+        assert [str(i.SegmentLabel) for i in ds.SegmentSequence] == ["x" * 64, "only-an-id"]
+        assert _codes(reported) == [("label-truncated", About.segment("a"))]
 
 
-class TestUnrepresentableSegmentations:
-    def test_island_group_exports_its_islands_not_itself(self, tmp_path):
-        """The island model (§7.3): a structure that is a group over islands has
-        no LABELMAP row of its own; its islands export as the segments."""
-        data = np.zeros((1, 4, 4), dtype=np.uint8)
-        data[0, 0, 0] = 2
-        data[0, 1, 1] = 3
-        src = _write_labelmap(
-            tmp_path / "in.zarr",
-            data,
-            [
-                {"id": "tumor_only", "name": "Tumor only", "label_value": 2},
-                {"id": "overlap", "name": "Overlap", "label_value": 3},
-                {"id": "tumor", "name": "Tumor", "members": ["tumor_only", "overlap"]},
-            ],
-        )
-        out = tmp_path / "out.dcm"
-        zarr_to_dicom_seg(src, out)
-        ds = pydicom.dcmread(str(out))
-        assert [str(s.SegmentLabel) for s in ds.SegmentSequence] == ["Tumor only", "Overlap"]
+class TestRequiredContent:
+    def test_nothing_is_invented(self, tmp_path):
+        data = np.array([[[0, 1]]], dtype=np.uint8)
+        no_algorithm = [{"id": "a", "name": "A", "label_values": [1],
+                         "dicom": {"category": BODY, "type": KIDNEY}}]
+        with pytest.raises(ValueError, match="algorithm_type"):
+            _export(tmp_path, data, no_algorithm)
+        with pytest.raises(ValueError, match="SegmentAlgorithmName"):
+            _export(tmp_path, data, no_algorithm, algorithm_type="AUTOMATIC", overwrite=True)
+        with pytest.raises(ValueError, match="category"):
+            _export(tmp_path, data, [{"id": "a", "label_values": [1]}],
+                    algorithm_type="MANUAL", overwrite=True)
 
-    def test_layered_segment_raises(self, tmp_path):
-        data = np.zeros((1, 4, 4), dtype=np.uint8)
-        data[0, 0, 0] = 1
-        src = _write_labelmap(
-            tmp_path / "in.zarr",
-            data,
-            [
-                {"id": "a", "name": "A", "label_value": 1, "layer": 0},
-                {"id": "b", "name": "B", "label_value": 1, "layer": 1},
-            ],
-        )
-        with pytest.raises(ValueError, match="layer"):
-            zarr_to_dicom_seg(src, tmp_path / "out.dcm")
+    def test_a_bad_algorithm_type_fails(self, tmp_path):
+        segs = [{"id": "a", "label_values": [1], "dicom": {**DICOM, "algorithm_type": "AUTO"}}]
+        with pytest.raises(ValueError, match="not DICOM's"):
+            _export(tmp_path, np.array([[[0, 1]]], dtype=np.uint8), segs)
 
-    def test_duplicate_label_in_same_layer_raises(self, tmp_path):
-        data = np.zeros((1, 4, 4), dtype=np.uint8)
-        data[0, 0, 0] = 1
-        src = _write_labelmap(
-            tmp_path / "in.zarr",
-            data,
-            [
-                {"id": "a", "name": "A", "label_value": 1},
-                {"id": "b", "name": "B", "label_value": 1},
-            ],
-        )
-        with pytest.raises(ValueError, match="both claim label"):
-            zarr_to_dicom_seg(src, tmp_path / "out.dcm")
-
-    def test_undescribed_labels_warn_and_become_background(self, tmp_path):
-        data = np.zeros((1, 4, 4), dtype=np.uint8)
-        data[0, 0, 0] = 1
-        data[0, 0, 1] = 9  # described by no segment
-        src = _write_labelmap(
-            tmp_path / "in.zarr",
-            data,
-            [{"id": "a", "name": "A", "label_value": 1}],
-        )
-        out = tmp_path / "out.dcm"
-        with pytest.warns(UserWarning, match=r"\[9\]"):
-            zarr_to_dicom_seg(src, out)
-
-        ds = pydicom.dcmread(str(out))
-        pixels = np.frombuffer(ds.PixelData, dtype=np.uint8).reshape(data.shape)
-        assert pixels[0, 0, 1] == 0
-
-
-class TestCodeMeaning:
-    def _segment_with_dicom(self, **overrides):
-        seg = {
-            "id": "SEG_ID_7",
-            "label_value": 1,
-            "dicom": {
-                "category": {"scheme": "SCT", "code": "123037004", "meaning": "Body structure"},
-                "type": {"scheme": "SCT", "code": "64033007", "meaning": "Kidney"},
-                "anatomic_region": {"scheme": "SCT", "code": "64033007", "meaning": "Kidney"},
-                "anatomic_region_modifier": {"scheme": "SCT", "code": "24028007", "meaning": "Right"},
-            },
-        }
-        seg.update(overrides)
-        return seg
-
-    def _export(self, tmp_path, segment):
-        data = np.zeros((1, 4, 4), dtype=np.uint8)
-        data[0, 0, 0] = 1
-        src = _write_labelmap(tmp_path / "in.zarr", data, [segment])
-        out = tmp_path / "out.dcm"
-        zarr_to_dicom_seg(src, out)
-        return pydicom.dcmread(str(out))
-
-    def test_meanings_are_preserved(self, tmp_path):
-        ds = self._export(tmp_path, self._segment_with_dicom(name="Right kidney"))
+    def test_the_caller_fills_what_the_file_lacks(self, tmp_path):
+        segs = [{"id": "a", "name": "A", "label_values": [1]}]
+        ds, _ = _export(tmp_path, np.array([[[0, 1]]], dtype=np.uint8), segs,
+                        default_dicom={"category": BODY, "type": MASS},
+                        algorithm_type="AUTOMATIC", algorithm_name="nnU-Net")
         item = ds.SegmentSequence[0]
-        assert str(item.SegmentedPropertyCategoryCodeSequence[0].CodeMeaning) == "Body structure"
-        assert str(item.SegmentedPropertyTypeCodeSequence[0].CodeMeaning) == "Kidney"
-        assert str(item.AnatomicRegionSequence[0].CodeMeaning) == "Kidney"
+        assert item.SegmentAlgorithmType == "AUTOMATIC" and item.SegmentAlgorithmName == "nnU-Net"
+        assert item.SegmentedPropertyTypeCodeSequence[0].CodeValue == "4147007"
 
-    def test_modifier_sequences_are_written(self, tmp_path):
-        """Laterality must survive export (§4.1 post-coordination)."""
-        seg = self._segment_with_dicom(name="Right kidney")
-        seg["dicom"]["type_modifier"] = {"scheme": "SCT", "code": "24028007", "meaning": "Right"}
-        ds = self._export(tmp_path, seg)
-        item = ds.SegmentSequence[0]
-
-        type_mod = item.SegmentedPropertyTypeCodeSequence[0].SegmentedPropertyTypeModifierCodeSequence[0]
-        assert str(type_mod.CodeValue) == "24028007"
-        assert str(type_mod.CodeMeaning) == "Right"
-
-        anat_mod = item.AnatomicRegionSequence[0].AnatomicRegionModifierSequence[0]
-        assert str(anat_mod.CodeValue) == "24028007"
-        assert str(anat_mod.CodeMeaning) == "Right"
-
-    def test_falls_back_to_segment_name(self, tmp_path):
-        seg = {
-            "id": "S1",
-            "name": "Liver",
-            "label_value": 1,
-            "dicom": {"type": {"scheme": "SCT", "code": "10200004"}},
-        }
-        ds = self._export(tmp_path, seg)
-        assert str(ds.SegmentSequence[0].SegmentedPropertyTypeCodeSequence[0].CodeMeaning) == "Liver"
-
-    def test_raises_rather_than_publishing_the_segment_id_as_a_meaning(self, tmp_path):
-        """A segment id is not a concept meaning — §4.2 says fail instead."""
-        seg = {
-            "id": "SEG_ID_7",
-            "label_value": 1,
-            "dicom": {"category": {"scheme": "SCT", "code": "123037004"}},
-        }
+    def test_code_meaning_falls_back_to_the_name_never_the_id(self, tmp_path):
+        bare = {"category": {"scheme": "SCT", "code": "1"}, "type": {"scheme": "SCT", "code": "2"},
+                "algorithm_type": "MANUAL"}
+        data = np.array([[[0, 1]]], dtype=np.uint8)
+        ds, _ = _export(tmp_path, data, [{"id": "a", "name": "Kidney", "label_values": [1],
+                                          "dicom": bare}])
+        assert ds.SegmentSequence[0].SegmentedPropertyTypeCodeSequence[0].CodeMeaning == "Kidney"
         with pytest.raises(ValueError, match="CodeMeaning"):
-            self._export(tmp_path, seg)
+            _export(tmp_path, data, [{"id": "SEG_ID_7", "label_values": [1], "dicom": bare}],
+                    overwrite=True)
+
+    def test_modifiers_description_and_tracking(self, tmp_path):
+        segs = [{"id": "a", "name": "A", "label_values": [1],
+                 "dicom": {**DICOM, "type_modifier": {"scheme": "SCT", "code": "24028007",
+                                                      "meaning": "Right"}},
+                 "metadata": {"dicom": {"SegmentDescription": "d", "TrackingID": "t"}}}]
+        ds, _ = _export(tmp_path, np.array([[[0, 1]]], dtype=np.uint8), segs)
+        item = ds.SegmentSequence[0]
+        modifier = item.SegmentedPropertyTypeCodeSequence[0].SegmentedPropertyTypeModifierCodeSequence[0]
+        assert modifier.CodeValue == "24028007" and item.SegmentDescription == "d"
+        assert "TrackingID" not in item                      # only as a pair
+
+
+class TestColor:
+    def _color(self, tmp_path, color, **kwargs):
+        segs = [{"id": "a", "name": "A", "label_values": [1], "color": color, "dicom": DICOM}]
+        ds, reported = _export(tmp_path, np.array([[[0, 1]]], dtype=np.uint8), segs, **kwargs)
+        return ds, [int(v) for v in ds.SegmentSequence[0].RecommendedDisplayCIELabValue], reported
+
+    def test_d65_by_default_and_marked(self, tmp_path):
+        ds, values, _ = self._color(tmp_path, "color(xyz-d65 0.2459822 0.2813858 0.1198888)")
+        assert values == [39330, 30580, 41942]
+        assert "cielab-d65" in list(ds.SoftwareVersions) or ds.SoftwareVersions == "cielab-d65"
+
+    def test_the_standard_encoding_is_an_option(self, tmp_path):
+        ds, values, _ = self._color(tmp_path, "lab(60.0137 -9.0117 35.1984)", cielab="d50")
+        assert values == [39330, 30580, 41942] and "SoftwareVersions" not in ds
+
+    def test_no_color_no_marker(self, tmp_path):
+        segs = [{"id": "a", "name": "A", "label_values": [1], "dicom": DICOM}]
+        ds, _ = _export(tmp_path, np.array([[[0, 1]]], dtype=np.uint8), segs)
+        assert "SoftwareVersions" not in ds
+        assert "RecommendedDisplayCIELabValue" not in ds.SegmentSequence[0]
+
+    def test_far_out_of_range_is_clamped_and_reported(self, tmp_path):
+        _, values, reported = self._color(tmp_path, "lab(150 300 -300)", cielab="d50")
+        assert values == [65535, 65535, 0]
+        assert _codes(reported) == [("color-clamped", About.segment("a"))]
+
+
+ATLAS = [
+    {"id": "bg", "name": "Background", "label_values": [0], "role": "background", "dicom": DICOM},
+    {"id": "184", "name": "Frontal pole", "label_values": [68, 184, 667], "dicom": DICOM},
+    {"id": "68", "name": "Layer 1", "label_values": [68], "dicom": DICOM},
+    {"id": "667", "name": "Layer 2/3", "label_values": [667], "dicom": DICOM},
+]
+
+
+class TestLabelmap:
+    def test_pixel_data_is_unchanged_and_items_are_per_value(self, tmp_path):
+        data = np.array([[[0, 68, 184, 667]]], dtype=np.uint16)
+        ds, reported = _export(tmp_path, data, ATLAS, segmentation_type="LABELMAP")
+        assert ds.SOPClassUID == LABELMAP_SEG_SOP_CLASS_UID and ds.SegmentsOverlap == "NO"
+        assert [int(i.SegmentNumber) for i in ds.SegmentSequence] == [0, 68, 184, 667]
+        assert [str(i.SegmentLabel) for i in ds.SegmentSequence] == [
+            "Background", "Layer 1", "Frontal pole", "Layer 2/3"]
+        assert int(ds.PixelPaddingValue) == 0
+        assert ds.pixel_array.reshape(data.shape).tolist() == data.tolist()
+        assert _codes(reported) == [("segment-partly-represented", About.segment("184"))]
+
+    def test_unrepresented_segment(self, tmp_path):
+        segs = [ATLAS[0], {**ATLAS[1], "label_values": [68]}, ATLAS[2]]
+        _, reported = _export(tmp_path, np.array([[[0, 68]]], dtype=np.uint8), segs,
+                              segmentation_type="LABELMAP")
+        assert _codes(reported) == [("segment-not-represented", About.segment("184"))]
+
+    @pytest.mark.parametrize(
+        "segments, data, match",
+        [
+            (LIVER_TUMOR, [0, 10], "nested"),
+            ([{"id": "a", "label_values": [70000], "dicom": DICOM}], [70000, 70000], "65535"),
+            ([ATLAS[0], ATLAS[2]], [0, 5], "undescribed"),
+            ([ATLAS[2]], [0, 68], "background"),
+        ],
+    )
+    def test_fails_rather_than_guess(self, tmp_path, segments, data, match):
+        with pytest.raises(ValueError, match=match):
+            _export(tmp_path, np.array([[data]], dtype=np.uint32), segments,
+                    segmentation_type="LABELMAP")
+
+    def test_layers_are_not_eligible(self, tmp_path):
+        segs = [{"id": "a", "label_values": [1], "dicom": DICOM},
+                {"id": "b", "label_values": [1], "layer": 1, "dicom": DICOM}]
+        with pytest.raises(ValueError, match="single layer"):
+            _export(tmp_path, np.ones((2, 1, 1, 2), dtype=np.uint8), segs, layered=True,
+                    segmentation_type="LABELMAP")
+
+    def test_the_caller_may_describe_an_implicit_background(self, tmp_path):
+        ds, _ = _export(tmp_path, np.array([[[0, 68]]], dtype=np.uint8), [ATLAS[2]],
+                        segmentation_type="LABELMAP", background_dicom=DICOM)
+        assert [int(i.SegmentNumber) for i in ds.SegmentSequence] == [0, 68]
+        assert int(ds.PixelPaddingValue) == 0
+
+    def test_no_background_no_padding_value(self, tmp_path):
+        segs = [{"id": "Unknown", "name": "Unknown", "label_values": [0], "role": "unknown",
+                 "dicom": DICOM}, {**ATLAS[2], "label_values": [17]}]
+        ds, reported = _export(tmp_path, np.array([[[0, 17]]], dtype=np.uint8), segs,
+                               implicit_background=False, segmentation_type="LABELMAP")
+        assert "PixelPaddingValue" not in ds
+        assert _codes(reported) == [("role-lost", About.segment("Unknown"))]
+
+
+class TestFractional:
+    SEGS = [{"id": "fg", "name": "Tumor", "label_values": [1], "dicom": DICOM},
+            {"id": "none", "name": "None", "label_values": [1], "layer": 1,
+             "role": "background", "dicom": DICOM}]
+
+    def test_quantized_with_roles_written(self, tmp_path):
+        data = np.zeros((2, 1, 1, 3), dtype=np.float32)
+        data[0, 0, 0] = [0.0, 0.5, 1.2]
+        data[1, 0, 0] = [1.0, 0.5, 0.0]
+        ds, reported = _export(tmp_path, data, self.SEGS, layered=True,
+                               source_representation="fractional-labelmap",
+                               fractional_type="PROBABILITY")
+        assert ds.SegmentationType == "FRACTIONAL" and int(ds.MaximumFractionalValue) == 255
+        assert ds.SegmentationFractionalType == "PROBABILITY" and ds.BitsAllocated == 8
+        frames = ds.pixel_array.reshape(2, 1, 3)
+        assert frames.tolist() == [[[0, 128, 255]], [[255, 128, 0]]]
+        assert _codes(reported) == [("role-lost", About.segment("none"))]
+
+    def test_the_fractional_type_is_not_guessed(self, tmp_path):
+        with pytest.raises(ValueError, match="SegmentationFractionalType"):
+            _export(tmp_path, np.zeros((2, 1, 1, 3), dtype=np.float32), self.SEGS, layered=True,
+                    source_representation="fractional-labelmap")
 
 
 class TestRoundTrip:
-    def test_classification_survives_export_and_reimport(self, tmp_path):
-        from duckn.dicom_convert import _extract_seg_extension
+    def _back(self, tmp_path, ds_path):
+        out = tmp_path / "back.zarr"
+        dicom_to_zarr(ds_path, out)
+        arr = zarr.open_array(str(out), mode="r")
+        return arr, arr.attrs["duckn"]["extensions"]["seg"], arr.attrs["duckn"]
 
-        seg = {
-            "id": "S1",
-            "name": "Right kidney",
-            "label_value": 1,
-            "dicom": {
-                "category": {"scheme": "SCT", "code": "123037004", "meaning": "Body structure"},
-                "type": {"scheme": "SCT", "code": "64033007", "meaning": "Kidney"},
-                "type_modifier": {"scheme": "SCT", "code": "24028007", "meaning": "Right"},
-            },
-        }
-        data = np.zeros((1, 4, 4), dtype=np.uint8)
-        data[0, 0, 0] = 1
-        src = _write_labelmap(tmp_path / "in.zarr", data, [seg])
-        out = tmp_path / "out.dcm"
-        zarr_to_dicom_seg(src, out)
+    def test_binary(self, tmp_path):
+        # BINARY omits empty frames, so a slice with no segment would not come back
+        data = np.zeros((2, 2, 4), dtype=np.uint8)
+        data[0, 0] = [0, 10, 20, 30]
+        data[1, 1] = [10, 0, 0, 20]
+        segs = [{**LIVER_TUMOR[0], "color": "color(xyz-d65 0.2459822 0.2813858 0.1198888)"},
+                LIVER_TUMOR[1]]
+        _export(tmp_path, data, segs)
+        arr, seg, duckn = self._back(tmp_path, tmp_path / "out.dcm")
+        assert seg["version"] == "0.8" and arr.shape == (2, 2, 2, 4)      # overlap: layers
+        assert [(s["id"], s["name"], s["label_values"], s.get("layer")) for s in seg["segments"]] == [
+            ("Segment_1", "Liver", [1], None), ("Segment_2", "Tumor", [1], 1)]
+        assert seg["segments"][0]["color"] == "color(xyz-d65 0.2459822 0.2813858 0.1198888)"
+        assert seg["segments"][0]["dicom"]["algorithm_type"] == "MANUAL"
+        assert seg["segments"][1]["designations"][0]["code"] == "4147007"
+        assert np.array_equal(arr[0] == 1, np.isin(data, [10, 30]))
+        assert np.array_equal(arr[1] == 1, np.isin(data, [20, 30]))
 
-        ds = pydicom.dcmread(str(out))
-        ds.SegmentationType = "LABELMAP"
-        ext = _extract_seg_extension(ds)
-        assert ext is not None
-        seg_back = ext.segments[0]
-        assert seg_back.dicom.category.code == "123037004"
-        assert seg_back.dicom.category.meaning == "Body structure"
-        assert seg_back.dicom.type.code == "64033007"
-        assert seg_back.dicom.type_modifier.code == "24028007"
-        # And the type code surfaces as the primary designation, with laterality.
-        assert seg_back.designations[0].code == "64033007"
-        assert seg_back.designations[0].modifier.code == "24028007"
+    def test_disjoint_binary_is_one_layer(self, tmp_path):
+        data = np.zeros((2, 2, 4), dtype=np.uint8)
+        data[0, 0] = [0, 10, 20, 20]
+        data[1, 0] = [10, 0, 0, 0]
+        segs = [{**LIVER_TUMOR[0], "label_values": [10]}, {**LIVER_TUMOR[1], "label_values": [20]}]
+        _export(tmp_path, data, segs)
+        arr, seg, _ = self._back(tmp_path, tmp_path / "out.dcm")
+        assert arr.shape == (2, 2, 4) and arr[0, 0].tolist() == [0, 1, 2, 2]
+        assert [s["label_values"] for s in seg["segments"]] == [[1], [2]]
+
+    def test_labelmap_merges_items_and_keeps_values(self, tmp_path):
+        data = np.zeros((2, 1, 4), dtype=np.uint16)
+        data[0, 0] = [0, 68, 184, 667]
+        _export(tmp_path, data, [ATLAS[0], ATLAS[1]], segmentation_type="LABELMAP")
+        arr, seg, _ = self._back(tmp_path, tmp_path / "out.dcm")
+        assert seg["implicit_background"] is False
+        assert [(s["id"], s["label_values"], s.get("role")) for s in seg["segments"]] == [
+            ("Segment_0", [0], "background"), ("Segment_68", [68, 184, 667], None)]
+        assert arr[0, 0].tolist() == [0, 68, 184, 667] and arr.fill_value == 0
+
+    def test_fractional(self, tmp_path):
+        data = np.zeros((2, 2, 1, 3), dtype=np.float32)
+        data[0, 0, 0] = [0.0, 0.5, 1.0]
+        data[1, 1, 0] = [1.0, 0.5, 0.0]
+        _export(tmp_path, data, TestFractional.SEGS, layered=True,
+                source_representation="fractional-labelmap", fractional_type="OCCUPANCY")
+        arr, seg, duckn = self._back(tmp_path, tmp_path / "out.dcm")
+        assert seg["source_representation"] == "fractional-labelmap"
+        assert seg["metadata"] == {"dicom": {"SegmentationFractionalType": "OCCUPANCY"}}
+        assert arr.dtype == np.uint8 and arr[0, 0, 0].tolist() == [0, 128, 255]
+        transform = duckn["value_transforms"][0]
+        assert transform["name"] == "linear"
+        assert transform["parameters"] == {"slope": 1 / 255, "intercept": 0.0}
+        assert "sample_units" not in duckn

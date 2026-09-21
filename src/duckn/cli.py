@@ -649,19 +649,52 @@ def to_dicom(
 @click.argument("input_path", type=click.Path(exists=True))
 @click.argument("output_path", type=click.Path())
 @click.option("--overwrite", is_flag=True, help="Overwrite existing output")
+@click.option(
+    "--type", "segmentation_type",
+    type=click.Choice(["BINARY", "FRACTIONAL", "LABELMAP"]), default=None,
+    help="Segmentation Type (default: BINARY, or FRACTIONAL for a fractional labelmap). "
+         "LABELMAP needs a single nested layer and a reader that supports it.",
+)
+@click.option(
+    "--cielab", type=click.Choice(["d65", "d50"]), default="d65",
+    help="Color encoding: d65 as dcmqi-based readers expect (default), d50 as the "
+         "standard intends.",
+)
+@click.option(
+    "--algorithm-type", type=click.Choice(["AUTOMATIC", "SEMIAUTOMATIC", "MANUAL"]),
+    default=None, help="SegmentAlgorithmType for segments that do not record one",
+)
+@click.option("--algorithm-name", default=None,
+              help="SegmentAlgorithmName for segments that do not record one")
+@click.option("--fractional-type", type=click.Choice(["PROBABILITY", "OCCUPANCY"]),
+              default=None, help="SegmentationFractionalType, when the file does not record it")
 def to_dicom_seg(
     input_path: str,
     output_path: str,
     overwrite: bool,
+    segmentation_type: str | None,
+    cielab: str,
+    algorithm_type: str | None,
+    algorithm_name: str | None,
+    fractional_type: str | None,
 ) -> None:
-    """Convert a duckn 3D labelmap to a DICOM LABELMAP Segmentation (Sup 243).
+    """Convert a duckn segmentation to a DICOM Segmentation.
 
-    Input must be a 3D integer labelmap. Use seg-to-labelmap first if
-    your data is a 4D binary segmentation.
+    Segments may overlap and the array may be layered. DICOM requires a
+    category, a type and an algorithm type of every segment; they come from
+    the file, and the algorithm attributes may be given here. They are never
+    invented.
     """
     from .dicom_convert import zarr_to_dicom_seg
 
-    zarr_to_dicom_seg(input_path, output_path, overwrite=overwrite)
+    reported = zarr_to_dicom_seg(
+        input_path, output_path, overwrite=overwrite,
+        segmentation_type=segmentation_type, cielab=cielab,
+        algorithm_type=algorithm_type, algorithm_name=algorithm_name,
+        fractional_type=fractional_type,
+    )
+    for diagnostic in reported:
+        click.echo(str(diagnostic), err=True)
     click.echo(f"Wrote {output_path}")
 
 

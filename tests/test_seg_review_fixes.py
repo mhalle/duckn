@@ -155,27 +155,23 @@ class TestConverters:
         with pytest.raises(ValueError, match="voxel"):
             serialize_seg_extension(renamed)                          # changed: must be materialized
 
-    def test_dicom_export_warns_when_it_drops_a_named_group(self, tmp_path):
-        pytest.importorskip("pydicom")
-        from test_dicom_seg_export import _write_labelmap
+    def test_dicom_export_writes_a_migrated_group_as_a_segment(self, tmp_path):
+        pydicom = pytest.importorskip("pydicom")
+        from test_dicom_seg_export import BODY, MASS, _write
         from duckn.dicom_convert import zarr_to_dicom_seg
         data = np.zeros((1, 4, 4), np.uint8)
         data[0, 0, 0] = 1
         data[0, 1, 1] = 3
-        src = _write_labelmap(tmp_path / "in.zarr", data, [
+        src = _write(tmp_path / "in.zarr", data, [
             {"id": "label_1", "name": "label 1", "label_value": 1},
             {"id": "label_3", "name": "label 3", "label_value": 3},
-            {"id": "liver", "name": "Liver", "members": ["label_1", "label_3"],
-             "designations": [{"scheme": "SCT", "code": "10200004"}]}])
-        with pytest.warns(UserWarning, match="'liver' \\(Liver\\) is a group"):
-            zarr_to_dicom_seg(src, tmp_path / "out.dcm")
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", UserWarning)                # an unnamed group is silent
-            src2 = _write_labelmap(tmp_path / "in2.zarr", data, [
-                {"id": "label_1", "name": "label 1", "label_value": 1},
-                {"id": "label_3", "name": "label 3", "label_value": 3},
-                {"id": "u", "members": ["label_1", "label_3"]}])
-            zarr_to_dicom_seg(src2, tmp_path / "out2.dcm")
+            {"id": "liver", "name": "Liver", "members": ["label_1", "label_3"]}], version="0.7")
+        zarr_to_dicom_seg(src, tmp_path / "out.dcm", algorithm_type="MANUAL",
+                          default_dicom={"category": BODY, "type": MASS})
+        ds = pydicom.dcmread(str(tmp_path / "out.dcm"))
+        # 0.7 dropped the group and kept only its islands; 0.8 writes it, overlapping them
+        assert [str(i.SegmentLabel) for i in ds.SegmentSequence] == ["Liver", "label 1", "label 3"]
+        assert ds.SegmentsOverlap == "YES"
 
 
 class TestSecondRound:

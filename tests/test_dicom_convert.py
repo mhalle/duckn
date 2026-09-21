@@ -32,7 +32,8 @@ from duckn.dicom_convert import (
     dicom_to_zarr,
     zarr_to_dicom,
 )
-from duckn.models import SEG_EXTENSION_VERSION, DucknMetadata, SegmentationExtension, SpaceName
+from duckn.models import DucknMetadata, SpaceName
+from duckn.seg_model import SEG_VERSION as SEG_EXTENSION_VERSION, SegmentationExtension
 
 
 # ---------------------------------------------------------------------------
@@ -850,12 +851,16 @@ class TestDicomSegExtraction:
         assert len(ext.segments) == 2
 
         seg1 = ext.segments[0]
-        assert seg1.id == "Liver"
+        assert seg1.id == "Segment_1"  # SegmentLabel is free text: it is the name
         assert seg1.name == "Liver"
-        assert seg1.label_value == 1  # BINARY: all segments have label_value=1
-        assert seg1.layer == 0  # 0-based layer index
-        assert seg1.color is not None
-        assert len(seg1.color) == 3
+        assert seg1.label_values == [1]  # BINARY, overlap undeclared: a layer each
+        assert seg1.layer is None  # layer 0 is not written
+        # No Manufacturer says dcmqi wrote this: read as the standard intends
+        assert seg1.color == "lab(60.0137 -9.0117 35.1984)"
+        ds.Manufacturer = "QIICR"
+        assert _extract_seg_extension(ds).segments[0].color == (
+            "color(xyz-d65 0.2459822 0.2813858 0.1198888)")
+        assert _extract_seg_extension(ds, cielab="d50").segments[0].color == seg1.color
 
         # DICOM classification
         assert seg1.dicom is not None
@@ -870,8 +875,8 @@ class TestDicomSegExtraction:
         assert seg1.designations[0].code == "10200004"
 
         seg2 = ext.segments[1]
-        assert seg2.id == "Tumor"
-        assert seg2.label_value == 1  # BINARY: all segments have label_value=1
+        assert seg2.id == "Segment_2" and seg2.name == "Tumor"
+        assert seg2.label_values == [1]
         assert seg2.layer == 1  # 0-based layer index
         assert seg2.dicom is None  # no coded entries
         assert seg2.designations is None
@@ -967,8 +972,49 @@ class TestDicomSegExtraction:
         ds = _make_seg_dataset()
         ds.SegmentationType = "LABELMAP"
         ext = _extract_seg_extension(ds)
-        assert ext.segments[0].label_value == 1
-        assert ext.segments[1].label_value == 2
+        assert [s.label_values for s in ext.segments] == [[1], [2]]
+        # a label map marks no background unless PixelPaddingValue names one
+        assert ext.implicit_background is False
+        assert all(s.role is None for s in ext.segments)
+
+    def test_labelmap_padding_value_is_the_background(self):
+        from duckn.dicom_seg import seg_fill_value
+
+        ds = _make_seg_dataset()
+        ds.SegmentationType = "LABELMAP"
+        assert seg_fill_value(_extract_seg_extension(ds)) == 1     # no background: lowest value
+        ds.PixelPaddingValue = 2
+        ext = _extract_seg_extension(ds)
+        assert [s.role for s in ext.segments] == [None, "background"]
+        assert seg_fill_value(ext) == 2
+        ds.PixelPaddingValue = 0                                    # names no item
+        ext = _extract_seg_extension(ds)
+        assert [(s.id, s.label_values, s.role) for s in ext.segments][0] == (
+            "Segment_0", [0], "background")
+
+    def test_disjoint_binary_is_one_layer(self):
+        ds = _make_seg_dataset()
+        ds.SegmentsOverlap = "NO"
+        ext = _extract_seg_extension(ds)
+        assert [(s.label_values, s.layer) for s in ext.segments] == [([1], None), ([2], None)]
+        assert ext.implicit_background is None
+
+    def test_import_reports_and_keeps(self):
+        ds = _make_seg_dataset()
+        item = ds.SegmentSequence[1]
+        item.SegmentAlgorithmType = "SEMIAUTOMATIC"
+        item.SegmentAlgorithmName = "GrowCut"
+        item.SegmentDescription = "d"
+        item.TrackingID = "t"
+        item.SegmentedPropertyTypeCodeSequence = ds.SegmentSequence[0].SegmentedPropertyTypeCodeSequence
+        found = []
+        ext = _extract_seg_extension(ds, diagnostics=found)
+        tumor = ext.segments[1]
+        assert tumor.dicom.algorithm_type == "SEMIAUTOMATIC" and tumor.dicom.algorithm_name == "GrowCut"
+        assert tumor.metadata == {"dicom": {"SegmentDescription": "d", "TrackingID": "t"}}
+        # each in its own layer, so the shared type code collides with nothing
+        assert [d.code for d in found] == ["designation-unverified"] * 2
+        assert ext.terminologies["SCT"].uri == "http://snomed.info/sct"
 
     def test_seg_in_build_duckn_metadata(self):
         ds = _make_seg_dataset()
