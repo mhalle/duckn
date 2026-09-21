@@ -476,3 +476,24 @@ class TestSegmentationsAreDerivedCarefully:
         vol = _seg_volume(_SEG)
         assert "seg" in cast(vol, "uint16").metadata.extensions
         assert cast(vol, "float32", normalize=True).metadata.extensions is None
+
+    def test_a_cast_that_cannot_hold_a_listed_value_drops_seg(self):
+        from duckn.cast import cast
+
+        seg = {"version": "0.8", "segments": [{"id": "a", "label_values": [300]}]}
+        vol = _seg_volume(seg, "int32")
+        assert cast(vol, "uint8").metadata.extensions is None
+        assert "seg" in cast(vol, "uint16").metadata.extensions
+        older = {"version": "0.7", "segments": [{"id": "a", "label_value": 300}]}
+        assert cast(_seg_volume(older, "int32"), "uint8").metadata.extensions is None
+
+    def test_a_cast_across_integer_and_float_writes_the_reading_down(self):
+        from duckn.cast import cast
+
+        seg = {"version": "0.8", "segments": [{"id": "a", "label_values": [1]}]}
+        out = cast(_seg_volume(seg), "float32")
+        assert out.metadata.extensions["seg"]["source_representation"] == "binary-labelmap"
+        assert [d.code for d in out.extensions.seg.diagnostics] == []
+        frac = {"version": "0.8", "segments": [{"id": "a", "label_values": [1]}]}
+        assert cast(_seg_volume(frac, "float32"), "uint8").metadata.extensions is None
+        assert cast(_seg_volume(frac, "float32"), "float64").metadata.extensions["seg"] == frac

@@ -84,17 +84,9 @@ def cast(
         # in the source's units, so claiming them would be false
         # (duckn-spec §4.1).
         new_meta.sample_units = None
-        # Rescaling is arithmetic on the values. A binary labelmap's values are
-        # names of segments, so the result is no longer a segmentation and must
-        # not carry `seg` forward (seg spec §3.3). Fractions stay fractions.
-        seg = (new_meta.extensions or {}).get("seg")
-        if seg is not None:
-            from .seg_model import seg_is_fractional
-
-            if not seg_is_fractional(seg, vol.raw.dtype):
-                new_meta.extensions = {
-                    k: v for k, v in new_meta.extensions.items() if k != "seg"
-                } or None
+    new_meta.extensions = _seg_after_cast(
+        new_meta.extensions, vol.raw.dtype, result.dtype, rescaled=normalize
+    )
     # Calibrated values are baked into the result — clear value_transforms
     # so vol.data on the result doesn't double-apply.
     new_meta.value_transforms = None
@@ -106,3 +98,51 @@ def cast(
         if not info.min <= fill <= info.max:
             fill = None
     return Volume(raw=result, metadata=new_meta, fill_value=fill)
+
+
+def _seg_after_cast(
+    extensions: dict | None, source: np.dtype, target: np.dtype, *, rescaled: bool
+) -> dict | None:
+    """What becomes of a ``seg`` extension when the values are cast (seg spec
+    §3.3). A binary labelmap's values are names of segments: it survives a cast
+    that holds every listed value unchanged, and nothing else. Whether a
+    labelmap is binary or fractional may rest on the data type alone (§3.1),
+    so a cast that would change that reading writes the reading down first.
+    """
+    seg = (extensions or {}).get("seg")
+    if not isinstance(seg, dict):
+        return extensions
+    from .seg_model import seg_is_fractional
+
+    def without_seg() -> dict | None:
+        return {k: v for k, v in extensions.items() if k != "seg"} or None
+
+    fractional = seg_is_fractional(seg, source)
+    to_integer = np.issubdtype(target, np.integer)
+    if fractional:
+        # fractions rescale and stay fractions; as integers they are not
+        if to_integer and not rescaled:
+            return without_seg()
+        kept = dict(seg)
+    else:
+        if rescaled:
+            return without_seg()
+        if to_integer:
+            info = np.iinfo(target)
+            listed = [
+                v
+                for s in seg.get("segments") or [] if isinstance(s, dict)
+                for v in (s.get("label_values") if isinstance(s.get("label_values"), list)
+                          else [s.get("label_value")])
+                if isinstance(v, int) and not isinstance(v, bool)
+            ]
+            if any(not info.min <= v <= info.max for v in listed):
+                return without_seg()  # clamping or wrapping would rename voxels
+        kept = dict(seg)
+    if "source_representation" not in kept and (
+        np.issubdtype(source, np.floating) != np.issubdtype(target, np.floating)
+    ):
+        kept["source_representation"] = (
+            "fractional-labelmap" if fractional else "binary-labelmap"
+        )
+    return {**extensions, "seg": kept}

@@ -992,6 +992,31 @@ class TestDicomSegExtraction:
         assert [(s.id, s.label_values, s.role) for s in ext.segments][0] == (
             "Segment_0", [0], "background")
 
+    def test_further_sequence_items_are_kept_and_tell_items_apart(self):
+        from duckn.dicom_seg import _merge_key, _segment_from_item
+
+        def coded(code):
+            item = Dataset()
+            item.CodeValue, item.CodingSchemeDesignator, item.CodeMeaning = code, "SCT", code
+            return item
+
+        def item(extra_region_modifier):
+            seg = Dataset()
+            seg.SegmentNumber = 1
+            seg.SegmentLabel = "L"
+            region = coded("R")
+            region.AnatomicRegionModifierSequence = DicomSequence(
+                [coded("M1"), coded(extra_region_modifier)])
+            seg.AnatomicRegionSequence = DicomSequence([region])
+            return seg
+
+        found = []
+        one = _segment_from_item(item("M2"), False, found)
+        assert one["dicom"]["anatomic_region_modifier"]["code"] == "M1"
+        assert one["metadata"]["dicom"]["anatomic_region_modifiers"][0]["code"] == "M2"
+        assert [d.code for d in found] == ["dicom-items-kept"]
+        assert _merge_key(one) != _merge_key(_segment_from_item(item("M3"), False, []))
+
     def test_disjoint_binary_is_one_layer(self):
         ds = _make_seg_dataset()
         ds.SegmentsOverlap = "NO"

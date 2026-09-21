@@ -18,6 +18,7 @@ from .diagnostics import About, Diagnostic, DiagnosticsError
 from .models import AxisMetadata, _migrate_extension_pre_0_6
 from .seg_color import format_color, from_slicer_floats
 from .seg_model import (
+    MAX_LABEL_MAGNITUDE,
     SEG_VERSION,
     SegmentationExtension,
     derive_token_ids,
@@ -357,6 +358,42 @@ def _order_by_containment(segs: list[dict[str, Any]]) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _refusals_in_raw(data: Any) -> list[Diagnostic]:
+    """Violations of rules 1, 2, 8a and 11a that the model would reject without
+    a code. A dict with no ``segments`` array of objects is not reported here:
+    it is not a seg extension, and the model says so."""
+    if not isinstance(data, dict):
+        return []
+    out: list[Diagnostic] = []
+
+    def err(code: str, about: About, message: str) -> None:
+        out.append(Diagnostic(code, "error", about, message))
+
+    version = data.get("version")
+    if version_tuple(version) != version_tuple(SEG_VERSION):
+        err("rule-1", About.extension(),
+            f"version {version!r} is not one this reader supports")
+    segments = data.get("segments")
+    if not isinstance(segments, list):
+        return out
+    for seg in segments:
+        if not isinstance(seg, dict) or not isinstance(seg.get("id"), str):
+            continue
+        about = About.segment(seg["id"])
+        if seg.get("role") not in (None, "background", "unknown"):
+            err("rule-8a", about, f"role {seg.get('role')!r}")
+        values = seg.get("label_values")
+        if "label_values" in seg and not (
+            isinstance(values, list) and values
+            and all(_is_int(v) and abs(v) <= MAX_LABEL_MAGNITUDE for v in values)
+        ):
+            err("rule-11a", about, "label_values is a non-empty array of integers")
+        layer = seg.get("layer")
+        if layer is not None and not (_is_int(layer) and layer >= 0):
+            err("rule-2", about, f"layer {layer!r} is not a non-negative integer")
+    return out
+
+
 def read_seg_extension(
     raw: dict[str, Any],
     *,
@@ -392,13 +429,16 @@ def read_seg_extension(
                     _warn("color-unreadable", About.segment(str(seg.get("id"))))
                 )
 
-    version = data.get("version") if isinstance(data, dict) else None
-    if isinstance(version, str) and version_tuple(version) != version_tuple(SEG_VERSION):
-        # Rule 1, before looking at the fields: a later version's are not ours to judge.
-        raise DiagnosticsError(
-            [Diagnostic("rule-1", "error", About.extension(),
-                        f"version {version!r} is not one this reader supports")]
-        )
+    # Refusals are reported with their codes, like any other violation (§5).
+    # The model enforces some of these rules too, but a validation error has
+    # no code, so they are checked on the raw dict first; what is left for the
+    # model to reject is a dict that is not the shape of a seg extension.
+    refused = _refusals_in_raw(data)
+    if refused:
+        # Rule 1 comes before looking at the fields: a later version's are not
+        # ours to judge.
+        first = [d for d in refused if d.code == "rule-1"] or refused
+        raise DiagnosticsError(first, diagnostics + first)
     try:
         ext = SegmentationExtension.model_validate(data)
     except ValidationError as exc:
@@ -409,6 +449,6 @@ def read_seg_extension(
     )
     refused = [d for d in diagnostics if d.severity == "error"] if strict else refusals(diagnostics)
     if refused:
-        raise DiagnosticsError(refused)
+        raise DiagnosticsError(refused, diagnostics)
     return ext, diagnostics
 

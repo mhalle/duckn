@@ -138,6 +138,8 @@ def _segment_from_item(item: Any, d65: bool, found: list[Diagnostic]) -> dict[st
         modifiers = _coded_items(getattr(region_seq[0], "AnatomicRegionModifierSequence", None))
         if modifiers:
             dicom["anatomic_region_modifier"] = modifiers[0]
+        if modifiers[1:]:
+            kept["anatomic_region_modifiers"] = modifiers[1:]
         if regions[1:]:
             kept["anatomic_regions"] = regions[1:]
 
@@ -179,10 +181,18 @@ def _merge_key(seg: dict[str, Any]) -> tuple:
         return (entry["scheme"], entry["code"]) if entry else None
 
     dicom = seg.get("dicom", {})
+    kept = seg.get("metadata", {}).get("dicom", {})
+    # the whole sequences, by scheme and code: the first items live in `dicom`,
+    # the rest were kept under metadata.dicom
+    rest = tuple(
+        tuple(code(e) for e in kept.get(key, []))
+        for key in ("type_modifiers", "anatomic_regions", "anatomic_region_modifiers")
+    )
     return (
         seg.get("name"),
         *(code(dicom.get(f)) for f in ("category", "type", "type_modifier",
                                        "anatomic_region", "anatomic_region_modifier")),
+        rest,
         dicom.get("algorithm_type"),
         dicom.get("algorithm_name"),
     )
@@ -346,8 +356,7 @@ class DicomSegPlan:
 
 
 def _label(seg: Segment, found: list[Diagnostic]) -> str:
-    label = seg.name or next((d.meaning for d in seg.designations or [] if d.meaning), None) \
-        or seg.id
+    label = seg.name or (seg.designations[0].meaning if seg.designations else None) or seg.id
     if len(label) > 64:
         found.append(_warn("label-truncated", About.segment(seg.id)))
         label = label[:64]
@@ -356,9 +365,8 @@ def _label(seg: Segment, found: list[Diagnostic]) -> str:
 
 def _item(number: int, seg: Segment, cielab: CielabReading, plan: DicomSegPlan) -> SegmentItem:
     item = SegmentItem(number, seg, _label(seg, plan.diagnostics))
+    # an unreadable color is absent, and the reader has already said so
     color = parse_color(seg.color) if seg.color is not None else None
-    if seg.color is not None and color is None:
-        plan.diagnostics.append(_warn("color-unreadable", About.segment(seg.id)))
     if color is not None:
         item.cielab, clamped = to_dicom_cielab(color, d65=cielab == "d65")
         plan.wrote_d65 = plan.wrote_d65 or cielab == "d65"
@@ -429,6 +437,7 @@ def plan_dicom_seg(
                         0.0, 1.0)
             volumes.append(np.floor(f * maximum_fractional_value + 0.5).astype(np.uint8))
         plan.frames = np.stack(volumes) if volumes else plan.frames
+        plan.segments_overlap = _segments_overlap([i.segment for i in plan.items], layer_data)
     else:
         volumes = []
         for seg in ext.segments:
@@ -528,9 +537,10 @@ def _plan_labelmap(
             found.append(_warn("segment-partly-represented", About.segment(seg.id)))
     plan.diagnostics[:] = list(dict.fromkeys(found))
 
-    bg = background_segment(ext, 0)
-    if bg is not None:
-        plan.pixel_padding_value = bg.label_values[0]
+    # The background value is named even where it has no item (an implicit
+    # background that does not occur in the data), so that the layer comes
+    # back with its background.
+    plan.pixel_padding_value = background_value(ext, 0)
     plan.frames = data.astype(np.uint8 if max(values) <= 255 else np.uint16)
     plan.segments_overlap = "NO"
 

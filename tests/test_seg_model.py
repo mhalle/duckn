@@ -297,6 +297,18 @@ class TestRules:
         )
         assert _codes(validate_seg_extension(ext)) == [("rule-9", _seg("b"))]
 
+    def test_rule_9_within_a_segment(self):
+        d = {"scheme": "SCT", "code": "1"}
+        ext = _ext([{"id": "a", "label_values": [1], "designations": [d, dict(d, meaning="x")]}],
+                   terminologies={"SCT": {}})
+        assert _codes(validate_seg_extension(ext)) == [("rule-9", _seg("a"))]
+
+    def test_rule_5_for_a_declared_scheme_nothing_uses(self):
+        ext = _ext([], labeling_scheme="TS")
+        found = validate_seg_extension(ext)
+        assert _codes(found) == [("rule-5", About.scheme("TS"))]
+        assert "not registered" in found[0].message
+
     def test_rule_11(self):
         ext = _ext([{"id": "a", "label_values": [3, 1, 3]}, {"id": "b", "label_values": [300]},
                     {"id": "c", "label_values": [-1]}])
@@ -413,6 +425,9 @@ class TestNormalize:
         assert _codes(diagnostics) == [("color-clamped", _seg("b")),
                                        ("color-unreadable", _seg("c"))]
         assert ext.segments[0].label_values == [3, 1, 3]  # the input is untouched
+        later = SegmentationExtension(version="0.9", segments=[])
+        with pytest.raises(ValueError, match="0.9"):
+            normalized_for_writing(later)
 
 
 # ---------------------------------------------------------------------------

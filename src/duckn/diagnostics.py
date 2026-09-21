@@ -76,8 +76,18 @@ class Diagnostic:
 class DiagnosticsError(ValueError):
     """Raised by a strict mode that turns reports into failures."""
 
-    def __init__(self, diagnostics: Iterable[Diagnostic]):
+    def __init__(
+        self,
+        diagnostics: Iterable[Diagnostic],
+        all_diagnostics: Iterable[Diagnostic] | None = None,
+    ):
+        #: what the failure is over
         self.diagnostics = list(diagnostics)
+        #: everything there was to report, the above included: a refused file
+        #: still says what a migration changed
+        self.all_diagnostics = (
+            list(all_diagnostics) if all_diagnostics is not None else list(self.diagnostics)
+        )
         super().__init__("\n".join(str(d) for d in self.diagnostics))
 
 

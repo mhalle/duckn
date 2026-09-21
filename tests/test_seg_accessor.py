@@ -58,6 +58,13 @@ class TestLookups:
         assert a.label_for("Tumor") == [2, 3] and a.label_for("nobody") == []
         assert a.label_values == [[1, 3], [2, 3], [9], [1]]
 
+    def test_name_for_takes_the_topmost_segment_that_has_a_name(self):
+        a = SegAccessor({"version": "0.8", "segments": [
+            {"id": "lobe", "name": "Frontal lobe", "label_values": [1, 2]},
+            {"id": "rest", "label_values": [1]}]})
+        assert a.segment(label_value=1).id == "rest"
+        assert a.name_for(1) == "Frontal lobe" and a.name_for(2) == "Frontal lobe"
+
     def test_by_id_name_and_snomed(self):
         a = SegAccessor(SEG)
         assert a.segment(id="artifact").label_values == [9]
@@ -89,6 +96,9 @@ class TestReading:
             {"id": "a", "label_values": [1]}, {"id": "a", "label_values": [2]}]})
         assert len(a.segments) == 2
         assert [d.code for d in a.diagnostics] == ["rule-4a"]
+        older = SegAccessor({"version": "0.7", "segments": [
+            {"id": "a b", "label_value": 1}, {"id": "a_b", "label_value": 1, "background": True}]})
+        assert [d.code for d in older.diagnostics] == ["migrated-background", "id-changed", "rule-14"]
         for _ in range(2):
             with pytest.raises(DiagnosticsError):
                 a.model

@@ -159,8 +159,10 @@ def _header_to_metadata(
     ndim: int,
     *,
     axis_order: str = "slowest_first",
+    diagnostics: list[Diagnostic] | None = None,
 ) -> tuple[DucknMetadata, list[str] | None]:
-    """Build DucknMetadata from a pynrrd header dict.
+    """Build DucknMetadata from a pynrrd header dict. What importing a
+    segmentation reports (seg spec §10) is appended to ``diagnostics``.
 
     Parameters
     ----------
@@ -297,7 +299,7 @@ def _header_to_metadata(
             keyvalues[k] = str(v)
     if keyvalues:
         extensions: dict[str, Any] = {}
-        seg_ext, remaining = parse_seg_keyvalues(keyvalues)
+        seg_ext, remaining = parse_seg_keyvalues(keyvalues, diagnostics=diagnostics)
         if seg_ext is not None:
             extensions["seg"] = seg_ext.model_dump(exclude_none=True)
 
@@ -336,6 +338,7 @@ def _metadata_to_header(
     axis_order: str = "slowest_first",
     dim_names: tuple[str, ...] | list[str] | None = None,
     seg_keyvalues: dict[str, str] | None = None,
+    diagnostics: list[Diagnostic] | None = None,
 ) -> dict[str, Any]:
     """Reconstruct NRRD header dict from DucknMetadata.
 
@@ -449,10 +452,17 @@ def _metadata_to_header(
     if meta.extensions:
         if "seg" in meta.extensions:
             if seg_keyvalues is None:
+                # The caller is not rewriting voxels (the zero-copy path), so a
+                # segmentation that must be materialized cannot be written.
                 from .seg_read import read_seg_extension
 
-                seg_ext, _ = read_seg_extension(meta.extensions["seg"], axes=meta.axes)
-                seg_keyvalues = serialize_seg_extension(seg_ext)
+                seg_ext, found = read_seg_extension(meta.extensions["seg"], axes=meta.axes)
+                if diagnostics is not None:
+                    diagnostics.extend(found)
+                try:
+                    seg_keyvalues = serialize_seg_extension(seg_ext)
+                except ValueError as exc:
+                    raise ValueError(f"{exc}; a zero-copy export cannot, use zarr_to_nrrd") from exc
             for k, v in seg_keyvalues.items():
                 header[k] = v
         if "dwmri" in meta.extensions:
@@ -571,7 +581,7 @@ def nrrd_to_zarr(
     compressor: str = "zstd",
     level: int = 3,
     overwrite: bool = False,
-) -> None:
+) -> list[Diagnostic]:
     """Convert an NRRD file to a duckn Zarr v3 store.
 
     Uses pynrrd to decompress and zarr to recompress the data.
@@ -592,7 +602,8 @@ def nrrd_to_zarr(
 
     compressors_list = _build_compressors(compressor, level)
 
-    meta, dimension_names = _header_to_metadata(header, ndim)
+    diagnostics: list[Diagnostic] = []
+    meta, dimension_names = _header_to_metadata(header, ndim, diagnostics=diagnostics)
 
     if chunks is None:
         chunks = _auto_chunks(shape, data.dtype)
@@ -611,6 +622,7 @@ def nrrd_to_zarr(
             overwrite=False if is_zip else overwrite,
             fill_value=0,
         )
+    return diagnostics
 
 
 # ---------------------------------------------------------------------------
@@ -722,7 +734,7 @@ def nrrd_to_zarr_zerocopy(
     zarr_path: str | Path,
     *,
     overwrite: bool = False,
-) -> None:
+) -> list[Diagnostic]:
     """Convert an NRRD file to a duckn Zarr v3 store using zero-copy.
 
     Copies the compressed (or raw) data blob directly from the NRRD file
@@ -794,7 +806,8 @@ def nrrd_to_zarr_zerocopy(
     serializer, compressors = _codecs_for_encoding(encoding)
 
     # Build metadata in slowest-first order (same as normal path)
-    meta, dimension_names = _header_to_metadata(header, ndim)
+    diagnostics: list[Diagnostic] = []
+    meta, dimension_names = _header_to_metadata(header, ndim, diagnostics=diagnostics)
 
     # Serialize metadata and add legacy info for round-trip
     duckn_dict = meta.model_dump(exclude_none=True)
@@ -842,6 +855,7 @@ def nrrd_to_zarr_zerocopy(
                 chunk_path = chunk_path / "0"
             chunk_path.parent.mkdir(parents=True, exist_ok=True)
             chunk_path.write_bytes(raw_blob)
+    return diagnostics
 
 
 # ---------------------------------------------------------------------------
@@ -854,7 +868,7 @@ def zarr_to_nrrd_zerocopy(
     nrrd_path: str | Path,
     *,
     overwrite: bool = False,
-) -> None:
+) -> list[Diagnostic]:
     """Convert a duckn Zarr v3 store to an NRRD file using zero-copy.
 
     Copies the chunk data blob directly into the NRRD file without
@@ -915,7 +929,8 @@ def zarr_to_nrrd_zerocopy(
         # Build NRRD header (reverse from slowest-first back to NRRD order)
         dim_names = arr.metadata.dimension_names
 
-    header = _metadata_to_header(meta, dim_names=dim_names)
+    diagnostics: list[Diagnostic] = []
+    header = _metadata_to_header(meta, dim_names=dim_names, diagnostics=diagnostics)
 
     # Write NRRD file: header + raw data blob
     with open(nrrd_path, "wb") as fh:
@@ -928,6 +943,7 @@ def zarr_to_nrrd_zerocopy(
             header=header,
         )
         fh.write(raw_blob)
+    return diagnostics
 
 
 # ---------------------------------------------------------------------------

@@ -64,7 +64,22 @@ is `docs/segmentation-ext-spec.md`, and 0.7's is in `docs/archive/`.
   pairing segments with the sorted labels present.
 - `resample` refuses to interpolate a binary labelmap, and drops `extent`, `legacy` and
   `reference_extent_offset` from a `seg` extension it carries forward; `cast(normalize=True)`
-  drops `seg` from a binary labelmap.
+  drops `seg` from a binary labelmap, as does a cast that cannot hold every listed value
+  or that turns fractions into integers; a cast between integer and floating-point types
+  writes `source_representation` down, since the data type may have been what decided it.
+- A refused file raises `DiagnosticsError` with the rule's code even where the model
+  enforces the rule, and `all_diagnostics` still carries what a migration changed.
+
+### Fixed
+- DICOM SEG import of an object with a single frame: pydicom returns a 2-D array for one
+  frame, and the loaders read its first row as the plane. A one-frame `BINARY` or
+  `FRACTIONAL` object imported as zeros, silently, and a one-slice `LABELMAP` crashed.
+- DICOM SEG export wrote an object without the attributes DICOM requires of every instance
+  (study, series and frame-of-reference UIDs, the Type 2 patient and study attributes,
+  `ImageType`, content date and time, dimension organization). The UIDs can be given, so
+  that the object sits with the image it segments.
+- `nrrd_to_zarr`, `dicom_to_zarr` and the zero-copy converters return the diagnostics the
+  import computed, which used to be discarded; the CLI prints them.
 
 ### Added
 - `Volume.fill_value`: the store's Zarr `fill_value`, set by the readers, written back by

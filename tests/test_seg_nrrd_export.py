@@ -214,7 +214,7 @@ class TestFiles:
         assert voxels[0, 0, :, 1].tolist() == [0, 0, 1, 1, 0, 0]
 
         back = tmp_path / "back.zarr"
-        nrrd_to_zarr(out, back)
+        assert nrrd_to_zarr(out, back) == []                    # nothing to report on the way in
         arr = zarr.open_array(str(back), mode="r")
         seg2 = arr.attrs["duckn"]["extensions"]["seg"]
         assert [(s["id"], s["label_values"], s.get("layer"), s.get("role"))
@@ -237,7 +237,7 @@ class TestFiles:
         data = np.ones((2, 2, 2), dtype=np.uint8)
         store = self._store(tmp_path, data, _ext(LIVER_TUMOR).model_dump(exclude_none=True),
                             self._space_axes())
-        with pytest.raises(ValueError, match="voxel"):
+        with pytest.raises(ValueError, match="zero-copy"):
             zarr_to_nrrd_zerocopy(store, tmp_path / "zc.seg.nrrd")
 
 

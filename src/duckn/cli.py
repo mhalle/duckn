@@ -53,6 +53,12 @@ def cli() -> None:
     """duckn: imaging format converters and ZMP manifest builders."""
 
 
+def _report(diagnostics) -> None:
+    """Print what a conversion reported (seg spec §10) to stderr."""
+    for diagnostic in diagnostics or []:
+        click.echo(str(diagnostic), err=True)
+
+
 @cli.command("from-nrrd")
 @click.argument("input_path", type=click.Path(exists=True))
 @click.argument("output_path", type=click.Path())
@@ -92,16 +98,16 @@ def to_zarr(
         try:
             zip_path = tmp / "temp.zarr.zip"
             if zerocopy:
-                nrrd_to_zarr_zerocopy(input_path, str(zip_path), overwrite=True)
+                _report(nrrd_to_zarr_zerocopy(input_path, str(zip_path), overwrite=True))
             else:
                 parsed_chunks = None
                 if chunks is not None:
                     parsed_chunks = tuple(int(c) for c in chunks.split(","))
-                nrrd_to_zarr(
+                _report(nrrd_to_zarr(
                     input_path, str(zip_path),
                     chunks=parsed_chunks, compressor=compressor,
                     level=level, overwrite=True,
-                )
+                ))
 
             from .zarr_zip_convert import zarr_zip_to_zmp
 
@@ -110,25 +116,25 @@ def to_zarr(
             shutil.rmtree(tmp, ignore_errors=True)
         click.echo(f"Wrote {output_path}")
     elif zerocopy:
-        nrrd_to_zarr_zerocopy(
+        _report(nrrd_to_zarr_zerocopy(
             input_path,
             output_path,
             overwrite=overwrite,
-        )
+        ))
         click.echo(f"Wrote {output_path} (zero-copy)")
     else:
         parsed_chunks = None
         if chunks is not None:
             parsed_chunks = tuple(int(c) for c in chunks.split(","))
 
-        nrrd_to_zarr(
+        _report(nrrd_to_zarr(
             input_path,
             output_path,
             chunks=parsed_chunks,
             compressor=compressor,
             level=level,
             overwrite=overwrite,
-        )
+        ))
         click.echo(f"Wrote {output_path}")
 
 
@@ -165,8 +171,7 @@ def to_nrrd(
             encoding=encoding,
             overwrite=overwrite,
         )
-        for diagnostic in reported:
-            click.echo(str(diagnostic), err=True)
+        _report(reported)
         click.echo(f"Wrote {output_path}")
 
 
@@ -478,7 +483,7 @@ def from_dicom(
         if chunks is not None:
             parsed_chunks = tuple(int(c) for c in chunks.split(","))
 
-        dicom_to_zarr(
+        _report(dicom_to_zarr(
             input_path,
             output_path,
             chunks=parsed_chunks,
@@ -487,7 +492,7 @@ def from_dicom(
             overwrite=overwrite,
             anonymized=anonymized,
             tags=not no_tags,
-        )
+        ))
     click.echo(f"Wrote {output_path}")
 
 
@@ -693,8 +698,7 @@ def to_dicom_seg(
         algorithm_type=algorithm_type, algorithm_name=algorithm_name,
         fractional_type=fractional_type,
     )
-    for diagnostic in reported:
-        click.echo(str(diagnostic), err=True)
+    _report(reported)
     click.echo(f"Wrote {output_path}")
 
 

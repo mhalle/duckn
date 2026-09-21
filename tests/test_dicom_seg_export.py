@@ -57,6 +57,11 @@ def _export(tmp_path, data, segments, **kwargs):
     return pydicom.dcmread(str(out)), reported
 
 
+def _versions(ds):
+    value = ds.get("SoftwareVersions", [])
+    return [value] if isinstance(value, str) else list(value)
+
+
 def _codes(diagnostics):
     return [(d.code, d.about) for d in diagnostics]
 
@@ -205,16 +210,16 @@ class TestColor:
     def test_d65_by_default_and_marked(self, tmp_path):
         ds, values, _ = self._color(tmp_path, "color(xyz-d65 0.2459822 0.2813858 0.1198888)")
         assert values == [39330, 30580, 41942]
-        assert "cielab-d65" in list(ds.SoftwareVersions) or ds.SoftwareVersions == "cielab-d65"
+        assert list(ds.SoftwareVersions)[-1] == "cielab-d65"          # appended last
 
     def test_the_standard_encoding_is_an_option(self, tmp_path):
         ds, values, _ = self._color(tmp_path, "lab(60.0137 -9.0117 35.1984)", cielab="d50")
-        assert values == [39330, 30580, 41942] and "SoftwareVersions" not in ds
+        assert values == [39330, 30580, 41942] and "cielab-d65" not in _versions(ds)
 
     def test_no_color_no_marker(self, tmp_path):
         segs = [{"id": "a", "name": "A", "label_values": [1], "dicom": DICOM}]
         ds, _ = _export(tmp_path, np.array([[[0, 1]]], dtype=np.uint8), segs)
-        assert "SoftwareVersions" not in ds
+        assert "cielab-d65" not in _versions(ds)
         assert "RecommendedDisplayCIELabValue" not in ds.SegmentSequence[0]
 
     def test_far_out_of_range_is_clamped_and_reported(self, tmp_path):
@@ -377,3 +382,94 @@ class TestRoundTrip:
         assert transform["name"] == "linear"
         assert transform["parameters"] == {"slope": 1 / 255, "intercept": 0.0}
         assert "sample_units" not in duckn
+
+
+class TestSingleFrame:
+    """pydicom returns a 2-D array for one frame; a frame is still a plane."""
+
+    DATA = [[0, 0, 0, 0], [0, 1, 1, 0], [1, 0, 0, 1]]
+
+    def _round_trip(self, tmp_path, data, segments, **kwargs):
+        ds, _ = _export(tmp_path, data, segments, **kwargs)
+        assert int(ds.NumberOfFrames) == 1
+        out = tmp_path / "back.zarr"
+        reported = dicom_to_zarr(tmp_path / "out.dcm", out)
+        return zarr.open_array(str(out), mode="r"), reported
+
+    def test_binary(self, tmp_path):
+        data = np.array([self.DATA], dtype=np.uint8)
+        arr, reported = self._round_trip(
+            tmp_path, data, [{"id": "a", "name": "A", "label_values": [1], "dicom": DICOM}])
+        assert arr.shape == (1, 3, 4) and arr[:].tolist() == data.tolist()
+        assert _codes(reported) == [("designation-unverified", About.segment("Segment_1"))]
+
+    def test_labelmap(self, tmp_path):
+        data = np.array([self.DATA], dtype=np.uint8) * 17
+        segs = [{"id": "Unknown", "name": "Unknown", "label_values": [0], "role": "unknown",
+                 "dicom": DICOM}, {"id": "hip", "name": "Hip", "label_values": [17], "dicom": DICOM}]
+        arr, _ = self._round_trip(tmp_path, data, segs, implicit_background=False,
+                                  segmentation_type="LABELMAP")
+        assert arr[:].tolist() == data.tolist()
+
+    def test_fractional(self, tmp_path):
+        data = np.array([[self.DATA]], dtype=np.float32)
+        arr, _ = self._round_trip(
+            tmp_path, data, [{"id": "a", "name": "A", "label_values": [1], "dicom": DICOM}],
+            layered=True, source_representation="fractional-labelmap",
+            fractional_type="PROBABILITY")
+        assert (arr[:] == 255).tolist() == (data == 1).tolist()
+
+
+class TestTheInstance:
+    REQUIRED = ["StudyInstanceUID", "SeriesInstanceUID", "FrameOfReferenceUID", "SOPInstanceUID",
+                "PatientName", "PatientID", "SeriesNumber", "InstanceNumber", "ImageType",
+                "ContentDate", "ContentTime", "ContentLabel", "DimensionOrganizationSequence",
+                "DimensionIndexSequence", "SharedFunctionalGroupsSequence",
+                "PerFrameFunctionalGroupsSequence", "SegmentSequence", "NumberOfFrames"]
+
+    @pytest.mark.parametrize("kind", ["BINARY", "LABELMAP"])
+    def test_what_dicom_requires_of_every_instance_is_there(self, tmp_path, kind):
+        ds, _ = _export(tmp_path, np.array([[[0, 68, 184, 667]]], dtype=np.uint16), ATLAS,
+                        segmentation_type=kind)
+        assert [k for k in self.REQUIRED if k not in ds] == []
+        n_dims = len(ds.DimensionIndexSequence)
+        for fg in ds.PerFrameFunctionalGroupsSequence:
+            values = fg.FrameContentSequence[0].DimensionIndexValues
+            assert len([values] if isinstance(values, int) else list(values)) == n_dims
+
+    def test_the_caller_places_it_in_a_study(self, tmp_path):
+        ds, _ = _export(tmp_path, np.array([[[0, 10]]], dtype=np.uint8), [LIVER_TUMOR[0]],
+                        study_instance_uid="1.2.3", frame_of_reference_uid="1.2.4")
+        assert ds.StudyInstanceUID == "1.2.3" and ds.FrameOfReferenceUID == "1.2.4"
+
+
+class TestReviewFixes:
+    def test_label_falls_back_to_the_first_designation_only(self, tmp_path):
+        segs = [{"id": "the-id", "label_values": [1], "dicom": DICOM,
+                 "designations": [{"scheme": "SCT", "code": "1"},
+                                  {"scheme": "SCT", "code": "2", "meaning": "Second"}]}]
+        ds, _ = _export(tmp_path, np.array([[[0, 1]]], dtype=np.uint8), segs)
+        assert str(ds.SegmentSequence[0].SegmentLabel) == "the-id"
+
+    def test_segments_overlap_is_computed_for_fractional(self, tmp_path):
+        ds, _ = _export(tmp_path, np.full((1, 1, 1, 2), 0.5, dtype=np.float32),
+                        [{"id": "a", "name": "A", "label_values": [1], "dicom": DICOM}],
+                        layered=True, source_representation="fractional-labelmap",
+                        fractional_type="OCCUPANCY")
+        assert ds.SegmentsOverlap == "NO"
+
+    def test_an_implicit_background_absent_from_the_data_is_still_named(self, tmp_path):
+        ds, _ = _export(tmp_path, np.full((2, 1, 2), 68, dtype=np.uint8), [ATLAS[2]],
+                        segmentation_type="LABELMAP")
+        assert [int(i.SegmentNumber) for i in ds.SegmentSequence] == [68]
+        assert int(ds.PixelPaddingValue) == 0
+        out = tmp_path / "back.zarr"
+        dicom_to_zarr(tmp_path / "out.dcm", out)
+        seg = zarr.open_array(str(out), mode="r").attrs["duckn"]["extensions"]["seg"]
+        assert [(s["id"], s.get("role")) for s in seg["segments"]] == [
+            ("Segment_0", "background"), ("Segment_68", None)]
+
+    def test_an_unreadable_color_is_not_reported_again(self, tmp_path):
+        segs = [{"id": "a", "name": "A", "label_values": [1], "color": "red", "dicom": DICOM}]
+        _, reported = _export(tmp_path, np.array([[[0, 1]]], dtype=np.uint8), segs)
+        assert [d.code for d in reported] == ["color-unreadable"]     # the reader's, once

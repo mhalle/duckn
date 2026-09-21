@@ -89,17 +89,13 @@ class TestRule17:
 
 
 class TestConverters:
-    def test_a_slicer_file_with_a_label_union_round_trips_through_legacy_replay(self):
+    def test_a_label_union_is_one_segment_and_needs_the_voxels_to_export(self):
         from duckn.seg_nrrd import parse_seg_keyvalues, serialize_seg_extension
         kv = {"Segment0_ID": "S1", "Segment0_Name": "Liver", "Segment0_LabelValue": "1 3"}
         ext, _ = parse_seg_keyvalues(kv)
         assert ext.segments[0].label_values == [1, 3]                   # one segment, two values
-        out = serialize_seg_extension(ext)
-        assert out["Segment0_LabelValue"] == "1 3"                      # written back verbatim
-        renamed = ext.model_copy(update={"segments": [
-            ext.segments[0].model_copy(update={"name": "Hepar"})]})
-        with pytest.raises(ValueError, match="voxel"):
-            serialize_seg_extension(renamed)                          # changed: must be materialized
+        with pytest.raises(ValueError, match="voxel"):                  # Slicer reads one value
+            serialize_seg_extension(ext)
 
     def test_dicom_export_writes_a_migrated_group_as_a_segment(self, tmp_path):
         pydicom = pytest.importorskip("pydicom")

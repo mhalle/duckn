@@ -135,11 +135,12 @@ class SegAccessor:
     @property
     def diagnostics(self) -> list:
         """What reading the extension reported: migration changes and rule
-        violations. When the file is refused, the diagnostics it was refused
-        over (or nothing, if it is not the shape of a seg extension at all)."""
+        violations. A refused file still reports everything (what it was
+        refused over is on the error ``model`` raises), or nothing if it is
+        not the shape of a seg extension at all."""
         read = self._do_read()
         if isinstance(read, Exception):
-            return list(getattr(read, "diagnostics", []))
+            return list(getattr(read, "all_diagnostics", []))
         return list(read[1])
 
     def background_value(self, layer: int = 0) -> int | None:
@@ -224,9 +225,12 @@ class SegAccessor:
         return seg.label_values if seg is not None else []
 
     def name_for(self, label_value: int, *, layer: int = 0) -> str | None:
-        """The name of the topmost segment of ``layer`` listing ``label_value``."""
-        seg = self.segment(label_value=label_value, layer=layer)
-        return seg.name if seg else None
+        """The name that answers for ``label_value`` in ``layer``: that of the
+        topmost segment listing it that has one, as a color is resolved."""
+        for seg in reversed(self.segments_for(label_value, layer=layer)):
+            if seg.name is not None:
+                return seg.name
+        return None
 
     @property
     def names(self) -> list[str | None]:

@@ -883,7 +883,8 @@ def _load_seg_labelmap(
                 shared_st = float(st)
 
     rows, cols = int(ds.Rows), int(ds.Columns)
-    pixel_array = ds.pixel_array  # (n_frames, rows, cols)
+    # pydicom returns (rows, cols) when there is one frame; a frame is a plane
+    pixel_array = ds.pixel_array.reshape(-1, rows, cols)
 
     # Gather frame positions and sort by Z
     iop = shared_iop
@@ -1010,7 +1011,8 @@ def _load_seg(
     # Collect per-frame info: segment number, Z position, frame index
     n_segments = len(ds.SegmentSequence)
     rows, cols = int(ds.Rows), int(ds.Columns)
-    pixel_array = ds.pixel_array  # (n_frames, rows, cols)
+    # pydicom returns (rows, cols) when there is one frame; a frame is a plane
+    pixel_array = ds.pixel_array.reshape(-1, rows, cols)
 
     # Gather all unique Z positions and per-frame segment assignments
     z_positions: set[float] = set()
@@ -1605,8 +1607,11 @@ def build_duckn_metadata(
     anonymized: bool | None,
     include_tags: bool,
     include_binary: bool = False,
+    *,
+    diagnostics: list | None = None,
 ) -> DucknMetadata:
-    """Build duckn metadata from geometry and DICOM datasets."""
+    """Build duckn metadata from geometry and DICOM datasets. What importing
+    a Segmentation reports (seg spec §10) is appended to ``diagnostics``."""
     # Axes in C order
     axes = []
 
@@ -1760,7 +1765,7 @@ def build_duckn_metadata(
     # Segmentation extension from DICOM SEG
     ds0 = datasets[0]
     if _is_dicom_seg(ds0):
-        seg_ext = _extract_seg_extension(ds0)
+        seg_ext = _extract_seg_extension(ds0, diagnostics=diagnostics)
         if seg_ext is not None:
             if extensions is None:
                 extensions = {}
@@ -1795,8 +1800,9 @@ def dicom_to_zarr(
     anonymized: bool | None = None,
     tags: bool = True,
     binary_tags: bool = False,
-) -> None:
-    """Convert DICOM file(s) to a duckn Zarr v3 store.
+) -> list[Any]:
+    """Convert DICOM file(s) to a duckn Zarr v3 store. Returns what the
+    conversion reports: for a Segmentation, the seg import's diagnostics.
 
     Parameters
     ----------
@@ -1823,7 +1829,10 @@ def dicom_to_zarr(
     else:
         raise FileNotFoundError(f"Input path does not exist: {input_p}")
 
-    meta = build_duckn_metadata(geometry, datasets, anonymized, tags, binary_tags)
+    diagnostics: list[Any] = []
+    meta = build_duckn_metadata(
+        geometry, datasets, anonymized, tags, binary_tags, diagnostics=diagnostics
+    )
 
     if chunks is None:
         if volume.ndim == 4:
@@ -1867,6 +1876,7 @@ def dicom_to_zarr(
             overwrite=False if is_zip else overwrite,
             fill_value=fill_value,
         )
+    return diagnostics
 
 
 # ---------------------------------------------------------------------------
@@ -2720,6 +2730,9 @@ def zarr_to_dicom_seg(
     fractional_type: str | None = None,
     maximum_fractional_value: int = 255,
     background_dicom: Any = None,
+    study_instance_uid: str | None = None,
+    series_instance_uid: str | None = None,
+    frame_of_reference_uid: str | None = None,
 ) -> list[Any]:
     """Convert a duckn segmentation to a DICOM Segmentation (seg spec §6.2).
 
@@ -2749,6 +2762,10 @@ def zarr_to_dicom_seg(
         ``metadata.dicom`` does not record it
     background_dicom : ``dicom`` content for a LABELMAP's background item when
         the background is the implicit 0 and has no segment of its own
+
+    study_instance_uid, series_instance_uid, frame_of_reference_uid : the
+        study and frame of reference of the image this segments, so that the
+        object belongs with it; new UIDs are generated for any not given
 
     Returns what the export reports (seg spec §10).
     """
@@ -2842,6 +2859,41 @@ def zarr_to_dicom_seg(
     ds.SOPInstanceUID = sop_instance_uid
     ds.Modality = "SEG"
     ds.Manufacturer = "duckn"
+
+    # What DICOM requires of every instance. The identifying UIDs come from
+    # the caller, so that the object can sit in the study of the image it
+    # segments and share its frame of reference; otherwise they are new. The
+    # patient attributes are Type 2 and may be empty.
+    import datetime
+
+    now = datetime.datetime.now()
+    ds.StudyInstanceUID = study_instance_uid or generate_uid()
+    ds.SeriesInstanceUID = series_instance_uid or generate_uid()
+    ds.FrameOfReferenceUID = frame_of_reference_uid or generate_uid()
+    ds.PatientName = ""
+    ds.PatientID = ""
+    ds.PatientBirthDate = ""
+    ds.PatientSex = ""
+    ds.StudyDate = ""
+    ds.StudyTime = ""
+    ds.ReferringPhysicianName = ""
+    ds.StudyID = ""
+    ds.AccessionNumber = ""
+    ds.SeriesNumber = 1
+    ds.InstanceNumber = 1
+    ds.ImageType = ["DERIVED", "PRIMARY"]
+    ds.ContentDate = now.strftime("%Y%m%d")
+    ds.ContentTime = now.strftime("%H%M%S")
+    ds.ContentCreatorName = ""
+    ds.DeviceSerialNumber = ""
+    ds.ManufacturerModelName = "duckn"
+    try:
+        from importlib.metadata import version as _pkg_version
+
+        ds.SoftwareVersions = [_pkg_version("duckn")]
+    except Exception:
+        ds.SoftwareVersions = ["duckn"]
+
     ds.SegmentationType = plan.segmentation_type
     ds.ContentLabel = "DUCKN_SEG"
     ds.ContentDescription = "duckn segmentation"
@@ -2853,7 +2905,8 @@ def zarr_to_dicom_seg(
         ds.PixelPaddingValue = plan.pixel_padding_value
     if plan.wrote_d65:
         # How an exporter following the seg spec marks the D65 CIELab encoding
-        versions = [v for v in [getattr(ds, "SoftwareVersions", None)] if v]
+        existing = getattr(ds, "SoftwareVersions", None)
+        versions = [existing] if isinstance(existing, str) else list(existing or [])
         if DICOM_D65_MARKER not in versions:
             versions.append(DICOM_D65_MARKER)
         ds.SoftwareVersions = versions
@@ -2868,6 +2921,25 @@ def zarr_to_dicom_seg(
     ds.SamplesPerPixel = 1
     ds.PhotometricInterpretation = "MONOCHROME2"
     ds.LossyImageCompression = "00"
+
+    # Dimension organization: frames are indexed by segment, then position
+    dim_org_uid = generate_uid()
+    dim_org = Dataset()
+    dim_org.DimensionOrganizationUID = dim_org_uid
+    ds.DimensionOrganizationSequence = Sequence([dim_org])
+    dim_indices = []
+    if not is_labelmap:
+        seg_index = Dataset()
+        seg_index.DimensionOrganizationUID = dim_org_uid
+        seg_index.DimensionIndexPointer = 0x0062000B      # ReferencedSegmentNumber
+        seg_index.FunctionalGroupPointer = 0x0062000A     # SegmentIdentificationSequence
+        dim_indices.append(seg_index)
+    pos_index = Dataset()
+    pos_index.DimensionOrganizationUID = dim_org_uid
+    pos_index.DimensionIndexPointer = 0x00200032          # ImagePositionPatient
+    pos_index.FunctionalGroupPointer = 0x00209113         # PlanePositionSequence
+    dim_indices.append(pos_index)
+    ds.DimensionIndexSequence = Sequence(dim_indices)
 
     # Shared Functional Groups
     shared_fg = Dataset()
@@ -2947,12 +3019,14 @@ def zarr_to_dicom_seg(
     per_frame = []
     frames = []
     if is_labelmap:
-        ds.DimensionOrganizationType = "TILED_FULL"
         for k in range(n_slices):
             frame_fg = Dataset()
             pos_item = Dataset()
             pos_item.ImagePositionPatient = (origin + k * slice_dir).tolist()
             frame_fg.PlanePositionSequence = Sequence([pos_item])
+            content = Dataset()
+            content.DimensionIndexValues = [k + 1]
+            frame_fg.FrameContentSequence = Sequence([content])
             per_frame.append(frame_fg)
             frames.append(plan.frames[k])
     else:
@@ -2972,6 +3046,9 @@ def zarr_to_dicom_seg(
                 ident = Dataset()
                 ident.ReferencedSegmentNumber = planned.number
                 frame_fg.SegmentIdentificationSequence = Sequence([ident])
+                content = Dataset()
+                content.DimensionIndexValues = [index + 1, k + 1]
+                frame_fg.FrameContentSequence = Sequence([content])
                 per_frame.append(frame_fg)
                 frames.append(frame)
 

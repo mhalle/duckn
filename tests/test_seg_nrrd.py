@@ -434,20 +434,24 @@ def test_serialize_tags_and_dicom():
     assert seg.designations[0].scheme == "SCT"
 
 
-def test_serialize_replays_an_unchanged_union_and_refuses_a_changed_one_without_data():
-    """A multi-value LabelValue reads as one segment with several values. Unchanged,
-    it writes back verbatim through the legacy strings; changed, .seg.nrrd cannot
-    hold it as it is and the export must rewrite voxels, which needs the data."""
+def test_a_multi_valued_label_value_is_never_replayed():
+    """A multi-value LabelValue (what an earlier version of this library wrote)
+    reads as one segment with several values. 3D Slicer cannot read it, so it is
+    not replayed even unchanged: the export rewrites voxels, which needs the data."""
+    import numpy as np
+
+    from duckn.seg_nrrd import export_seg_nrrd
+
     kv = {
         "Segment0_ID": "S1",
         "Segment0_LabelValue": "2 3",
     }
     ext, _ = parse_seg_keyvalues(kv)
-    assert serialize_seg_extension(ext)["Segment0_LabelValue"] == "2 3"
-    changed = ext.model_copy(update={"segments": [
-        ext.segments[0].model_copy(update={"name": "renamed"})]})
     with pytest.raises(ValueError, match="voxel"):
-        serialize_seg_extension(changed)
+        serialize_seg_extension(ext)
+    result = export_seg_nrrd(ext, np.array([[[0, 2, 3]]], dtype=np.uint8))
+    assert result.keyvalues["Segment0_LabelValue"] == "1"
+    assert result.data.tolist() == [[[0, 1, 1]]]
 
 
 @pytest.mark.parametrize(
@@ -664,3 +668,13 @@ def test_real_world_files_satisfy_the_rules(seg_file: Path):
                  if k.startswith(("Segment", "Segmentation_"))}
     ext, _ = parse_seg_keyvalues(keyvalues)
     assert validate_seg_extension(ext, dtype="uint8", fill_value=0) == []
+
+
+def test_a_dotted_slicer_tag_key_keeps_its_prefix():
+    kv = {"Segment0_ID": "a", "Segment0_LabelValue": "1",
+          "Segment0_Tags": "Segmentation.foo.bar:x|Segmentation.Status:y|other.key:z|"}
+    ext, _ = parse_seg_keyvalues(kv)
+    assert ext.segments[0].metadata["slicer"]["tags"] == {
+        "Segmentation.foo.bar": "x", "Status": "y", "other.key": "z"}
+    out = serialize_seg_extension(ext.model_copy(update={"legacy": None}))
+    assert out["Segment0_Tags"] == kv["Segment0_Tags"]

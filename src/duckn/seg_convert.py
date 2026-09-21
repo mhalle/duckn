@@ -22,6 +22,7 @@ from .models import (
     DucknMetadata,
     SampleMetadata,
 )
+from .seg_model import seg_for_derived_array
 from .seg_read import read_seg_extension
 from .zarr_io import open_store, read_duckn, _is_zip_path
 from .convert import _auto_chunks, _build_compressors
@@ -39,8 +40,9 @@ def seg_binary_to_labelmap(
     """Convert a 4D binary segmentation to a 3D integer labelmap.
 
     Each segment is assigned a unique integer label, in ``segments`` order.
-    Non-overlapping segments assumed — if multiple segments claim the
-    same voxel, the last segment (highest index) wins.
+    **Lossy where segments overlap**: a voxel several segments claim goes to
+    the last of them, and the others lose it. To keep overlap, export with
+    ``seg_nrrd.export_seg_nrrd`` or keep the layered array.
 
     Parameters
     ----------
@@ -96,7 +98,8 @@ def seg_binary_to_labelmap(
 
     extensions: dict[str, Any] = {}
     if seg_ext:
-        extensions["seg"] = seg_ext.model_dump(exclude_none=True)
+        # the voxels changed: what was in voxel coordinates goes (seg spec §3.3)
+        extensions["seg"] = seg_for_derived_array(seg_ext.model_dump(exclude_none=True))
     if meta.extensions:
         for key, val in meta.extensions.items():
             if key != "seg":

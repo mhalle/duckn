@@ -17,7 +17,7 @@ OLD_SPEC_PATH = Path(__file__).parent.parent / "docs" / "archive" / "segmentatio
 
 # Rules a migrated file satisfies, given a conforming older file (§6.3).
 GUARANTEED = {f"rule-{n}" for n in
-              ("1", "2", "3a", "3b", "3c", "4a", "4b", "6", "7", "8a", "8b", "9",
+              ("1", "2", "3a", "3b", "3c", "4a", "4b", "6", "8a", "9",
                "11a", "11b", "12", "13", "14")}
 
 
@@ -223,12 +223,38 @@ class TestRead:
             read_seg_extension({"version": version, "segments": [{"new_field": 1}]})
         assert [d.code for d in e.value.diagnostics] == ["rule-1"]
 
-    @pytest.mark.parametrize("raw", [{"segments": []}, {"version": 0.8, "segments": []},
-                                     {"version": "0.8"},
-                                     {"version": "0.7", "segments": [{"id": "a", "label_value": True}]}])
-    def test_not_a_seg_extension(self, raw):
-        with pytest.raises(ValueError):
+    @pytest.mark.parametrize(
+        "raw, code",
+        [({"segments": []}, "rule-1"),
+         ({"version": 0.8, "segments": []}, "rule-1"),
+         ({"version": "0.8", "segments": [{"id": "a", "label_values": [1], "role": "fg"}]}, "rule-8a"),
+         ({"version": "0.8", "segments": [{"id": "a", "label_values": [1.5]}]}, "rule-11a"),
+         ({"version": "0.8", "segments": [{"id": "a", "label_values": []}]}, "rule-11a"),
+         ({"version": "0.8", "segments": [{"id": "a", "label_values": 1}]}, "rule-11a"),
+         ({"version": "0.7", "segments": [{"id": "a", "label_value": True}]}, "rule-11a"),
+         ({"version": "0.8", "segments": [{"id": "a", "label_values": [1], "layer": -1}]}, "rule-2")],
+    )
+    def test_a_refusal_the_model_enforces_still_has_its_code(self, raw, code):
+        with pytest.raises(DiagnosticsError) as e:
             read_seg_extension(raw)
+        assert [d.code for d in e.value.diagnostics] == [code]
+
+    @pytest.mark.parametrize("raw", [{"version": "0.8"}, {"version": "0.8", "segments": "no"},
+                                     {"version": "0.8", "segments": [{"label_values": [1]}]},
+                                     {"version": "0.8", "segments": [], "bogus": 1}])
+    def test_not_a_seg_extension(self, raw):
+        with pytest.raises(ValueError) as e:
+            read_seg_extension(raw)
+        assert not isinstance(e.value, DiagnosticsError)
+
+    def test_a_refused_file_still_says_what_migration_changed(self):
+        raw = {"version": "0.7", "segments": [{"id": "a b", "label_value": 0, "background": True},
+                                               {"id": "s", "label_value": 0}]}
+        with pytest.raises(DiagnosticsError) as e:
+            read_seg_extension(raw)
+        assert [d.code for d in e.value.diagnostics] == ["rule-14"]
+        assert [d.code for d in e.value.all_diagnostics] == [
+            "migrated-background", "id-changed", "rule-14"]
 
     def test_refusal_and_strict(self):
         dup = {"version": "0.8", "segments": [{"id": "a", "label_values": [1]},
@@ -268,9 +294,16 @@ def test_the_0_7_specs_examples_migrate():
     assert len(examples) >= 4
     for raw in examples:
         ext, diagnostics = read_seg_extension(raw)
-        broken = {d.code for d in diagnostics} & GUARANTEED - {"rule-7"}
+        broken = {d.code for d in diagnostics} & GUARANTEED
         assert not broken, (raw["segments"][0]["id"], diagnostics)
         assert {d.code for d in diagnostics} <= {
             "rule-5", "migrated-background", "migrated-claim-dropped",
             "migrated-group-omitted", "migrated-background-subtracted",
             "designation-set-aside", "id-changed", "migrated-color-differs"}
+
+
+def test_migration_carries_an_undefined_algorithm_type_as_found():
+    ext, diagnostics = read_seg_extension({"version": "0.7", "segments": [
+        {"id": "a", "label_value": 1, "metadata": {"dicom": {"SegmentAlgorithmType": "AUTO"}}}]})
+    assert ext.segments[0].dicom.algorithm_type == "AUTO"
+    assert [d.code for d in diagnostics] == ["rule-8b"]

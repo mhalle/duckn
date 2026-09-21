@@ -455,10 +455,14 @@ def validate_seg_extension(
     declared = ext.labeling_schemes
     for key in declared:
         entry = registry.get(key)
-        if entry is None or entry.uri is None or entry.version is None:
+        if entry is None:
+            out.append(_err("rule-5", About.scheme(key), "scheme is not registered"))
+            continue
+        missing = [f for f in ("uri", "version") if getattr(entry, f) is None]
+        if missing:
             out.append(
                 _err("rule-5", About.scheme(key),
-                     "a labeling scheme is registered with a uri and a version")
+                     f"a labeling scheme needs a {' and a '.join(missing)}")
             )
 
     # Rules 6 and 7
@@ -494,7 +498,10 @@ def validate_seg_extension(
     # Rule 9
     carried: set[tuple[int, tuple]] = set()
     for i, seg in enumerate(ext.segments):
-        mine = {designation_identity(ext, d) for d in seg.designations or []}
+        identities = [designation_identity(ext, d) for d in seg.designations or []]
+        mine = set(identities)
+        if len(mine) != len(identities):
+            out.append(_err("rule-9", about(i, seg), "carries the same designation twice"))
         if any((seg.effective_layer, key) in carried for key in mine):
             out.append(
                 _err("rule-9", about(i, seg),
@@ -707,8 +714,8 @@ def seg_for_derived_array(raw: dict[str, Any]) -> dict[str, Any]:
         slicer.pop("reference_extent_offset", None)
         if not slicer:
             del metadata["slicer"]
-        if not metadata:
-            del out["metadata"]
+    if isinstance(metadata, dict) and not metadata:
+        del out["metadata"]
     return out
 
 
@@ -753,6 +760,8 @@ def normalized_for_writing(
     ascending, ``layer: 0`` and ``implicit_background: true`` omitted, empty
     collections omitted (§4.4), colors in their canonical spelling. An
     unreadable color is dropped. Order and ids are the caller's business."""
+    if (version_tuple(ext.version) or (0, 0)) > version_tuple(SEG_VERSION):  # type: ignore[operator]
+        raise ValueError(f"cannot write a version {ext.version} extension as {SEG_VERSION}")
     out = ext.model_copy(deep=True)
     out.version = SEG_VERSION
     diagnostics: list[Diagnostic] = []
