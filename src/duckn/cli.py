@@ -159,12 +159,14 @@ def to_nrrd(
         )
         click.echo(f"Wrote {output_path} (zero-copy)")
     else:
-        zarr_to_nrrd(
+        reported = zarr_to_nrrd(
             input_path,
             output_path,
             encoding=encoding,
             overwrite=overwrite,
         )
+        for diagnostic in reported:
+            click.echo(str(diagnostic), err=True)
         click.echo(f"Wrote {output_path}")
 
 

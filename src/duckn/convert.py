@@ -17,6 +17,7 @@ from .models import (
     AxisKind, AxisMetadata, Centering, DwmriAxisExtension, DwmriExtension,
     DucknMetadata, SegmentationExtension, SpaceName, _SPACE_ABBREVS,
 )
+from .diagnostics import Diagnostic
 from .dwi_nrrd import parse_dwi_keyvalues, serialize_dwi_extension
 from .seg_nrrd import parse_seg_keyvalues, serialize_seg_extension
 from .zarr_io import _is_zip_path, open_store
@@ -334,8 +335,12 @@ def _metadata_to_header(
     *,
     axis_order: str = "slowest_first",
     dim_names: tuple[str, ...] | list[str] | None = None,
+    seg_keyvalues: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Reconstruct NRRD header dict from DucknMetadata.
+
+    ``seg_keyvalues`` are the seg extension's key/values when the caller has
+    already exported it (as it must when the export rewrites voxels).
 
     Parameters
     ----------
@@ -443,8 +448,12 @@ def _metadata_to_header(
     # --- Restore NRRD key/value pairs ---
     if meta.extensions:
         if "seg" in meta.extensions:
-            seg_ext = SegmentationExtension(**meta.extensions["seg"])
-            for k, v in serialize_seg_extension(seg_ext).items():
+            if seg_keyvalues is None:
+                from .seg_read import read_seg_extension
+
+                seg_ext, _ = read_seg_extension(meta.extensions["seg"], axes=meta.axes)
+                seg_keyvalues = serialize_seg_extension(seg_ext)
+            for k, v in seg_keyvalues.items():
                 header[k] = v
         if "dwmri" in meta.extensions:
             dwi_axis_dict = None
@@ -615,11 +624,13 @@ def zarr_to_nrrd(
     *,
     encoding: str = "gzip",
     overwrite: bool = False,
-) -> None:
+) -> list[Diagnostic]:
     """Convert a duckn Zarr v3 store to an NRRD file.
 
     Reads the data through zarr and writes via pynrrd.
-    Expects per-axis fields in C order (slowest-first).
+    Expects per-axis fields in C order (slowest-first). Returns what the
+    conversion reports: for a segmentation, what reading and exporting the
+    seg extension found (seg spec §10).
 
     Parameters
     ----------
@@ -655,10 +666,50 @@ def zarr_to_nrrd(
         data = materialize(data, meta.value_transforms)
         meta = meta.model_copy(update={"value_transforms": None})
 
-    header = _metadata_to_header(meta, dim_names=dim_names)
+    diagnostics: list[Diagnostic] = []
+    seg_keyvalues = None
+    if meta.extensions and "seg" in meta.extensions:
+        data, meta, dim_names, seg_keyvalues = _export_seg(data, meta, dim_names, diagnostics)
+
+    header = _metadata_to_header(meta, dim_names=dim_names, seg_keyvalues=seg_keyvalues)
     header["encoding"] = encoding
 
     nrrd.write(str(nrrd_path), data, header, index_order="C")
+    return diagnostics
+
+
+def _export_seg(
+    data: np.ndarray,
+    meta: DucknMetadata,
+    dim_names: Any,
+    diagnostics: list[Diagnostic],
+) -> tuple[np.ndarray, DucknMetadata, Any, dict[str, str]]:
+    """Export the seg extension for .seg.nrrd, taking up new voxel data and a
+    changed ``list`` axis when the export materialized (seg spec §6.1)."""
+    from .seg_nrrd import export_seg_nrrd
+    from .seg_read import read_seg_extension
+
+    axes = list(meta.axes or [])
+    list_axis = next((i for i, ax in enumerate(axes) if ax.kind == AxisKind.LIST), None)
+    seg_ext, found = read_seg_extension(
+        meta.extensions["seg"], axes=meta.axes, shape=data.shape, dtype=data.dtype
+    )
+    diagnostics.extend(found)
+    result = export_seg_nrrd(seg_ext, data, list_axis=list_axis)
+    diagnostics.extend(result.diagnostics)
+    if not result.materialized:
+        return data, meta, dim_names, result.keyvalues
+
+    names = list(dim_names) if dim_names is not None else None
+    if list_axis is not None and result.list_axis is None:
+        del axes[list_axis]
+        if names:
+            del names[list_axis]
+    elif list_axis is None and result.list_axis is not None:
+        axes.insert(result.list_axis, AxisMetadata(kind=AxisKind.LIST))
+        if names:
+            names.insert(result.list_axis, "layer")
+    return result.data, meta.model_copy(update={"axes": axes}), names, result.keyvalues
 
 
 # ---------------------------------------------------------------------------

@@ -1,27 +1,43 @@
-"""Parse .seg.nrrd key/value pairs into SegmentationExtension."""
+"""The .seg.nrrd mapping of the seg extension (spec §6.1): key/value pairs to
+a SegmentationExtension and back, materializing voxel data where 3D Slicer's
+one-value-per-segment layout cannot hold the file as it is."""
 
 from __future__ import annotations
 
 import re
-import warnings
+from dataclasses import dataclass, field
 from typing import Any
 
-from .models import (
-    SEG_EXTENSION_VERSION,
-    CodedEntry,
-    ConversionParameter,
-    Designation,
-    DicomClassification,
+from .diagnostics import About, Diagnostic
+from .models import CodedEntry, ConversionParameter, Designation
+from .seg_color import format_color, from_slicer_floats, parse_color, slicer_floats_text, to_srgb
+from .seg_model import (
+    SEG_VERSION,
+    DicomContent,
     Segment,
     SegmentationExtension,
-    TerminologyEntry,
+    derive_token_ids,
+    is_fractional,
+    is_label_table,
+    layers_of,
 )
 
-# Known terminology scheme → human-readable name
-_KNOWN_SCHEMES: dict[str, str] = {
-    "SCT": "SNOMED Clinical Terms",
-    "SRT": "DICOM SR Coding Scheme",
+DicomClassification = DicomContent  # the 0.7 name
+
+# Known terminology scheme → registry entry
+_KNOWN_SCHEMES: dict[str, dict[str, str]] = {
+    "SCT": {"name": "SNOMED Clinical Terms", "uri": "http://snomed.info/sct"},
+    "SRT": {"name": "DICOM SR Coding Scheme"},
+    "DCM": {"name": "DICOM Controlled Terminology",
+            "uri": "http://dicom.nema.org/resources/ontology/DCM"},
 }
+
+ROLE_TAG = "duckn.role"
+_ROLES = ("background", "unknown")
+
+
+def _warn(code: str, about: About, message: str = "") -> Diagnostic:
+    return Diagnostic(code, "warning", about, message)
 
 _SEG_KEY_RE = re.compile(r"^Segment(\d+)_(.+)$")
 
@@ -46,11 +62,10 @@ def _parse_float_list(val: str) -> list[float]:
     return [float(x) for x in val.split()]
 
 
-def _parse_label_value(val: str) -> int | list[int]:
-    parts = val.split()
-    if len(parts) == 1:
-        return int(parts[0])
-    return [int(x) for x in parts]
+def _parse_label_values(val: str) -> list[int]:
+    # 3D Slicer writes one integer; a space-separated list is what an earlier
+    # version of this library wrote for a union of islands.
+    return sorted({int(x) for x in val.split()})
 
 
 def _parse_conversion_parameters(raw: str) -> dict[str, ConversionParameter]:
@@ -188,9 +203,13 @@ def _parse_tags(
 
 
 def _parse_segment(
-    index: int, kv: dict[str, str]
-) -> tuple[Segment, set[str]]:
-    """Build a Segment from ``SegmentN_*`` keys.  Returns (segment, schemes)."""
+    index: int, kv: dict[str, str], diagnostics: list[Diagnostic]
+) -> tuple[dict[str, Any], set[str]]:
+    """Build a segment dict from ``SegmentN_*`` keys.  Returns (segment, schemes).
+
+    ``label_values`` is left out when the file has no ``LabelValue``; the
+    caller assigns one. Diagnostics name the segment by its source id, and
+    the caller re-points them if the id changes."""
     prefix = f"Segment{index}_"
 
     seg_id = kv[f"{prefix}ID"]
@@ -203,29 +222,19 @@ def _parse_segment(
     extent_raw = kv.get(f"{prefix}Extent")
     tags_raw = kv.get(f"{prefix}Tags")
 
-    kwargs: dict[str, Any] = {"id": seg_id}
+    seg: dict[str, Any] = {"id": seg_id}
     if name is not None:
-        kwargs["name"] = name
-    if color_raw is not None:
-        kwargs["color"] = _parse_float_list(color_raw)
+        seg["name"] = name
     if label_raw is not None:
-        kwargs["label_value"] = _parse_label_value(label_raw)
-    else:
-        # Slicer omits LabelValue only for segments with no binary labelmap
-        # representation. 0 is the background value, so claiming it would
-        # claim every unwritten voxel; use the 1-based ordinal instead.
-        kwargs["label_value"] = index + 1
-        warnings.warn(
-            f"segment {seg_id!r} has no {prefix}LabelValue; "
-            f"assigning label value {index + 1}",
-            stacklevel=3,
-        )
+        seg["label_values"] = _parse_label_values(label_raw)
     if layer_raw is not None and int(layer_raw) != 0:
         # Layer 0 is the implicit default. Carrying it explicitly would claim
         # a `list` axis that an ordinary 3D .seg.nrrd does not have (§5 rule 2).
-        kwargs["layer"] = int(layer_raw)
+        seg["layer"] = int(layer_raw)
     if extent_raw is not None:
-        kwargs["extent"] = _parse_int_list(extent_raw)
+        seg["extent"] = _parse_int_list(extent_raw)
+    if color_raw is not None:
+        seg["color"] = format_color(from_slicer_floats(_parse_float_list(color_raw)))[0]
 
     schemes: set[str] = set()
     slicer_meta: dict[str, Any] = {}
@@ -233,11 +242,19 @@ def _parse_segment(
     if tags_raw is not None:
         tags, dicom, designations, tag_schemes = _parse_tags(tags_raw)
         schemes = tag_schemes
+        if tags is not None and ROLE_TAG in tags:
+            if tags[ROLE_TAG] in _ROLES:
+                seg["role"] = tags.pop(ROLE_TAG)
+            else:
+                diagnostics.append(
+                    _warn("role-tag-invalid", About.segment(seg_id), repr(tags[ROLE_TAG]))
+                )
         if designations is not None:
-            kwargs["designations"] = designations
+            seg["designations"] = [d.model_dump(exclude_none=True) for d in designations]
+            diagnostics.append(_warn("designation-unverified", About.segment(seg_id)))
         if dicom is not None:
-            kwargs["dicom"] = dicom
-        if tags is not None:
+            seg["dicom"] = dicom.model_dump(exclude_none=True)
+        if tags:
             slicer_meta["tags"] = tags
 
     if name_auto is not None:
@@ -246,16 +263,15 @@ def _parse_segment(
         slicer_meta["color_auto_generated"] = _parse_bool(color_auto)
 
     if slicer_meta:
-        kwargs["metadata"] = {"slicer": slicer_meta}
+        seg["metadata"] = {"slicer": slicer_meta}
 
-    # A dict, not a Segment: a multi-valued LabelValue is the 0.6 island union,
-    # which only the extension-level migration knows how to turn into a group
-    # over island leaves (a Segment would reject the list on construction).
-    return kwargs, schemes
+    return seg, schemes
 
 
 def parse_seg_keyvalues(
     keyvalues: dict[str, str],
+    *,
+    diagnostics: list[Diagnostic] | None = None,
 ) -> tuple[SegmentationExtension | None, dict[str, str]]:
     """Parse segmentation key/value pairs into a SegmentationExtension.
 
@@ -263,6 +279,8 @@ def parse_seg_keyvalues(
     ----------
     keyvalues:
         Non-spec key/value pairs from an NRRD header.
+    diagnostics:
+        A list to which what the import reports is appended (§10).
 
     Returns
     -------
@@ -291,7 +309,8 @@ def parse_seg_keyvalues(
             remaining[key] = keyvalues[key]
 
     # --- Global fields ---
-    ext_kwargs: dict[str, Any] = {"version": SEG_EXTENSION_VERSION}
+    found: list[Diagnostic] = []
+    ext_kwargs: dict[str, Any] = {"version": SEG_VERSION}
     slicer_meta: dict[str, Any] = {}
 
     master_rep = keyvalues.get("Segmentation_MasterRepresentation")
@@ -325,29 +344,58 @@ def parse_seg_keyvalues(
     all_schemes: set[str] = set()
     segments: list[dict[str, Any]] = []
     for idx in seg_indices:
-        seg, schemes = _parse_segment(idx, keyvalues)
+        seg, schemes = _parse_segment(idx, keyvalues, found)
         segments.append(seg)
         all_schemes |= schemes
 
+    # Slicer omits LabelValue only for segments with no binary labelmap
+    # representation. 0 is the background value, so claiming it would claim
+    # every unwritten voxel: each such segment, in order, takes the smallest
+    # positive integer that no segment of its layer has.
+    used: dict[int, set[int]] = {}
+    for seg in segments:
+        used.setdefault(seg.get("layer", 0), set()).update(seg.get("label_values", ()))
+    for seg in segments:
+        if "label_values" not in seg:
+            taken = used[seg.get("layer", 0)]
+            value = next(v for v in range(1, len(taken) + 2) if v not in taken)
+            taken.add(value)
+            seg["label_values"] = [value]
+
+    # Two segments of a layer carrying the same designation (rule 9)
+    from .seg_read import _set_aside_colliding_designations
+
+    found.extend(_set_aside_colliding_designations(segments))
+
+    # Ids are made tokens, the original kept (§6.1)
+    new_ids = derive_token_ids([seg["id"] for seg in segments])
+    for seg, new_id in zip(segments, new_ids):
+        if new_id != seg["id"]:
+            old_id = seg["id"]
+            metadata = seg.setdefault("metadata", {})
+            metadata.setdefault("duckn", {})["id"] = old_id
+            seg["id"] = new_id
+            found = [
+                Diagnostic(d.code, d.severity, About.segment(new_id), d.message)
+                if d.about == About.segment(old_id) else d
+                for d in found
+            ]
+            found.append(_warn("id-changed", About.segment(new_id), f"was {old_id!r}"))
+
     ext_kwargs["segments"] = segments
-    if any(isinstance(s.get("label_value"), list) for s in segments if isinstance(s, dict)):
-        # A space-separated LabelValue is the 0.6 island union. Declare the
-        # keyvalues as 0.6 and let the model's migration turn it into a group
-        # over island leaves, rather than re-implementing that here.
-        ext_kwargs["version"] = "0.6"
 
     # --- Terminologies registry ---
     if all_schemes:
-        terminologies: dict[str, TerminologyEntry] = {}
-        for scheme in sorted(all_schemes):
-            name = _KNOWN_SCHEMES.get(scheme)
-            terminologies[scheme] = TerminologyEntry(name=name)
-        ext_kwargs["terminologies"] = terminologies
+        ext_kwargs["terminologies"] = {
+            scheme: dict(_KNOWN_SCHEMES.get(scheme, {})) for scheme in sorted(all_schemes)
+        }
 
     # --- Legacy: stash original key/value strings for lossless back-conversion ---
     ext_kwargs["legacy"] = {"keyvalues": consumed}
 
-    return SegmentationExtension(**ext_kwargs), remaining
+    if diagnostics is not None:
+        diagnostics.extend(found)
+    return SegmentationExtension.model_validate(ext_kwargs), remaining
 
 
 # ---------------------------------------------------------------------------
@@ -444,6 +492,9 @@ def _serialize_tags(seg: Segment) -> str:
             continue
         pairs.append(f"Segmentation.{key}:{val}" if "." not in key else f"{key}:{val}")
 
+    if seg.role is not None:
+        pairs.append(f"{ROLE_TAG}:{seg.role}")
+
     designation = seg.designations[0] if seg.designations else None
     term_val = _serialize_terminology_entry(seg.dicom, designation)
     if term_val:
@@ -454,8 +505,29 @@ def _serialize_tags(seg: Segment) -> str:
     return "|".join(pairs) + "|"
 
 
-def _generate_from_model(ext: SegmentationExtension) -> dict[str, str]:
-    """Generate flat key/value pairs from model data (no legacy)."""
+def _is_nrrd_background(seg: Segment) -> bool:
+    """A background segment at 0 is .seg.nrrd's own background: not written."""
+    return seg.role == "background" and list(seg.label_values) == [0]
+
+
+def _written(ext: SegmentationExtension) -> list[Segment]:
+    return [seg for seg in ext.segments if not _is_nrrd_background(seg)]
+
+
+def needs_materialization(ext: SegmentationExtension, dtype: Any = None) -> bool:
+    """Whether the file cannot be written as it is (§6.1): some layer is not a
+    label table, or a written segment lists a value that is not positive."""
+    if is_fractional(ext, dtype):
+        return False
+    if any(v <= 0 for seg in _written(ext) for v in seg.label_values):
+        return True
+    return not all(is_label_table(ext, layer) for layer in layers_of(ext))
+
+
+def _generate_from_model(
+    ext: SegmentationExtension, diagnostics: list[Diagnostic]
+) -> dict[str, str]:
+    """Generate flat key/value pairs for a file that can be written as it is."""
     kv: dict[str, str] = {}
     ext_slicer = _slicer_metadata(ext)
 
@@ -478,28 +550,39 @@ def _generate_from_model(ext: SegmentationExtension) -> dict[str, str]:
     if ref_offset is not None:
         kv["Segmentation_ReferenceImageExtentOffset"] = " ".join(str(x) for x in ref_offset)
 
-    for i, seg in enumerate(ext.segments):
+    for seg in ext.segments:
+        if _is_nrrd_background(seg) and (seg.name or seg.designations or seg.dicom):
+            diagnostics.append(_warn("background-not-written", About.segment(seg.id)))
+
+    # The source ids come back only if restoring all of them keeps ids distinct.
+    written = _written(ext)
+    originals = [((s.metadata or {}).get("duckn") or {}).get("id", s.id) for s in written]
+    ids = originals if len(set(originals)) == len(originals) else [s.id for s in written]
+
+    # Dense indices: 3D Slicer stops reading at the first missing one.
+    for i, seg in enumerate(written):
         p = f"Segment{i}_"
         seg_slicer = _slicer_metadata(seg)
-        kv[f"{p}ID"] = seg.id
+        kv[f"{p}ID"] = ids[i]
         if seg.name is not None:
             kv[f"{p}Name"] = seg.name
         name_auto = seg_slicer.get("name_auto_generated")
         if name_auto is not None:
             kv[f"{p}NameAutoGenerated"] = "1" if name_auto else "0"
-        if seg.color is not None:
-            kv[f"{p}Color"] = " ".join(str(c) for c in seg.color)
+        color = parse_color(seg.color) if seg.color is not None else None
+        if seg.color is not None and color is None:
+            diagnostics.append(_warn("color-unreadable", About.segment(seg.id)))
+        if color is not None:
+            srgb = to_srgb(color)
+            kv[f"{p}Color"] = slicer_floats_text(srgb.rgb)
+            if srgb.clamped:
+                diagnostics.append(_warn("color-clamped", About.segment(seg.id)))
+            if srgb.gamut_mapped:
+                diagnostics.append(_warn("color-gamut-mapped", About.segment(seg.id)))
         color_auto = seg_slicer.get("color_auto_generated")
         if color_auto is not None:
             kv[f"{p}ColorAutoGenerated"] = "1" if color_auto else "0"
-        if seg.members is not None:
-            # Resolving first would silently flatten a hierarchy that
-            # .seg.nrrd has no way to express, so refuse instead.
-            raise ValueError(
-                f"segment {seg.id!r}: a group (members) cannot be represented "
-                "in .seg.nrrd"
-            )
-        kv[f"{p}LabelValue"] = str(seg.label_value)
+        kv[f"{p}LabelValue"] = " ".join(str(v) for v in seg.label_values)
         if seg.layer is not None:
             kv[f"{p}Layer"] = str(seg.layer)
         if seg.extent is not None:
@@ -512,53 +595,175 @@ def _generate_from_model(ext: SegmentationExtension) -> dict[str, str]:
     return kv
 
 
-def serialize_seg_extension(ext: SegmentationExtension) -> dict[str, str]:
-    """Convert a SegmentationExtension back to flat NRRD key/value pairs.
-
-    Generates key/value pairs from the model, then for each key checks
-    whether the legacy dict has an original value that would parse back
-    to the same model data.  If so, the original string is used to
-    preserve formatting.  If not (or no legacy), the generated string
-    is used.
-    """
-    legacy_kv: dict[str, str] = {}
-    if ext.legacy and "keyvalues" in ext.legacy:
-        legacy_kv = ext.legacy["keyvalues"]
-
-    # Legacy replay comes FIRST. Generating from the model refuses a group, and a
-    # stock Slicer file with a space-separated LabelValue reads as a group over
-    # islands (0.7) - so an unchanged file must be replayable without ever
-    # generating, or the round trip that `legacy` exists for is unreachable.
-    legacy_ext = None
-    if legacy_kv:
-        try:
-            legacy_ext, _ = parse_seg_keyvalues(legacy_kv)
-        except Exception:
-            legacy_ext = None
-    if legacy_ext is not None:
-        current_dump = ext.model_dump(exclude={"legacy"}, exclude_none=True)
-        legacy_dump = legacy_ext.model_dump(exclude={"legacy"}, exclude_none=True)
-        if current_dump != legacy_dump:
-            legacy_ext = None                  # model was modified - generate fresh
-
-    if legacy_ext is None:
-        return _generate_from_model(ext)
-
-    # Model unchanged - replay the original strings verbatim. Starting from
-    # the legacy dict (rather than from the generated keys) also preserves
-    # the original Master/Source spelling and any Segment*/Segmentation_*
-    # keys this model does not represent, which would otherwise be consumed
-    # on parse and dropped here. Generation only fills keys the legacy lacks,
-    # and a model that cannot be generated (a group) has nothing to add.
+def _replayed_legacy(ext: SegmentationExtension) -> dict[str, str] | None:
+    """The file's original key/values, if the model still says what they say."""
+    legacy_kv = (ext.legacy or {}).get("keyvalues")
+    if not legacy_kv:
+        return None
     try:
-        generated = _generate_from_model(ext)
-    except ValueError:
-        generated = {}
+        legacy_ext, _ = parse_seg_keyvalues(legacy_kv)
+    except Exception:
+        return None
+    if legacy_ext is None:
+        return None
+    current_dump = ext.model_dump(exclude={"legacy"}, exclude_none=True)
+    if current_dump != legacy_ext.model_dump(exclude={"legacy"}, exclude_none=True):
+        return None  # the model was modified - generate fresh
+    # Starting from the legacy dict (rather than from generated keys) also
+    # preserves the original Master/Source spelling and any Segment*/
+    # Segmentation_* keys this model does not represent. Generation only
+    # fills keys the legacy lacks.
     result = dict(legacy_kv)
-    for key, val in generated.items():
+    for key, val in _generate_from_model(ext, []).items():
         if key in result:
             continue
         if key in _REPRESENTATION_KEYS and any(k in result for k in _REPRESENTATION_KEYS):
             continue  # the original used the other spelling
         result[key] = val
     return result
+
+
+@dataclass
+class SegNrrdExport:
+    """What :func:`export_seg_nrrd` produced."""
+
+    keyvalues: dict[str, str]
+    #: New voxel data when the export materialized, else None (write the source's)
+    data: Any = None
+    #: Index of the ``list`` axis in ``data``, or None when it has a single layer
+    list_axis: int | None = None
+    diagnostics: list[Diagnostic] = field(default_factory=list)
+
+    @property
+    def materialized(self) -> bool:
+        return self.data is not None
+
+
+def export_seg_nrrd(
+    ext: SegmentationExtension,
+    data: Any = None,
+    *,
+    list_axis: int | None = None,
+) -> SegNrrdExport:
+    """Write a segmentation as .seg.nrrd key/value pairs (§6.1).
+
+    A file whose model is unchanged since it was read replays its original
+    strings. Otherwise it is written as it is when every layer is a label
+    table of positive values, and is **materialized** when not: segments are
+    placed first-fit into destination layers and the voxels rewritten, which
+    needs ``data`` (and ``list_axis``, the index of its ``list`` axis, for a
+    layered array). Raises ``ValueError`` when materialization is needed and
+    no data was given.
+    """
+    replayed = _replayed_legacy(ext)
+    if replayed is not None:
+        return SegNrrdExport(replayed)
+
+    diagnostics: list[Diagnostic] = []
+    if not needs_materialization(ext, getattr(data, "dtype", None)):
+        return SegNrrdExport(_generate_from_model(ext, diagnostics), diagnostics=diagnostics)
+    if data is None:
+        raise ValueError(
+            "this segmentation shares values between segments, or lists a value that is "
+            "not positive, and .seg.nrrd can hold neither: exporting it rewrites the "
+            "voxels, so the voxel data is needed (spec §6.1)"
+        )
+    new_ext, new_data, new_axis = _materialize(ext, data, list_axis, diagnostics)
+    return SegNrrdExport(
+        _generate_from_model(new_ext, diagnostics), new_data, new_axis, diagnostics
+    )
+
+
+def _materialize(
+    ext: SegmentationExtension,
+    data: Any,
+    list_axis: int | None,
+    diagnostics: list[Diagnostic],
+) -> tuple[SegmentationExtension, Any, int | None]:
+    import numpy as np
+
+    arr = np.asarray(data)
+    if list_axis is None and any(seg.effective_layer for seg in ext.segments):
+        raise ValueError("the segmentation has layers beyond 0; list_axis is needed")
+
+    def source(layer: int) -> Any:
+        return arr if list_axis is None else np.take(arr, layer, axis=list_axis)
+
+    the_ext = About.extension()
+    diagnostics.append(_warn("values-renumbered", the_ext))
+    for layer in layers_of(ext):
+        segs = [s for s in ext.segments if s.effective_layer == layer]
+        if any(a.values > b.values for a in segs for b in segs):
+            diagnostics.append(_warn("nesting-exported-as-layers", the_ext))
+            break
+
+    # Placement: first destination layer in which the segment overlaps nothing
+    # placed there. Same source layer: a shared value. Different source
+    # layers: a shared voxel, decided from one occupancy mask per (destination,
+    # source layer).
+    placed: list[list[Segment]] = []
+    occupancy: list[dict[int, Any]] = []
+    used: list[set[int]] = []
+    out_segments: list[Segment] = []
+    masks: list[Any] = []
+    destinations: list[int] = []
+    for seg in ext.segments:
+        if _is_nrrd_background(seg):
+            out_segments.append(seg)
+            continue
+        mask = np.isin(source(seg.effective_layer), list(seg.values))
+        for dest in range(len(placed) + 1):
+            if dest == len(placed):
+                placed.append([])
+                occupancy.append({})
+                used.append(set())
+                break
+            if any(o.effective_layer == seg.effective_layer and o.values & seg.values
+                   for o in placed[dest]):
+                continue
+            if any(src != seg.effective_layer and bool(np.any(occ & mask))
+                   for src, occ in occupancy[dest].items()):
+                continue
+            break
+        placed[dest].append(seg)
+        occ = occupancy[dest].get(seg.effective_layer)
+        occupancy[dest][seg.effective_layer] = mask if occ is None else (occ | mask)
+
+        values = sorted(seg.values)
+        if len(values) == 1 and values[0] > 0 and values[0] not in used[dest]:
+            value = values[0]
+        else:
+            value = next(v for v in range(1, len(used[dest]) + 2) if v not in used[dest])
+        used[dest].add(value)
+
+        update: dict[str, Any] = {"label_values": [value], "layer": dest or None, "extent": None}
+        if mask.any():
+            # SegmentN_Extent runs over NRRD's axes, fastest first: the reverse
+            # of the array's storage order.
+            bounds = [(int(idx.min()), int(idx.max())) for idx in reversed(np.nonzero(mask))]
+            update["extent"] = [b for pair in bounds for b in pair]
+        out_segments.append(seg.model_copy(update=update))
+        masks.append(mask)
+        destinations.append(dest)
+
+    top = max((max(u) for u in used if u), default=0)
+    dtype = arr.dtype if arr.dtype.kind in "iu" and top <= np.iinfo(arr.dtype).max else (
+        np.min_scalar_type(top))
+    spatial = source(0).shape
+    n_layers = max(len(placed), 1)
+    new_axis = None if n_layers == 1 else (list_axis if list_axis is not None else len(spatial))
+    layers_out = [np.zeros(spatial, dtype=dtype) for _ in range(n_layers)]
+    written = [s for s in out_segments if not _is_nrrd_background(s)]
+    for seg, mask, dest in zip(written, masks, destinations):
+        layers_out[dest][mask] = seg.label_values[0]
+    new_data = layers_out[0] if new_axis is None else np.stack(layers_out, axis=new_axis)
+
+    new_ext = ext.model_copy(update={"segments": out_segments, "legacy": None})
+    return new_ext, new_data, new_axis
+
+
+def serialize_seg_extension(ext: SegmentationExtension) -> dict[str, str]:
+    """Key/value pairs for a segmentation that can be written without touching
+    its voxels. Raises ``ValueError`` for one that must be materialized: use
+    :func:`export_seg_nrrd`, which takes the data and returns diagnostics."""
+    return export_seg_nrrd(ext).keyvalues

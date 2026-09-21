@@ -7,7 +7,7 @@ from pathlib import Path
 import nrrd
 import pytest
 
-from duckn.models import SEG_EXTENSION_VERSION, SegmentationExtension
+from duckn.seg_model import SEG_VERSION as SEG_EXTENSION_VERSION, SegmentationExtension
 from duckn.seg_nrrd import parse_seg_keyvalues, serialize_seg_extension
 
 DATA_DIR = Path(__file__).parent / "data" / "real-world"
@@ -44,7 +44,7 @@ def test_minimal_segment():
     assert remaining == {}
     assert len(ext.segments) == 1
     assert ext.segments[0].id == "S1"
-    assert ext.segments[0].label_value == 1
+    assert ext.segments[0].label_values == [1]
     assert ext.version == SEG_EXTENSION_VERSION
 
 
@@ -125,24 +125,23 @@ def test_segment_fields():
     assert seg.id == "Seg1"
     assert seg.name == "Liver"
     assert _slicer(seg)["name_auto_generated"] is False
-    assert seg.color == [0.5, 0.6, 0.7]
+    assert seg.color == "color(srgb 0.5 0.6 0.7)"
     assert _slicer(seg)["color_auto_generated"] is True
-    assert seg.label_value == 3
+    assert seg.label_values == [3]
     assert seg.layer == 2
     assert seg.extent == [10, 20, 30, 40, 50, 60]
 
 
 def test_multi_label_value():
-    """Space-separated label values are the 0.6 island union; they read as a
-    group over one island leaf per value (spec 0.7 migration)."""
+    """Space-separated label values are a union of islands: in 0.8, one segment
+    listing several values."""
     kv = {
         "Segment0_ID": "S1",
-        "Segment0_LabelValue": "2 3",
+        "Segment0_LabelValue": "3 2",
     }
     ext, _ = parse_seg_keyvalues(kv)
-    assert ext.version == "0.7"
-    assert ext.segments[0].id == "S1" and ext.segments[0].members == ["label_2", "label_3"]
-    assert [(s.id, s.label_value) for s in ext.segments[1:]] == [("label_2", 2), ("label_3", 3)]
+    assert ext.version == "0.8"
+    assert [(s.id, s.label_values) for s in ext.segments] == [("S1", [2, 3])]
 
 
 def test_tags_and_terminology():
@@ -354,7 +353,7 @@ def test_serialize_minimal():
     ext2, _ = parse_seg_keyvalues(flat)
     assert ext2.segments[0].id == "S1"
     assert ext2.segments[0].name == "Liver"
-    assert ext2.segments[0].label_value == 1
+    assert ext2.segments[0].label_values == [1]
 
 
 def test_serialize_global_fields():
@@ -408,9 +407,9 @@ def test_serialize_segment_fields():
     seg = ext2.segments[0]
     assert seg.name == "Liver"
     assert _slicer(seg)["name_auto_generated"] is False
-    assert seg.color == [0.5, 0.6, 0.7]
+    assert seg.color == "color(srgb 0.5 0.6 0.7)"
     assert _slicer(seg)["color_auto_generated"] is True
-    assert seg.label_value == 3
+    assert seg.label_values == [3]
     assert seg.layer == 2
     assert seg.extent == [10, 20, 30, 40, 50, 60]
 
@@ -434,10 +433,10 @@ def test_serialize_tags_and_dicom():
     assert seg.designations[0].scheme == "SCT"
 
 
-def test_serialize_replays_an_unchanged_group_and_refuses_a_changed_one():
-    """A multi-value LabelValue reads as a group over islands. Unchanged, it writes
-    back verbatim through the legacy strings; changed, it cannot be generated - a
-    group has no .seg.nrrd representation - and is refused, not flattened."""
+def test_serialize_replays_an_unchanged_union_and_refuses_a_changed_one_without_data():
+    """A multi-value LabelValue reads as one segment with several values. Unchanged,
+    it writes back verbatim through the legacy strings; changed, .seg.nrrd cannot
+    hold it as it is and the export must rewrite voxels, which needs the data."""
     kv = {
         "Segment0_ID": "S1",
         "Segment0_LabelValue": "2 3",
@@ -445,13 +444,9 @@ def test_serialize_replays_an_unchanged_group_and_refuses_a_changed_one():
     ext, _ = parse_seg_keyvalues(kv)
     assert serialize_seg_extension(ext)["Segment0_LabelValue"] == "2 3"
     changed = ext.model_copy(update={"segments": [
-        ext.segments[0].model_copy(update={"name": "renamed"}), *ext.segments[1:]]})
-    with pytest.raises(ValueError, match="group"):
+        ext.segments[0].model_copy(update={"name": "renamed"})]})
+    with pytest.raises(ValueError, match="voxel"):
         serialize_seg_extension(changed)
-    leaves_only = ext.model_copy(update={"segments": ext.segments[1:], "legacy": None})
-    flat = serialize_seg_extension(leaves_only)
-    ext2, _ = parse_seg_keyvalues(flat)
-    assert [s.label_value for s in ext2.segments] == [2, 3]
 
 
 @pytest.mark.parametrize(
@@ -478,7 +473,7 @@ def test_real_world_round_trip(seg_file: Path):
     assert len(ext2.segments) == len(ext1.segments)
     assert [s.id for s in ext2.segments] == [s.id for s in ext1.segments]
     assert [s.name for s in ext2.segments] == [s.name for s in ext1.segments]
-    assert [s.label_value for s in ext2.segments] == [s.label_value for s in ext1.segments]
+    assert [s.label_values for s in ext2.segments] == [s.label_values for s in ext1.segments]
     assert ext2.source_representation == ext1.source_representation
     assert not remaining  # no leaked keys
 
@@ -552,7 +547,7 @@ def test_designation_modifier_survives_without_dicom_type_modifier():
             {
                 "id": "S1",
                 "name": "Right kidney",
-                "label_value": 1,
+                "label_values": [1],
                 "designations": [
                     {
                         "scheme": "SCT",
@@ -596,10 +591,12 @@ def test_missing_label_value_does_not_claim_background():
         "Segment1_ID": "S2",
         "Segment1_LabelValue": "7",
     }
-    with pytest.warns(UserWarning, match="LabelValue"):
-        ext, _ = parse_seg_keyvalues(kv)
-    assert ext.segments[0].label_value == 1
-    assert ext.segments[1].label_value == 7
+    kv["Segment2_ID"] = "S3"
+    kv["Segment3_ID"] = "S4"
+    kv["Segment3_LabelValue"] = "1"
+    ext, _ = parse_seg_keyvalues(kv)
+    # in order, the smallest positive value no segment of the layer has
+    assert [s.label_values for s in ext.segments] == [[2], [7], [3], [1]]
 
 
 def test_non_labelmap_master_representation_is_readable():

@@ -21,8 +21,8 @@ from .models import (
     AxisMetadata,
     DucknMetadata,
     SampleMetadata,
-    SegmentationExtension,
 )
+from .seg_read import read_seg_extension
 from .zarr_io import open_store, read_duckn, _is_zip_path
 from .convert import _auto_chunks, _build_compressors
 
@@ -38,7 +38,7 @@ def seg_binary_to_labelmap(
 ) -> tuple[np.ndarray, DucknMetadata]:
     """Convert a 4D binary segmentation to a 3D integer labelmap.
 
-    Each segment's binary channel is assigned a unique integer label.
+    Each segment is assigned a unique integer label, in ``segments`` order.
     Non-overlapping segments assumed — if multiple segments claim the
     same voxel, the last segment (highest index) wins.
 
@@ -54,12 +54,21 @@ def seg_binary_to_labelmap(
     if data.ndim != 4:
         raise ValueError(f"Expected 4D input, got {data.ndim}D")
 
-    n_segments = data.shape[0]
     spatial_shape = data.shape[1:]
 
+    # An older extension (a DICOM import's) is migrated on the way in.
+    seg_ext = None
+    if meta.extensions and "seg" in meta.extensions:
+        seg_ext, _ = read_seg_extension(meta.extensions["seg"])
+        # A background segment is what the labelmap's 0 already says.
+        structures = [s for s in seg_ext.segments if s.role != "background"]
+        channels = [(s.effective_layer, sorted(s.values)) for s in structures]
+    else:
+        channels = [(si, None) for si in range(data.shape[0])]
+
     # Merge to labelmap — last writer wins
-    # n_segments + 1 values needed (0 = background, 1..n = segments)
-    n_labels = n_segments + 1
+    # n + 1 values needed (0 = background, 1..n = segments)
+    n_labels = len(channels) + 1
     if n_labels <= 256:
         dtype = np.uint8
     elif n_labels <= 65536:
@@ -67,16 +76,20 @@ def seg_binary_to_labelmap(
     else:
         dtype = np.uint32
     labelmap = np.zeros(spatial_shape, dtype=dtype)
-    for si in range(n_segments):
-        labelmap[data[si] > 0] = si + 1
+    for i, (layer, values) in enumerate(channels):
+        mask = data[layer] > 0 if values is None else np.isin(data[layer], values)
+        labelmap[mask] = i + 1
 
-    # Update segment metadata
-    seg_ext = None
-    if meta.extensions and "seg" in meta.extensions:
-        seg_ext = SegmentationExtension(**meta.extensions["seg"])
-        for i, seg in enumerate(seg_ext.segments):
-            seg.label_value = i + 1
+    # Update segment metadata. Overlap was resolved last-writer-wins, so a
+    # cached extent may no longer hold, and the source strings are stale (§3.3).
+    if seg_ext is not None:
+        for i, seg in enumerate(structures):
+            seg.label_values = [i + 1]
             seg.layer = None
+            seg.extent = None
+        seg_ext.segments = structures
+        seg_ext.implicit_background = None
+        seg_ext.legacy = None
 
     # Build 3D metadata — drop the list axis, keep spatial axes
     spatial_axes = [ax for ax in meta.axes if ax.space_direction is not None]
@@ -106,7 +119,9 @@ def seg_labelmap_to_binary(
 ) -> tuple[np.ndarray, DucknMetadata]:
     """Convert a 3D integer labelmap to a 4D binary segmentation.
 
-    Each unique non-zero label becomes a binary channel.
+    Each segment becomes a binary channel holding the voxels of all its
+    values, so segments that share values overlap in the result. Without a
+    seg extension, each unique non-zero label becomes a channel.
 
     Parameters
     ----------
@@ -120,22 +135,29 @@ def seg_labelmap_to_binary(
     if data.ndim != 3:
         raise ValueError(f"Expected 3D input, got {data.ndim}D")
 
-    # Find all unique labels
-    labels = sorted(set(int(v) for v in np.unique(data) if v != 0))
-    n_segments = len(labels)
-
-    # Build 4D binary array
-    binary = np.zeros((n_segments, *data.shape), dtype=np.uint8)
-    for i, label in enumerate(labels):
-        binary[i] = (data == label).astype(np.uint8)
-
-    # Update segment metadata
+    # One channel per segment; without a seg extension, one per non-zero label.
     seg_ext = None
     if meta.extensions and "seg" in meta.extensions:
-        seg_ext = SegmentationExtension(**meta.extensions["seg"])
-        for i, seg in enumerate(seg_ext.segments):
-            seg.label_value = 1
-            seg.layer = i
+        seg_ext, _ = read_seg_extension(meta.extensions["seg"])
+        structures = [s for s in seg_ext.segments if s.role != "background"]
+        channels = [sorted(s.values) for s in structures]
+    else:
+        channels = [[label] for label in sorted(set(int(v) for v in np.unique(data) if v != 0))]
+
+    # Build 4D binary array
+    binary = np.zeros((len(channels), *data.shape), dtype=np.uint8)
+    for i, values in enumerate(channels):
+        binary[i] = np.isin(data, values).astype(np.uint8)
+
+    # Update segment metadata: each segment is value 1 of its own layer, whose
+    # 0 is its background. The voxels are unchanged, so `extent` still holds.
+    if seg_ext is not None:
+        for i, seg in enumerate(structures):
+            seg.label_values = [1]
+            seg.layer = i or None
+        seg_ext.segments = structures
+        seg_ext.implicit_background = None
+        seg_ext.legacy = None
 
     # Build 4D metadata — prepend list axis
     axes = [AxisMetadata(kind=AxisKind.LIST)] + list(meta.axes)

@@ -366,7 +366,9 @@ class TestRealWorldFilesValidate:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 ext, _ = parse_seg_keyvalues(keyvalues)
-            validate_seg_extension(ext)
+            from duckn.seg_model import validate_seg_extension as validate_0_8
+
+            assert validate_0_8(ext, dtype="uint8", fill_value=0) == [], path.name
 
 
 # ---------------------------------------------------------------------------

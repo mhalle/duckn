@@ -147,13 +147,13 @@ class TestConverters:
         from duckn.seg_nrrd import parse_seg_keyvalues, serialize_seg_extension
         kv = {"Segment0_ID": "S1", "Segment0_Name": "Liver", "Segment0_LabelValue": "1 3"}
         ext, _ = parse_seg_keyvalues(kv)
-        assert ext.segments[0].members == ["label_1", "label_3"]      # read as 0.7
+        assert ext.segments[0].label_values == [1, 3]                   # one segment, two values
         out = serialize_seg_extension(ext)
         assert out["Segment0_LabelValue"] == "1 3"                      # written back verbatim
         renamed = ext.model_copy(update={"segments": [
-            ext.segments[0].model_copy(update={"name": "Hepar"}), *ext.segments[1:]]})
-        with pytest.raises(ValueError, match="group"):
-            serialize_seg_extension(renamed)                          # changed: cannot be generated
+            ext.segments[0].model_copy(update={"name": "Hepar"})]})
+        with pytest.raises(ValueError, match="voxel"):
+            serialize_seg_extension(renamed)                          # changed: must be materialized
 
     def test_dicom_export_warns_when_it_drops_a_named_group(self, tmp_path):
         pytest.importorskip("pydicom")
