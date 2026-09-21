@@ -95,24 +95,24 @@ Extension models
 ----------------
 NiftiExtension, NiftiTags, NiftiLegacy
     NIfTI provenance metadata.
-DicomExtension, DicomClassification
+DicomExtension
     DICOM provenance metadata.
 DwmriExtension, DwmriAxisExtension, DwmriAcquisition
     Diffusion-weighted MRI metadata.
-SegmentationExtension, Segment
-    Segmentation label map metadata.
+SegmentationExtension, Segment, DicomContent, TerminologyEntry
+    Segmentation metadata (seg extension 0.8); ``read_seg_extension`` reads a
+    file of any supported version, and ``validate_seg_extension`` returns
+    diagnostics.
 """
 
 from .convert import nrrd_to_zarr, nrrd_to_zarr_zerocopy, zarr_to_nrrd, zarr_to_nrrd_zerocopy
 from .models import (
-    SEG_EXTENSION_VERSION,
     AxisKind,
     AxisMetadata,
     Centering,
     CodedEntry,
     ConversionParameter,
     Designation,
-    DicomClassification,
     DicomExtension,
     DwmriAcquisition,
     DwmriAxisExtension,
@@ -127,26 +127,27 @@ from .models import (
     NiftiTags,
     DucknMetadata,
     SampleMetadata,
-    Segment,
-    SegmentationExtension,
-    SourceRepresentation,
     SpaceName,
-    TerminologyEntry,
     UnitObject,
     UnitSystemEntry,
     ValueTransform,
+    validate_against_shape,
+)
+from .diagnostics import About, Diagnostic, DiagnosticsError
+from .seg_model import (
+    SEG_VERSION,
+    DicomContent,
+    Segment,
+    SegmentationExtension,
+    TerminologyEntry,
     background_value,
     color_map,
-    coverage_report,
-    effective_label_values,
-    label_values_by_layer,
-    leaf_for,
-    leaves_of,
-    parents_of,
-    validate_against_shape,
+    segments_for,
+    topmost_for,
     validate_seg_data,
     validate_seg_extension,
 )
+from .seg_read import migrate_seg_extension, read_seg_extension
 from .zarr_io import (
     DucknArray,
     get_zarr_attrs,
@@ -157,15 +158,32 @@ from .zarr_io import (
     read_metadata,
 )
 
+SEG_EXTENSION_VERSION = SEG_VERSION
+
 __all__ = [  # noqa: RUF022
     "SEG_EXTENSION_VERSION",
+    "SEG_VERSION",
+    "About",
+    "Diagnostic",
+    "DiagnosticsError",
+    "DicomContent",
+    "Segment",
+    "SegmentationExtension",
+    "TerminologyEntry",
+    "background_value",
+    "color_map",
+    "migrate_seg_extension",
+    "read_seg_extension",
+    "segments_for",
+    "topmost_for",
+    "validate_seg_data",
+    "validate_seg_extension",
     "AxisKind",
     "AxisMetadata",
     "Centering",
     "CodedEntry",
     "ConversionParameter",
     "Designation",
-    "DicomClassification",
     "DicomExtension",
     "DwmriAcquisition",
     "DwmriAxisExtension",
@@ -180,11 +198,7 @@ __all__ = [  # noqa: RUF022
     "NiftiTags",
     "DucknMetadata",
     "SampleMetadata",
-    "Segment",
-    "SegmentationExtension",
-    "SourceRepresentation",
     "SpaceName",
-    "TerminologyEntry",
     "UnitObject",
     "UnitSystemEntry",
     "ValueTransform",
@@ -202,17 +216,7 @@ __all__ = [  # noqa: RUF022
     "read_duckn_metadata",
     "read_metadata",
     "UNCOMPRESSED_TRANSFER_SYNTAXES",
-    "background_value",
-    "color_map",
-    "coverage_report",
-    "effective_label_values",
-    "label_values_by_layer",
-    "leaf_for",
-    "leaves_of",
-    "parents_of",
-    "validate_seg_data",
     "validate_against_shape",
-    "validate_seg_extension",
     "zarr_to_nifti",
     "zarr_to_nrrd",
     "zarr_to_nrrd_zerocopy",

@@ -1,6 +1,7 @@
 """Defects an adversarial review of seg extension 0.7 reproduced (2026-09-03), pinned.
 
-Each test is the review's minimal input and the corrected outcome.
+Each test is the review's minimal input and the outcome under 0.8. Tests of
+what 0.8 removed (groups, coverage reports) went with it.
 """
 from __future__ import annotations
 
@@ -9,20 +10,15 @@ import warnings
 import numpy as np
 import pytest
 
+from duckn.diagnostics import DiagnosticsError
 from duckn.extensions import SegAccessor
-from duckn.models import (
-    SEG_EXTENSION_VERSION,
-    AxisMetadata,
-    Segment,
-    SegmentationExtension,
-    coverage_report,
-    validate_seg_data,
-    validate_seg_extension,
-)
+from duckn.models import AxisMetadata
+from duckn.seg_model import Segment, SegmentationExtension, validate_seg_extension
+from duckn.seg_read import read_seg_extension
 
 
 def _ext(segments, **kw):
-    return SegmentationExtension(version=SEG_EXTENSION_VERSION, segments=segments, **kw)
+    return SegmentationExtension(version="0.8", segments=segments, **kw)
 
 
 class TestAccessorAnswersFromOneShape:
@@ -51,95 +47,45 @@ class TestAccessorAnswersFromOneShape:
 
 class TestVersion:
     def test_version_is_required(self):
-        with pytest.raises(Exception, match="version"):
-            SegmentationExtension.model_validate({"segments": [{"id": "a", "label_value": 1}]})
+        with pytest.raises(ValueError, match="version"):
+            read_seg_extension({"segments": [{"id": "a", "label_value": 1}]})
 
     def test_unparseable_version_is_refused_not_migrated(self):
-        with pytest.raises(Exception, match="unparseable"):
-            SegmentationExtension.model_validate(
-                {"version": "banana", "segments": [{"id": "a", "label_value": 1}]})
+        with pytest.raises(DiagnosticsError, match="rule-1"):
+            read_seg_extension({"version": "banana", "segments": [{"id": "a", "label_value": 1}]})
 
-    def test_a_future_or_prerelease_version_is_left_alone(self):
-        ext = SegmentationExtension.model_validate(
-            {"version": "0.8-rc1", "segments": [{"id": "a", "label_value": 1}]})
-        assert ext.version == "0.8-rc1"                       # not stamped down to 0.7
+    def test_a_future_or_prerelease_version_is_refused_not_stamped_down(self):
+        raw = {"version": "0.9-rc1", "segments": [{"id": "a", "label_value": 1}]}
+        with pytest.raises(DiagnosticsError, match="rule-1"):
+            read_seg_extension(raw)
+        assert raw["version"] == "0.9-rc1"
 
     def test_a_v_prefixed_old_version_still_migrates(self):
-        ext = SegmentationExtension.model_validate(
+        ext, _ = read_seg_extension(
             {"version": "v0.6", "segments": [{"id": "g", "label_value": ["a"]},
                                              {"id": "a", "label_value": 1}]})
-        assert ext.version == "0.7" and ext.segments[0].members == ["a"]
+        assert ext.version == "0.8" and ext.segments[0].label_values == [1]
 
 
 class TestFieldConstraints:
     def test_a_boolean_label_value_is_refused_not_coerced(self):
         with pytest.raises(Exception, match="boolean"):
-            Segment(id="a", label_value=True)
+            Segment(id="a", label_values=[True])
 
-    def test_color_is_three_components_in_range(self):
-        Segment(id="a", label_value=1, color=[0.1, 0.2, 0.3])
-        with pytest.raises(Exception):
-            Segment(id="a", label_value=1, color=[1, 2, 3, 4])
-        with pytest.raises(Exception):
-            Segment(id="a", label_value=1, color=[0.0, 0.0, 1.5])
-
-    def test_extent_is_six_bounds(self):
-        with pytest.raises(Exception):
-            Segment(id="a", label_value=1, extent=[1, 2, 3])
+    def test_an_older_color_outside_the_range_is_clamped_not_refused(self):
+        ext, _ = read_seg_extension(
+            {"version": "0.7", "segments": [{"id": "a", "label_value": 1, "color": [0.0, 0.0, 1.5]}]})
+        assert ext.segments[0].color == "color(srgb 0 0 1)"
 
 
-class TestRule4:
+class TestRule17:
     def test_an_omitted_layer_and_layer_zero_are_the_same_layer(self):
-        ext = _ext([{"id": "a", "label_value": 1}, {"id": "b", "label_value": 2, "layer": 0}],
+        ext = _ext([{"id": "a", "label_values": [1]}, {"id": "b", "label_values": [1], "layer": 0}],
                    source_representation="fractional-labelmap")
-        with pytest.raises(ValueError, match="distinct layer per segment"):
-            validate_seg_extension(ext, axes=[AxisMetadata(kind=k) for k in ("list", "space", "space", "space")],
-                                   shape=(2, 4, 4, 4))
-
-
-class TestDataChecks:
-    def _two_layers(self):
-        return _ext([
-            {"id": "bg0", "label_value": 0, "background": True},
-            {"id": "a", "label_value": 1,
-             "designations": [{"scheme": "S", "code": "L"}]},
-            {"id": "bg1", "label_value": 9, "layer": 1, "background": True},
-            {"id": "b", "label_value": 1, "layer": 1},
-            {"id": "c", "label_value": 2, "layer": 1},
-            {"id": "g", "members": ["b", "c"], "exhaustive": True,
-             "designations": [{"scheme": "S", "code": "L"}]},
-        ])
-
-    def test_validate_seg_data_refuses_to_guess_the_layering(self):
-        data = np.zeros((2, 3, 3, 3), np.uint8)
-        data[1] = 9                                                    # layer 1's background
-        with pytest.raises(ValueError, match="list_axis"):
-            validate_seg_data(self._two_layers(), data)
-        validate_seg_data(self._two_layers(), data, list_axis=0)     # fine when told
-
-    def test_coverage_report_never_compares_a_group_with_its_own_member(self):
-        ext = _ext([{"id": "a", "label_value": 1, "designations": [{"scheme": "S", "code": "L"}]},
-                    {"id": "b", "label_value": 2},
-                    {"id": "g", "members": ["a", "b"], "exhaustive": True,
-                     "designations": [{"scheme": "S", "code": "L"}]}])
-        data = np.array([[[1, 2, 0]]], np.uint8)
-        assert coverage_report(ext, data) == {}                       # nothing else to compare with
-
-    def test_coverage_report_says_none_when_nothing_was_compared(self):
-        ext = _ext([{"id": "whole", "label_value": 5, "designations": [{"scheme": "S", "code": "L"}]},
-                    {"id": "p", "label_value": 1}, {"id": "q", "label_value": 2},
-                    {"id": "g", "members": ["p", "q"], "exhaustive": True,
-                     "designations": [{"scheme": "S", "code": "L"}]}])
-        rep = coverage_report(ext, np.zeros((2, 2, 2), np.uint8))
-        assert rep["g"]["jaccard"] is None and rep["g"]["group_voxels"] == 0
-
-    def test_coverage_report_refuses_data_missing_a_layer_it_needs(self):
-        with pytest.raises(ValueError, match="layer 1"):
-            coverage_report(self._two_layers(), np.zeros((3, 3, 3), np.uint8))
-        data = np.zeros((2, 3, 3, 3), np.uint8)
-        data[1] = 9
-        rep = coverage_report(self._two_layers(), data, list_axis=0)
-        assert rep["g"]["leaf"] == "a" and rep["g"]["jaccard"] is None
+        found = validate_seg_extension(
+            ext, axes=[AxisMetadata(kind=k) for k in ("list", "space", "space", "space")],
+            shape=(2, 4, 4, 4))
+        assert [d.code for d in found] == ["rule-17"]
 
 
 class TestConverters:
@@ -177,9 +123,9 @@ class TestConverters:
 class TestSecondRound:
     def test_a_numpy_bool_label_value_is_refused_and_numpy_ints_are_fine(self):
         with pytest.raises(Exception, match="boolean"):
-            Segment(id="a", label_value=np.True_)
-        assert Segment(id="a", label_value=np.int64(3)).label_value == 3
-        assert Segment(id="a", label_value=np.uint8(3)).label_value == 3
+            Segment(id="a", label_values=[np.True_])
+        assert Segment(id="a", label_values=[np.int64(3)]).label_values == [3]
+        assert Segment(id="a", label_values=[np.uint8(3)]).label_values == [3]
 
     def test_a_malformed_segment_is_kept_raw_and_the_model_says_why(self):
         a = SegAccessor({"version": "0.6", "segments": [{"label_value": 1}]})   # no id
@@ -203,26 +149,6 @@ class TestSecondRound:
         assert raw["segments"][0]["metadata"] == {"dicom": {"category": {"scheme": "SCT", "code": "1"}}}
 
     def test_a_numeric_version_is_refused(self):
-        with pytest.raises(Exception, match="string"):
-            SegmentationExtension.model_validate({"version": 0.6, "segments": [{"id": "a", "label_value": 1}]})
-        with pytest.raises(Exception, match="string"):
-            SegmentationExtension.model_validate({"version": 0.10, "segments": [{"id": "a", "label_value": 1}]})
-
-    def test_coverage_report_takes_one_layers_volume(self):
-        ext = _ext([
-            {"id": "bg0", "label_value": 0, "background": True},
-            {"id": "whole", "label_value": 5, "designations": [{"scheme": "S", "code": "L"}]},
-            {"id": "bg1", "label_value": 0, "layer": 1, "background": True},
-            {"id": "p", "label_value": 1, "layer": 1}, {"id": "q", "label_value": 2, "layer": 1},
-            {"id": "g", "members": ["p", "q"], "exhaustive": True,
-             "designations": [{"scheme": "S", "code": "L"}]},
-        ])
-        layer1 = np.array([[[1, 2, 0]]], np.uint8)
-        with pytest.raises(ValueError, match="layer="):
-            coverage_report(ext, layer1)                       # "this is everything": no it is not
-        assert coverage_report(ext, layer1, layer=1) == {}     # one layer, on purpose: nothing comparable
-        both = np.zeros((2, 1, 1, 3), np.uint8)
-        both[0, 0, 0, :2] = 5
-        both[1] = layer1
-        rep = coverage_report(ext, both, list_axis=0)
-        assert rep["g"]["leaf"] == "whole" and rep["g"]["jaccard"] == 1.0
+        for version in (0.6, 0.10):
+            with pytest.raises(ValueError, match="version"):
+                read_seg_extension({"version": version, "segments": [{"id": "a", "label_value": 1}]})

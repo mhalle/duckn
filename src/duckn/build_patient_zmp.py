@@ -88,11 +88,21 @@ def _build_seg_zmp_bytes_sync(crdc_series_uuid: str) -> bytes:
     store = ZMPWritableStore(buf)
     attrs = duckn_attrs(duckn_meta)
 
+    # A segmentation's fill_value must be a value its layers describe (seg
+    # spec rule 15): a DICOM LABELMAP has no background unless it names one.
+    fill_value = 0
+    if duckn_meta.extensions and "seg" in duckn_meta.extensions:
+        from duckn.dicom_seg import seg_fill_value
+        from duckn.seg_read import read_seg_extension
+
+        fill_value = seg_fill_value(read_seg_extension(duckn_meta.extensions["seg"])[0])
+
     arr = zarr.open_array(
         store, mode="w",
         shape=data.shape, dtype=data.dtype,
         chunks=(data.shape[0], data.shape[1], data.shape[2]),
         attributes=attrs,
+        fill_value=fill_value,
     )
     arr[:] = data
     # Can't use asyncio.run() inside a thread spawned by an event loop,

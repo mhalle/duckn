@@ -33,7 +33,7 @@ from duckn.seg_model import (
     validate_seg_extension,
 )
 
-SPEC_PATH = Path(__file__).parent.parent / "docs" / "segmentation-ext-v08-spec.md"
+SPEC_PATH = Path(__file__).parent.parent / "docs" / "segmentation-ext-spec.md"
 
 
 def _ext(segments, **kwargs):

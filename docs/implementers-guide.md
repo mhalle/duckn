@@ -233,15 +233,25 @@ Cheap, metadata-only, and worth running before you write:
 
 - `len(axes) == len(shape)`, and any `kind` with a required size matches
 - a `lut` is first in its chain and has a non-empty table
-- for segmentations: `validate_seg_extension()` — unique ids, one leaf per
-  label value in a layer, no leaf on its layer's background value, members
-  that resolve, no cycles, and `disjoint` claims that hold; with the voxels
-  in hand, `validate_seg_data()` for every present value described and
-  `coverage_report()` for `exhaustive` claims
+- for segmentations: `validate_seg_extension()` — it returns diagnostics
+  and does not raise, so call `raise_on()` before writing. Give it the
+  array's `axes`, `shape`, `dtype`, and `fill_value`; several rules (a
+  `layer` needs a `list` axis, a value must fit the data type, the
+  `fill_value` must be described) cannot be checked without them. With the
+  voxels in hand, `validate_seg_data()` reports every value present that
+  nothing describes
+- reading a segmentation: `read_seg_extension()` migrates an older file,
+  reports what it changed, and raises only for what the specification says a
+  reader refuses. A value may belong to several segments of a layer; where
+  one answer is wanted — a color, a name — the **topmost**, the last in
+  `segments` order, gives it
+- deriving an array from a segmentation: nearest-neighbor only for a binary
+  labelmap, and drop `extent` and `legacy` (`seg_for_derived_array()`)
 
 ```python
 from duckn.models import duckn_attrs          # re-validates on the way out
-from duckn.models import validate_seg_extension, effective_label_values
+from duckn import read_seg_extension, validate_seg_extension
+from duckn.diagnostics import raise_on
 ```
 
 Re-validate metadata at write time. Pydantic validates at construction, so

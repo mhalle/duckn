@@ -429,3 +429,50 @@ class TestAntiAlias:
             np.asarray(resample(vol, factor=0.5, order=0).raw),
             np.asarray(resample(vol, factor=0.5, order=0, anti_alias=False).raw),
         )
+
+
+# ---------------------------------------------------------------------------
+# Segmentations on a derived array (seg spec §3.3)
+# ---------------------------------------------------------------------------
+
+
+def _seg_volume(seg, dtype="uint8"):
+    vol = _make_labelmap()
+    vol = Volume(raw=vol.raw.astype(dtype), metadata=vol.metadata)
+    vol.metadata.extensions = {"seg": seg}
+    return vol
+
+
+_SEG = {
+    "version": "0.8",
+    "segments": [{"id": "a", "label_values": [1], "extent": [0, 1, 0, 1, 0, 1], "color": "#ff0000"}],
+    "metadata": {"slicer": {"reference_extent_offset": [0, 0, 0], "contained_representations": ["x"]}},
+    "legacy": {"keyvalues": {"Segment0_ID": "a"}},
+}
+
+
+class TestSegmentationsAreDerivedCarefully:
+    def test_interpolating_a_binary_labelmap_is_refused(self):
+        with pytest.raises(ValueError, match="NEAREST"):
+            resample(_seg_volume(_SEG), spacing=1.0)
+
+    def test_nearest_keeps_seg_and_drops_what_the_grid_invalidated(self):
+        out = resample(_seg_volume(_SEG), spacing=1.0, order=0)
+        assert out.metadata.extensions["seg"] == {
+            "version": "0.8",
+            "segments": [{"id": "a", "label_values": [1], "color": "#ff0000"}],
+            "metadata": {"slicer": {"contained_representations": ["x"]}},
+        }
+
+    def test_a_fractional_labelmap_may_be_interpolated(self):
+        seg = {"version": "0.8", "source_representation": "fractional-labelmap",
+               "segments": [{"id": "a", "label_values": [1]}]}
+        out = resample(_seg_volume(seg, "float32"), spacing=1.0)
+        assert out.metadata.extensions["seg"]["segments"][0]["id"] == "a"
+
+    def test_normalizing_a_binary_labelmap_drops_seg(self):
+        from duckn.cast import cast
+
+        vol = _seg_volume(_SEG)
+        assert "seg" in cast(vol, "uint16").metadata.extensions
+        assert cast(vol, "float32", normalize=True).metadata.extensions is None

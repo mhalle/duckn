@@ -129,7 +129,8 @@ def test_segment_fields():
     assert _slicer(seg)["color_auto_generated"] is True
     assert seg.label_values == [3]
     assert seg.layer == 2
-    assert seg.extent == [10, 20, 30, 40, 50, 60]
+    # NRRD lists axes fastest first; `extent` is in the array's storage order
+    assert seg.extent == [50, 60, 30, 40, 10, 20]
 
 
 def test_multi_label_value():
@@ -411,7 +412,7 @@ def test_serialize_segment_fields():
     assert _slicer(seg)["color_auto_generated"] is True
     assert seg.label_values == [3]
     assert seg.layer == 2
-    assert seg.extent == [10, 20, 30, 40, 50, 60]
+    assert seg.extent == [50, 60, 30, 40, 10, 20]
 
 
 def test_serialize_tags_and_dicom():
@@ -651,3 +652,15 @@ def test_legacy_dropped_when_model_modified():
     # Key falls back to MasterRepresentation (generated default)
     assert "Segmentation_MasterRepresentation" in flat
 
+
+
+@pytest.mark.parametrize("seg_file", SEG_NRRD_FILES, ids=[f.name for f in SEG_NRRD_FILES])
+def test_real_world_files_satisfy_the_rules(seg_file: Path):
+    """Every fixture duckn ships must satisfy its own spec."""
+    from duckn.seg_model import validate_seg_extension
+
+    header = nrrd.read_header(str(seg_file))
+    keyvalues = {k: str(v) for k, v in header.items()
+                 if k.startswith(("Segment", "Segmentation_"))}
+    ext, _ = parse_seg_keyvalues(keyvalues)
+    assert validate_seg_extension(ext, dtype="uint8", fill_value=0) == []

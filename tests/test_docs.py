@@ -100,7 +100,10 @@ class TestCrossReferencesResolve:
         """A spec naming another spec must name one that is there."""
         text = path.read_text()
         named = set(re.findall(r"`?([a-z0-9-]+-(?:spec|extension|guide)\.md)`?", text))
-        missing = sorted(n for n in named if not (DOCS / n).exists())
+        # a superseded version lives in the archive and may still be named
+        missing = sorted(
+            n for n in named if not (DOCS / n).exists() and not (DOCS / "archive" / n).exists()
+        )
         assert not missing, f"{path.name} references missing documents: {missing}"
 
 

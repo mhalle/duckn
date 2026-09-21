@@ -110,3 +110,29 @@ class TestReading:
         assert sorted(d.code for d in vol.extensions["seg"].diagnostics) == ["rule-11a", "rule-2"]
         # without the array, neither rule can be checked
         assert Extensions(meta.extensions).seg.diagnostics == []
+
+
+class TestFillValue:
+    SEG = {"version": "0.8", "implicit_background": False,
+           "segments": [{"id": "a", "label_values": [5]}]}
+
+    def _meta(self):
+        return DucknMetadata(axes=[AxisMetadata(kind="space")] * 3, extensions={"seg": self.SEG})
+
+    def test_rule_15_is_checked_when_the_volume_knows_its_fill_value(self):
+        data = np.full((2, 2, 2), 5, dtype=np.uint8)
+        assert Volume(data, self._meta()).extensions.seg.diagnostics == []       # not known
+        assert Volume(data, self._meta(), fill_value=5).extensions.seg.diagnostics == []
+        found = Volume(data, self._meta(), fill_value=0).extensions.seg.diagnostics
+        assert [d.code for d in found] == ["rule-15"]
+
+    def test_it_survives_a_store_round_trip_and_derivation(self, tmp_path):
+        from duckn.cast import cast
+        from duckn.io import read, write
+
+        data = np.full((2, 2, 2), 5, dtype=np.uint8)
+        write(Volume(data, self._meta(), fill_value=5), tmp_path / "v.zarr")
+        vol = read(tmp_path / "v.zarr")
+        assert vol.fill_value == 5 and vol.extensions.seg.diagnostics == []
+        assert cast(vol, "uint16").fill_value == 5
+        assert cast(vol, "float32", normalize=True).fill_value is None

@@ -1167,6 +1167,7 @@ def _build_dicomweb_seg_zmp(
         _load_seg,
         build_duckn_metadata,
     )
+    from .dicom_seg import seg_fill_value
 
     # SEG is typically a single multiframe instance
     sop_uid = _dicom_json_value(instances[0], "00080018")
@@ -1249,7 +1250,8 @@ def _build_dicomweb_seg_zmp(
             "name": "default",
             "configuration": {"separator": "/"},
         },
-        "fill_value": 0,
+        # a value the segmentation's layers describe (seg spec rule 15)
+        "fill_value": seg_fill_value(seg_ext) if seg_ext is not None else 0,
         "codecs": [
             {"name": "bytes", "configuration": {"endian": "little"}},
             {"name": "zstd", "configuration": {"level": 3, "checksum": False}},

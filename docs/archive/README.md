@@ -23,6 +23,13 @@ the result diverged. Read them as history; do not implement from them.
   scratch — has since been built. Its markdown never rendered correctly,
   and it has been left as found.
 
+- [`segmentation-ext-v07-spec.md`](segmentation-ext-v07-spec.md) — the `seg`
+  extension at version 0.7: leaves and groups, `members`, `disjoint` and
+  `exhaustive`, `background: true`, colors as float triples. Superseded by
+  0.8, which replaced groups with shared label values and moved hierarchy
+  out of the file. Kept because a 0.8 reader migrates 0.7 files, and this is
+  what they meant; the test suite migrates its examples.
+
 **Decision records** explain a choice that was made and implemented. These
 remain accurate about *why*; the specifications remain authoritative about
 *what*.

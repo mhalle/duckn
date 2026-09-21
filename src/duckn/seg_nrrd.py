@@ -22,8 +22,6 @@ from .seg_model import (
     layers_of,
 )
 
-DicomClassification = DicomContent  # the 0.7 name
-
 # Known terminology scheme → registry entry
 _KNOWN_SCHEMES: dict[str, dict[str, str]] = {
     "SCT": {"name": "SNOMED Clinical Terms", "uri": "http://snomed.info/sct"},
@@ -68,6 +66,16 @@ def _parse_label_values(val: str) -> list[int]:
     return sorted({int(x) for x in val.split()})
 
 
+def _reverse_extent(extent: list[int]) -> list[int]:
+    """``SegmentN_Extent`` runs over NRRD's axes, fastest first; the model's
+    ``extent`` over the array's spatial axes in storage order, the reverse.
+    The three (min, max) pairs swap ends; a malformed list is left for the
+    model to refuse."""
+    if len(extent) != 6:
+        return extent
+    return [*extent[4:6], *extent[2:4], *extent[0:2]]
+
+
 def _parse_conversion_parameters(raw: str) -> dict[str, ConversionParameter]:
     """Parse ``&``-delimited conversion parameters.
 
@@ -107,7 +115,7 @@ def _parse_coded_entry(triplet: str) -> CodedEntry | None:
 
 def _parse_terminology_entry(
     raw: str,
-) -> tuple[DicomClassification | None, list[Designation] | None, set[str]]:
+) -> tuple[DicomContent | None, list[Designation] | None, set[str]]:
     """Parse a TerminologyEntry value (``~``-delimited, 7 slots).
 
     Returns (dicom, designations, schemes_seen). The designation is built
@@ -131,9 +139,9 @@ def _parse_terminology_entry(
         if entry is not None and entry.scheme:
             schemes.add(entry.scheme)
 
-    dicom: DicomClassification | None = None
+    dicom: DicomContent | None = None
     if any(x is not None for x in (category, type_entry, type_modifier, anatomic_region, anatomic_region_modifier)):
-        dicom = DicomClassification(
+        dicom = DicomContent(
             category=category,
             type=type_entry,
             type_modifier=type_modifier,
@@ -169,13 +177,13 @@ def _parse_terminology_entry(
 
 def _parse_tags(
     raw: str,
-) -> tuple[dict[str, str] | None, DicomClassification | None, list[Designation] | None, set[str]]:
+) -> tuple[dict[str, str] | None, DicomContent | None, list[Designation] | None, set[str]]:
     """Parse ``SegmentN_Tags`` value.
 
     Returns (tags, dicom, designations, schemes_seen).
     """
     tags: dict[str, str] = {}
-    dicom: DicomClassification | None = None
+    dicom: DicomContent | None = None
     designations: list[Designation] | None = None
     all_schemes: set[str] = set()
 
@@ -232,7 +240,7 @@ def _parse_segment(
         # a `list` axis that an ordinary 3D .seg.nrrd does not have (§5 rule 2).
         seg["layer"] = int(layer_raw)
     if extent_raw is not None:
-        seg["extent"] = _parse_int_list(extent_raw)
+        seg["extent"] = _reverse_extent(_parse_int_list(extent_raw))
     if color_raw is not None:
         seg["color"] = format_color(from_slicer_floats(_parse_float_list(color_raw)))[0]
 
@@ -439,7 +447,7 @@ def _serialize_conversion_parameters(params: dict[str, Any]) -> str:
 
 
 def _serialize_terminology_entry(
-    dicom: DicomClassification | None,
+    dicom: DicomContent | None,
     designation: Designation | None,
 ) -> str:
     """Reconstruct the ``~``-delimited TerminologyEntry value."""
@@ -586,7 +594,7 @@ def _generate_from_model(
         if seg.layer is not None:
             kv[f"{p}Layer"] = str(seg.layer)
         if seg.extent is not None:
-            kv[f"{p}Extent"] = " ".join(str(x) for x in seg.extent)
+            kv[f"{p}Extent"] = " ".join(str(x) for x in _reverse_extent(seg.extent))
 
         tags_str = _serialize_tags(seg)
         if tags_str:
@@ -738,9 +746,7 @@ def _materialize(
 
         update: dict[str, Any] = {"label_values": [value], "layer": dest or None, "extent": None}
         if mask.any():
-            # SegmentN_Extent runs over NRRD's axes, fastest first: the reverse
-            # of the array's storage order.
-            bounds = [(int(idx.min()), int(idx.max())) for idx in reversed(np.nonzero(mask))]
+            bounds = [(int(idx.min()), int(idx.max())) for idx in np.nonzero(mask)]
             update["extent"] = [b for pair in bounds for b in pair]
         out_segments.append(seg.model_copy(update=update))
         masks.append(mask)

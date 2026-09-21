@@ -105,6 +105,13 @@ class TestAsItIs:
         back, _ = parse_seg_keyvalues(kv)
         assert back.segments[1].role == "unknown"
 
+    def test_extent_is_storage_order_in_the_model_and_nrrd_order_in_the_file(self):
+        ext = _ext([{"id": "a", "label_values": [1], "extent": [1, 2, 3, 4, 5, 6]}])
+        kv = export_seg_nrrd(ext).keyvalues
+        assert kv["Segment0_Extent"] == "5 6 3 4 1 2"
+        back, _ = parse_seg_keyvalues(kv)
+        assert back.segments[0].extent == [1, 2, 3, 4, 5, 6]
+
     def test_a_lab_color_is_converted_and_a_wide_one_mapped(self):
         ext = _ext([{"id": "a", "label_values": [1], "color": "lab(64.0631 33.8785 31.5159)"},
                     {"id": "b", "label_values": [2], "color": "lab(50 100 -100)"},

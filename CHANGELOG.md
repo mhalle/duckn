@@ -1,5 +1,80 @@
 # Changelog
 
+## 0.4.0 — 2026-09-21
+
+The `seg` extension moves to version 0.8, a **breaking change** in the file format and
+in the Python API. Older files (0.5, 0.6, 0.7) are migrated on load; the specification
+is `docs/segmentation-ext-spec.md`, and 0.7's is in `docs/archive/`.
+
+### Changed — file format
+- A segment lists `label_values`, always an array. Values may be shared between the
+  segments of a layer, which is how overlap is written; groups (`members`, `disjoint`,
+  `exhaustive`) are gone, and a migrated group becomes a segment listing the union of its
+  members' values. Where several segments list a value, the **topmost** — the last in
+  `segments` order — answers for it.
+- `background: true` became `role: "background"`, joined by `role: "unknown"` for regions
+  that were not evaluated. `implicit_background: false` withdraws 0 as the default
+  background.
+- `color` is a CSS color string in one of four forms: `#rrggbb`, `color(srgb r g b)`,
+  `lab(L a b)`, `color(xyz-d65 x y z)`.
+- New: `labeling_scheme`, `terminologies[].uri`, `dicom.algorithm_type` and
+  `dicom.algorithm_name`. Ids are tokens (`[A-Za-z0-9_-]+`); a converter derives one and
+  keeps the original under `metadata.duckn.id`.
+
+### Changed — Python API
+- The models live in `duckn.seg_model` (still importable from `duckn` and `duckn.models`).
+  `validate_seg_extension(ext, axes=, shape=, dtype=, fill_value=)` and `validate_seg_data`
+  return `Diagnostic`s with the specification's codes instead of raising; `refusals()`
+  picks out what a reader refuses, `diagnostics.raise_on()` is what a writer calls.
+- `read_seg_extension(raw, ...)` and `migrate_seg_extension(raw)` (`duckn.seg_read`)
+  replace the migration that ran inside the model: they return what they changed.
+  `SegmentationExtension(**raw)` no longer migrates.
+- Lookups are keyed by (layer, value): `segments_for`, `topmost_for`,
+  `segments_by_designation`. `background_value` returns `None` for a layer with no
+  background. `color_map` returns CSS strings under the topmost-with-a-color rule.
+- `SegAccessor`: `segments_for`, `segment(id=…)`, `.diagnostics`; `label_for` returns a
+  list; `SegmentView.label_values`, `.role`. `Volume.extensions` gives the accessor the
+  array's axes, shape and dtype.
+- Removed: `SEG_EXTENSION_VERSION` as a 0.7 constant (it now equals `SEG_VERSION`),
+  `SourceRepresentation`, `DicomClassification` (now `DicomContent`),
+  `effective_label_values`, `label_values_by_layer`, `leaf_for`, `leaves_of`, `parents_of`,
+  `coverage_report`, and the group properties of `SegmentView`.
+
+### Changed — converters
+- `.seg.nrrd`: `export_seg_nrrd(ext, data, list_axis=)` writes a label table as it is and
+  otherwise **materializes** — first-fit destination layers, rewritten voxels, recomputed
+  extents — instead of refusing. Roles travel in a `duckn.role` tag; indices are dense.
+  `extent` is in the array's storage order, as the specification always said: the importer
+  and exporter now reverse `SegmentN_Extent`, which NRRD lists fastest axis first.
+  `zarr_to_nrrd` returns diagnostics; the zero-copy path refuses a file that needs
+  materializing.
+- DICOM SEG export writes **`BINARY` by default** (overlap and layers allowed),
+  `FRACTIONAL` for a fractional labelmap, and `LABELMAP` only on request, under Label Map
+  Segmentation Storage and without renumbering. `SegmentAlgorithmType` is no longer
+  hardcoded to `AUTOMATIC`: it comes from the file or the caller, or the export fails.
+  `RecommendedDisplayCIELabValue` is written, in the D65 encoding dcmqi-based readers
+  expect by default (marked `cielab-d65` in `SoftwareVersions`), or as the standard
+  intends with `cielab="d50"`.
+- DICOM SEG import: ids are `Segment_<SegmentNumber>`; colors are transcribed, not
+  converted, as `lab()` or `color(xyz-d65 …)` according to who wrote the object; algorithm
+  attributes are captured; a `LABELMAP` takes its background from `PixelPaddingValue` and
+  merges identical items; a `BINARY` object with `SegmentsOverlap` `NO` is one layer; a
+  `FRACTIONAL` object keeps its integers under a `linear` transform.
+- `seg_labelmap_to_binary` makes one channel per segment from its values, rather than
+  pairing segments with the sorted labels present.
+- `resample` refuses to interpolate a binary labelmap, and drops `extent`, `legacy` and
+  `reference_extent_offset` from a `seg` extension it carries forward; `cast(normalize=True)`
+  drops `seg` from a binary labelmap.
+
+### Added
+- `Volume.fill_value`: the store's Zarr `fill_value`, set by the readers, written back by
+  `write`, and handed to the seg rules (rule 15). `None` means not known. The ZMP builders
+  for DICOM SEG give a segmentation a `fill_value` its layers describe instead of 0.
+- `duckn.seg_color` (the four color forms, Slicer floats, DICOM CIELab in both readings),
+  `duckn.diagnostics`, `duckn.dicom_seg`. `coloraide` is a new dependency.
+- CLI: `to-dicom-seg --type/--cielab/--algorithm-type/--algorithm-name/--fractional-type`;
+  `to-nrrd` and `to-dicom-seg` print diagnostics to stderr.
+
 ## 0.3.2 — 2026-09-03
 
 A second adversarial round over 0.3.1's fixes.

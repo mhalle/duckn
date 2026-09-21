@@ -231,6 +231,19 @@ def resample(
     if np.allclose(zoom_factors, 1.0, rtol=1e-6):
         return vol
 
+    # A binary labelmap's values are names, not quantities: interpolating them
+    # produces values that belong to no segment (seg spec §3.3).
+    seg = (vol.metadata.extensions or {}).get("seg")
+    if seg is not None and order > 0:
+        from .seg_model import seg_is_fractional
+
+        if not seg_is_fractional(seg, vol.raw.dtype):
+            raise ValueError(
+                "this volume is a binary labelmap segmentation, and interpolating label "
+                "values produces values that belong to no segment; resample it with "
+                "order=Interpolation.NEAREST"
+            )
+
     ndimage = _require_scipy_ndimage()
 
     # Resample on raw stored values. Affine value_transforms commute with
@@ -311,6 +324,11 @@ def resample(
             for name, ext in new_meta.extensions.items()
             if name not in _SOURCE_PROVENANCE_EXTENSIONS
         }
+        if "seg" in kept:
+            # The grid changed: cached extents and source strings no longer hold.
+            from .seg_model import seg_for_derived_array
+
+            kept["seg"] = seg_for_derived_array(kept["seg"])
         new_meta.extensions = kept or None
     # Update the grid. The scale comes from the shape scipy actually produced,
     # because rounding to a whole number of samples means the realized spacing
@@ -355,4 +373,4 @@ def resample(
             float(o + d) for o, d in zip(new_meta.space_origin, origin_shift)
         ]
 
-    return Volume(raw=resampled, metadata=new_meta)
+    return Volume(raw=resampled, metadata=new_meta, fill_value=vol.fill_value)

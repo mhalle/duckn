@@ -13,7 +13,7 @@ from duckn.diagnostics import About, DiagnosticsError
 from duckn.seg_model import SegmentationExtension, derive_token_ids, validate_seg_extension
 from duckn.seg_read import migrate_seg_extension, read_seg_extension
 
-OLD_SPEC_PATH = Path(__file__).parent.parent / "docs" / "segmentation-ext-spec.md"
+OLD_SPEC_PATH = Path(__file__).parent.parent / "docs" / "archive" / "segmentation-ext-v07-spec.md"
 
 # Rules a migrated file satisfies, given a conforming older file (§6.3).
 GUARANTEED = {f"rule-{n}" for n in

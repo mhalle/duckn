@@ -84,7 +84,25 @@ def cast(
         # in the source's units, so claiming them would be false
         # (duckn-spec §4.1).
         new_meta.sample_units = None
+        # Rescaling is arithmetic on the values. A binary labelmap's values are
+        # names of segments, so the result is no longer a segmentation and must
+        # not carry `seg` forward (seg spec §3.3). Fractions stay fractions.
+        seg = (new_meta.extensions or {}).get("seg")
+        if seg is not None:
+            from .seg_model import seg_is_fractional
+
+            if not seg_is_fractional(seg, vol.raw.dtype):
+                new_meta.extensions = {
+                    k: v for k, v in new_meta.extensions.items() if k != "seg"
+                } or None
     # Calibrated values are baked into the result — clear value_transforms
     # so vol.data on the result doesn't double-apply.
     new_meta.value_transforms = None
-    return Volume(raw=result, metadata=new_meta)
+    # A fill value is a stored value: it survives a plain cast that can hold it,
+    # and means nothing after the values were rescaled.
+    fill = None if normalize else vol.fill_value
+    if fill is not None and result.dtype.kind in "iu":
+        info = np.iinfo(result.dtype)
+        if not info.min <= fill <= info.max:
+            fill = None
+    return Volume(raw=result, metadata=new_meta, fill_value=fill)

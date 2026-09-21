@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from typing import Annotated, Any, Iterable, Literal, Sequence
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .diagnostics import About, Diagnostic
 from .models import AxisMetadata, CodedEntry, Designation
@@ -61,6 +61,19 @@ class DicomContent(BaseModel):
     # Carried as found; rule 8b reports a value DICOM does not define.
     algorithm_type: str | None = None
     algorithm_name: str | None = None
+
+    @model_validator(mode="after")
+    def _reject_nested_modifiers(self) -> "DicomContent":
+        # Modifiers are separate fields here, so a ``Designation`` (which
+        # carries its own ``modifier``) is not a valid value: assigning one
+        # would silently drop that modifier on serialization.
+        for entry in self.coded_entries():
+            if getattr(entry, "modifier", None) is not None:
+                raise ValueError(
+                    "a dicom coded entry carries a nested 'modifier'; use the separate "
+                    "modifier field instead"
+                )
+        return self
 
     def coded_entries(self) -> list[CodedEntry]:
         entries = (
@@ -655,6 +668,48 @@ def undescribed_values(
     measurement because nothing describes them (§2)."""
     found = validate_seg_data(ext, data, list_axis=list_axis, layer=layer)
     return {d.about.key for d in found}  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# Derived arrays (§3.3)
+# ---------------------------------------------------------------------------
+
+
+def seg_is_fractional(raw: Any, dtype: Any = None) -> bool:
+    """:func:`is_fractional`, for a raw extension dict of any version."""
+    representation = raw.get("source_representation") if isinstance(raw, dict) else None
+    if representation is not None:
+        return representation == "fractional-labelmap"
+    return _is_float_dtype(dtype)
+
+
+def seg_for_derived_array(raw: dict[str, Any]) -> dict[str, Any]:
+    """The seg extension to carry onto an array derived by an operation that
+    changed the grid or the voxels — crop, nearest-neighbor resample,
+    reorient, edit. What is in voxel coordinates or is source-format
+    provenance goes: every segment's ``extent``,
+    ``metadata.slicer.reference_extent_offset``, and ``legacy``. Works on a
+    raw dict of any version and does not modify it.
+
+    An operation that interpolates a *binary* labelmap must not call this:
+    its values are names, and it carries no ``seg`` forward at all.
+    """
+    from copy import deepcopy
+
+    out = deepcopy(raw)
+    out.pop("legacy", None)
+    for seg in out.get("segments") or []:
+        if isinstance(seg, dict):
+            seg.pop("extent", None)
+    metadata = out.get("metadata")
+    slicer = metadata.get("slicer") if isinstance(metadata, dict) else None
+    if isinstance(slicer, dict):
+        slicer.pop("reference_extent_offset", None)
+        if not slicer:
+            del metadata["slicer"]
+        if not metadata:
+            del out["metadata"]
+    return out
 
 
 # ---------------------------------------------------------------------------

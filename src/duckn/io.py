@@ -225,7 +225,7 @@ def _write_zarr(vol, dest, *, chunks, compressor, level, overwrite):
         zarr.create_array(
             store, data=vol.raw, chunks=chunks,
             compressors=compressors, attributes=attrs,
-            fill_value=0, overwrite=overwrite,
+            fill_value=0 if vol.fill_value is None else vol.fill_value, overwrite=overwrite,
         )
 
 
@@ -247,7 +247,7 @@ def _write_zarr_zip(vol, dest, *, chunks, compressor, level, overwrite):
     zarr.create_array(
         store, data=vol.raw, chunks=chunks,
         compressors=compressors, attributes=attrs,
-        fill_value=0,
+        fill_value=0 if vol.fill_value is None else vol.fill_value,
     )
     store.close()
 

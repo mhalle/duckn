@@ -472,7 +472,10 @@ class DucknArray:
         from copy import deepcopy
         from .volume import Volume
 
-        return Volume(raw=self._arr[:], metadata=deepcopy(self._metadata))
+        return Volume(
+            raw=self._arr[:], metadata=deepcopy(self._metadata),
+            fill_value=self._arr.fill_value,
+        )
 
     def close(self) -> None:
         """Close the underlying store if this handle owns it."""

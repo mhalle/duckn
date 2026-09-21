@@ -36,6 +36,9 @@ class Volume:
         ``value_transforms`` (slope/intercept) lazily on first access
         and caches the result. When no transforms are declared, this
         is the same array as ``vol.raw``.
+    ``vol.fill_value`` : the store's Zarr ``fill_value``, or None when not
+        known. A segmentation's rules need it (seg spec rule 15), and
+        ``write`` puts it back.
     ``vol.dtype`` : the dtype users will see via ``vol.data``
         (float32 if a non-identity transform applies, else
         ``vol.raw.dtype``).
@@ -43,6 +46,11 @@ class Volume:
 
     raw: np.ndarray
     metadata: DucknMetadata
+    # The Zarr array's ``fill_value``, when the volume came from a store (or is
+    # headed for one): what an unwritten voxel reads as. The convention leaves
+    # it to Zarr rather than repeating it under ``duckn``. None means not
+    # known; formats with no such notion (NRRD, NIfTI) leave it so.
+    fill_value: Any = None
     # Pre-composed slope/intercept, populated in __post_init__.
     _slope: float = field(init=False, repr=False, default=1.0)
     _intercept: float = field(init=False, repr=False, default=0.0)
@@ -103,7 +111,8 @@ class Volume:
         return Extensions(
             self.metadata.extensions,
             seg_context=dict(
-                axes=self.metadata.axes, shape=self.raw.shape, dtype=self.raw.dtype
+                axes=self.metadata.axes, shape=self.raw.shape, dtype=self.raw.dtype,
+                fill_value=self.fill_value,
             ),
         )
 
