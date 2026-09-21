@@ -12,7 +12,7 @@ This document defines the `presentation` extension for the duckn convention. It 
 
 The convention itself carries no display hints, and this extension does not change that principle: a window is not a property of the data, and nothing about what a sample *means* depends on it. It exists for the second of the two reasons a field earns a place in a duckn file — a standard imaging format carries its equivalent. DICOM images carry `WindowCenter`/`WindowWidth`, often several pairs with names; NIfTI carries `cal_min`/`cal_max`. A radiologist opening a CT expects it to come up in the window the scanner recommended, and a file that has lost that opens as a gray smear.
 
-Today those values survive only inside format-specific provenance (`dicom` tags, the `nifti` header). Two things follow, and both are defects. A reader has to understand DICOM tag semantics to find a default window. And the provenance extensions are dropped when an array is derived (§4.5 of the convention), so a resampled CT arrives with no window at all, although the window — chosen for Hounsfield units — is exactly as valid as it was. This extension gives the recommendation a format-neutral home that survives derivation for as long as the quantity does (§5).
+Today those values survive only inside format-specific provenance (`dicom` tags, the `nifti` header). Two things follow, and both are defects. A reader has to understand DICOM tag semantics to find a default window. And the provenance extensions are dropped when an array is derived (§4.5 of the convention), rightly, since they describe a source object; so a resampled CT arrives with no window at all, although the window — chosen for Hounsfield units — is exactly as valid as it was. This extension gives the recommendation a format-neutral home. It describes *this array's quantity*, not a source, and so travels with the quantity (§5).
 
 It is deliberately small. It holds what the source formats hold, as plain data. Several named *renditions*, rules, colormaps, opacity transfer functions, and anything a viewer's user chooses are presentation too, but they are not carried by the imaging formats this convention exchanges with, and they belong to documents outside the file. Where such a document is applied, this extension's values are the floor beneath it: viewer default, then the file's recommendation, then the external choice.
 
@@ -88,7 +88,9 @@ Some series recommend a different window for every image: MR acquisitions common
 }
 ```
 
-A per-sample entry overrides the array-level `windows` for a view of that position. The array-level `windows` remains the recommendation for any view that is not one position along that axis — a reformatted plane, a volume rendering — so a writer with per-sample windows should still provide one, and says how it was chosen in its `name` when it was not the source's own. At most one axis carries per-sample windows.
+A per-sample entry overrides the array-level `windows` for a view of that position. The array-level `windows` is the recommendation for any view that is not one position along that axis — a reformatted plane, a volume rendering. It is optional when per-sample windows are present; §4.1 says how a converter chooses one. At most one axis carries per-sample windows.
+
+As the convention requires of any extension used on an axis, the extension is also declared at the top level. A file with per-sample windows only has a top-level entry holding just `version`.
 
 ---
 
@@ -108,7 +110,7 @@ The window spans `c − w/2` to `c + w/2`. This is the default, and the right ch
 - if `x > c − 0.5 + (w − 1)/2`, then `y = 1`;
 - otherwise `y = (x − (c − 0.5)) / (w − 1) + 0.5`.
 
-It differs from `linear-exact` by less than one unit of the quantity at either end, which no one will see in a CT and which matters only for an exact round trip. A DICOM window whose `VOILUTFunction` is absent is `linear`, because that is what DICOM says its absence means.
+Its lower bound is the same as `linear-exact`'s — `c − 0.5 − (w − 1)/2` is `c − w/2` — and its ramp ends one unit lower, at `c + w/2 − 1`. No one will see that in a CT; it matters only for an exact round trip. With `w = 1` the third branch is never reached, so the function is a step at `c − 0.5` and nothing is divided by zero. A DICOM window whose `VOILUTFunction` is absent is `linear`, because that is what DICOM says its absence means.
 
 **`sigmoid`**:
 
@@ -127,22 +129,32 @@ A reader that does not support a function should fall back to `linear-exact` wit
 | `WindowCenter`, `WindowWidth` (one or more pairs) | `windows[n].center`, `windows[n].width`, in order; the first pair is the default |
 | `WindowCenterWidthExplanation` | `windows[n].name` |
 | `VOILUTFunction`: `LINEAR` or absent / `LINEAR_EXACT` / `SIGMOID` | `windows[n].function`: `"linear"` / `"linear-exact"` / `"sigmoid"`, written explicitly |
-| `PhotometricInterpretation` `MONOCHROME1` | `invert: true` |
-| `PresentationLUTShape` `INVERSE` | `invert: true` (it accompanies `MONOCHROME1`; the two together are one inversion, not two) |
+| `PresentationLUTShape`, `PhotometricInterpretation` | `invert`, as computed below |
 | per-instance window values that differ across a series | per-sample `windows` on the slice axis (§2.3) |
 | Frame VOI LUT Sequence of an enhanced multi-frame object | the same, per frame |
 
-The numbers carry over unchanged, because DICOM's window and this extension's are both in the Modality LUT's output units.
+DICOM applies its window to stored values "after any Modality LUT or Rescale Slope and Intercept specified in the IOD have been applied" (PS3.3 C.11.2.1.2.1), which is the quantity `value_transforms` computes. So the numbers carry over unchanged — **on one condition**: the array's `value_transforms` must reproduce the source's Modality stage for every instance the windows belong to. A converter that could not record the rescale — because it varies from instance to instance, as in PET and some MR, and the converter neither materialized it nor found a uniform value — has written an array of stored values, and windows in the quantity would be wrong for it by a per-slice factor. In that case it writes no `windows`; they remain in the `dicom` extension's tags. Materializing a per-instance rescale into the values is the way to keep both. The same applies to the per-frame pixel value transformation of an enhanced multi-frame object.
 
-When every instance of a series has the same windows, a converter writes them once at the array level and writes no per-sample entries. When they differ, it writes the per-sample entries and an array-level default; absent anything better, the windows of the middle instance, with a `name` that says so.
+**Inversion.** `MONOCHROME1` declares that the minimum value is displayed white; `PresentationLUTShape` `INVERSE`, in the image types that have the attribute, is how that is carried out, and DICOM requires the two to agree (PS3.3 C.8.11.3). They are one inversion, not two:
+
+- if `PresentationLUTShape` is present, `invert` is `true` exactly when it is `INVERSE`;
+- otherwise `invert` is `true` exactly when `PhotometricInterpretation` is `MONOCHROME1`.
+
+A file in which the two disagree is self-contradictory; the converter follows the rule above and reports it. The stored values are not flipped. `PixelIntensityRelationshipSign` is not a display inversion and is not mapped.
+
+**An unrecognized `VOILUTFunction`.** The attribute's values are defined terms, not a closed list. A window whose function the converter does not recognize is left out of `windows` — writing it without a `function` would wrongly claim `linear-exact` — and stays in the `dicom` tags. An image may also have a `VOILUTSequence` and no window at all, and then has no `windows`.
+
+**Windows that differ across a series.** When every instance has the same windows, a converter writes them once at the array level and writes no per-sample entries. When they differ, it writes the per-sample entries (§2.3) and takes the array-level default from the **middle instance in the array's own slice order** — all of that instance's windows, in order, each with `" (middle slice)"` appended to its `name`, or named `"Middle slice"` if it had none. This is what 3D Slicer, Cornerstone3D, and Weasis do for a volume, for the reason Slicer's source gives: a frame in the middle of a series is more likely to contain the object of interest than the first or last. DICOM is silent on the question for images; its own answer for a reformatted view, the Planar MPR Volumetric Presentation State, applies one window per input volume, which is this design. Pre-scaled PET is commonly shown in a fixed SUV range whatever the file says; a missing PET window is not a defect.
+
+A per-frame VOI in an enhanced object is a single window per frame, so its per-sample entries have one element each.
 
 **Not mapped.** A `VOILUTSequence` — an explicit non-linear display table — has no field here. It is rare, it is defined over a specific stored representation, and whether it still applies to a derived array is not something a converter can decide; it stays in the `dicom` extension's tags, as `dicom-spec.md` describes, and is lost on derivation. `ICCProfile` likewise. Palette color images are not scalar images and are out of scope. Softcopy presentation states are separate DICOM objects, and their counterpart is an external document, not this extension.
 
-On export to DICOM, `windows` and `invert` are written back to the attributes above. `invert: true` on an array whose stored values came from a `MONOCHROME2` source is exported as `PresentationLUTShape` `INVERSE`.
+On export to DICOM, `windows` are written back to the attributes above. `invert: true` is written as `PhotometricInterpretation` `MONOCHROME1`, which the CT, MR, PET, CR, DX, and MG image types all permit and which requires no change to the pixel data: it is a statement about display. `PresentationLUTShape` `INVERSE` is written **as well** only in the image types that define the attribute (the DX and MG family), where the two must agree; it is not an attribute of a CT or MR image and is not written into one. An image type that permits only `MONOCHROME2` cannot express `invert`, and the exporter reports the loss.
 
 ### 4.2 NIfTI
 
-`cal_min` and `cal_max`, when not both zero, become one window: `center = (cal_min + cal_max) / 2`, `width = cal_max − cal_min`, `function` `"linear-exact"`. They are in the scaled units NIfTI's `scl_slope`/`scl_inter` produce, which is the quantity. On export the first `linear-exact` or `linear` window is written back as `cal_min = center − width/2`, `cal_max = center + width/2`.
+`cal_min` and `cal_max` become one window when `cal_max > cal_min`: `center = (cal_min + cal_max) / 2`, `width = cal_max − cal_min`, `function` `"linear-exact"`. The header says the fields are used "if nonzero" and apply to "(possibly scaled) dataset values" — the units `scl_slope`/`scl_inter` produce, which is the quantity. This mapping treats the pair jointly rather than field by field, so that a genuine window from 0 to 500 is kept: both zero means unset, and `cal_max ≤ cal_min` otherwise is not a window and yields none. On export the first `linear-exact` window is written back as `cal_min = center − width/2`, `cal_max = center + width/2`; a `linear` window's ramp ends one unit lower (§3), so its `cal_max` is `center + width/2 − 1`. NIfTI has no field for `invert`, which is dropped and reported.
 
 ### 4.3 NRRD
 
@@ -152,15 +164,20 @@ NRRD has no window field. A converter may preserve `windows` as a key/value pair
 
 ## 5. Derived Arrays
 
-A window is chosen for a **quantity**, so it remains valid exactly as long as the quantity does. Unlike the provenance extensions, `presentation` is not dropped on derivation by default (§4.5 of the convention):
+The convention drops metadata that describes a *source* when an array is derived from it, and keeps the fields that describe *the array itself* — `sample_units` among them (§4.5 of the convention). A window is of the second kind: it is a statement about the array's quantity, and it stays true exactly as long as the quantity does. So `presentation` is governed by what an operation does to the values, which the implementation of an operation always knows:
 
-- An operation that preserves the quantity — resampling, cropping, reorienting, re-encoding to another storage type, materializing `value_transforms` — **keeps** `windows` and `invert` unchanged. The values in `sample_units` did not change meaning, so neither did the window.
-- An operation that changes what the values mean — normalization, filtering that changes scale, any arithmetic that alters `sample_units` — **drops** the extension. A 40/400 window applied to z-scored data is not a recommendation, it is an error.
-- Per-sample windows (§2.3) are dropped whenever the sample count of their axis changes or the axis is resampled, since they no longer correspond to positions. The array-level `windows` survives.
-- An array derived *from* an image but not itself that image — a segmentation, a probability map — does not inherit the extension.
+- **Kept** by an operation that re-samples or re-encodes the same quantity: resampling, cropping, reorienting, rechunking, changing the storage type, and the convention's preserve, materialize, and re-encode write policies (§4.3 of the convention). A linear filter whose weights sum to one — smoothing, the anti-aliasing a resample applies — leaves values in the same units (§4.4 of the convention) and keeps it too.
+- **Dropped** by an operation that maps values through anything else: normalization, rescaling to a storage range, a gradient or difference operator, any nonlinear remapping.
+
+A change to `sample_units` is therefore *sufficient* reason to drop the extension, but it is not necessary, and its absence proves nothing: an MR image has no `sample_units` before or after it is normalized, and its window is wrong afterward all the same. The decision belongs to the operation, not to a comparison of metadata.
+
+Per-sample windows (§2.3) follow the lifecycle of the per-position data the convention already has in `axes[].samples`: a crop or a subset of positions slices the array of entries with the data; an operation that interpolates along that axis, or reorders it, drops them. The array-level `windows` is unaffected.
+
+A validator with the data can catch a stale window after the fact, whatever produced it: a window whose interval `[center − width/2, center + width/2]` does not intersect the array's range of values is worth a warning.
+
+**What this asks of the convention.** §4.5 of the convention lists the fields that survive derivation and mentions extensions only as things to drop. It should distinguish extensions that describe a source (`dicom`, `nifti`, `fits` — dropped) from extensions that describe the array (kept, subject to their own rules), and name this one as the first of the second kind. The convention's note that window and level belong in application-specific attributes should likewise say that an extension may carry a *producer's recommendation* where an exchange format carries its equivalent. The released resampler already behaves this way — it drops only the three provenance extensions — but normalization in `cast` clears `sample_units` and leaves extensions in place, which this rule requires it to change.
 
 ---
-
 ## 6. Consistency Rules
 
 1. `version` is present and is a string.
@@ -168,7 +185,7 @@ A window is chosen for a **quantity**, so it remains valid exactly as long as th
 3. `function`, when present, is one of `"linear-exact"`, `"linear"`, `"sigmoid"`.
 4. `invert`, when present, is `true`.
 5. The extension does not appear on an array whose `intent` is `"label-map"`, nor on an array with more than one component per sample.
-6. Per-sample `windows` appears on at most one axis, and its length equals that axis's size in `shape`. Each entry is `null` or a non-empty array of windows.
+6. Per-sample `windows` appears on at most one axis, and its length equals that axis's size in `shape`. Each entry is `null` or a non-empty array of windows. The extension is declared at the top level whenever it appears on an axis.
 
 All six are checkable from metadata and shape alone.
 
@@ -186,7 +203,7 @@ All six are checkable from metadata and shape alone.
 
 **Why `invert` is a flag and not a window property.** `MONOCHROME1` and an inverse presentation shape describe the image, not one of its windows: every window of an inverted image is inverted. The stored values are left as the source had them — the converter does not flip them — so the flag is what tells a format-neutral reader that low values are meant to be bright.
 
-**Why per-sample windows use the per-axis mechanism.** MR series routinely recommend a window per image, and collapsing them to one loses what the scanner said. The convention already has a place for data that parallels positions along an axis, used by the diffusion extension for gradients; using it here adds no new structure. The array-level default stays mandatory in spirit because most views of a volume are not a single source slice.
+**Why per-sample windows use the per-axis mechanism.** MR series routinely recommend a window per image, and collapsing them to one loses what the scanner said. The convention already has a place for data that parallels positions along an axis, used by the diffusion extension for gradients; using it here adds no new structure. The array-level default comes from the middle instance because that is what volume viewers already do, and a converter that names it as such lets a reader tell a scanner's series-wide recommendation from a converter's choice.
 
 **Why non-linear display tables are left behind.** A `VOILUTSequence` is indexed by specific input values at a specific bit depth, and it is unclear what it means after resampling or re-encoding. Modeling it would buy a faithful rendering of a rare attribute on underived arrays, where the `dicom` tags already preserve it.
 

@@ -26,9 +26,9 @@ that does not recognize an extension ignores it.
 | Extension | Document | Purpose |
 |---|---|---|
 | `seg` | [segmentation-ext-spec.md](segmentation-ext-spec.md) | Segmentations: segments, label values, designations, DICOM SEG classification. |
-| `seg` 0.8 (draft) | [segmentation-ext-v08-spec.md](segmentation-ext-v08-spec.md) | Proposed next version, not implemented: value sets, roles, labeling scheme, CSS colors; groups, renditions, and cross-walks move outside the file. |
-| `semantic` | [semantic-ext-spec.md](semantic-ext-spec.md) | Domain meaning for bound data: entities, designations, mappings, terminologies, groups and their claims. |
-| `rendition` | [rendition-ext-spec.md](rendition-ext-spec.md) | Presentation choices, in-file or as external stylesheets: named renditions of segments and images — color, opacity, visibility, stacking, window. |
+| `seg` 0.8 (draft) | [segmentation-ext-v08-spec.md](segmentation-ext-v08-spec.md) | Proposed next version, not implemented: value sets, roles, labeling scheme, CSS colors; groups, renditions, and inexact mappings move outside the file. |
+| `semantic` (superseded draft) | [semantic-ext-spec.md](semantic-ext-spec.md) | Not an in-file extension. Source material for the deferred external-document specification: entities, groups and claims, inexact mappings. See the `seg` 0.8 draft, §7.2. |
+| `rendition` (superseded draft) | [rendition-ext-spec.md](rendition-ext-spec.md) | Not an in-file extension. Source material for the deferred external stylesheet format: named renditions, rules, cascade, paint order. See the `seg` 0.8 draft, §7.2. |
 | `presentation` (draft) | [presentation-extension.md](presentation-extension.md) | Recommended grayscale presentation carried by imaging formats: display windows and inversion. Survives derivation while the quantity does. Not implemented. |
 | `dicom` | [dicom-spec.md](dicom-spec.md) | DICOM provenance — describes the *source object*, never the array it is attached to. |
 | `nifti` | [nifti-spec.md](nifti-spec.md) | NIfTI header provenance. |
