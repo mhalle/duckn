@@ -2,7 +2,7 @@
 
 **Extension name:** `seg`
 **Version:** 0.7
-**Status:** Draft
+**Status:** Draft. This is the version the released code reads and writes. A proposed successor, not yet implemented, is drafted in `segmentation-ext-v08-spec.md`; it changes `label_value` to a list of values, moves groups out of the file, and makes `color` a string.
 
 ---
 

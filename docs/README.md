@@ -29,7 +29,7 @@ that does not recognize an extension ignores it.
 | `seg` 0.8 (draft) | [segmentation-ext-v08-spec.md](segmentation-ext-v08-spec.md) | Proposed next version, not implemented: value sets, roles, labeling scheme, CSS colors; groups, renditions, and inexact mappings move outside the file. |
 | `semantic` (superseded draft) | [semantic-ext-spec.md](semantic-ext-spec.md) | Not an in-file extension. Source material for the deferred external-document specification: entities, groups and claims, inexact mappings. See the `seg` 0.8 draft, §7.2. |
 | `rendition` (superseded draft) | [rendition-ext-spec.md](rendition-ext-spec.md) | Not an in-file extension. Source material for the deferred external stylesheet format: named renditions, rules, cascade, paint order. See the `seg` 0.8 draft, §7.2. |
-| `presentation` (draft) | [presentation-extension.md](presentation-extension.md) | Recommended grayscale presentation carried by imaging formats: display windows and inversion. Survives derivation while the quantity does. Not implemented. |
+| `presentation` (early draft, parked) | [presentation-extension.md](presentation-extension.md) | Recommended grayscale presentation carried by imaging formats: display windows and inversion. Survives derivation while the quantity does. Not implemented. |
 | `dicom` | [dicom-spec.md](dicom-spec.md) | DICOM provenance — describes the *source object*, never the array it is attached to. |
 | `nifti` | [nifti-spec.md](nifti-spec.md) | NIfTI header provenance. |
 | `dwmri` | [dwi-extension.md](dwi-extension.md) | Diffusion-weighted MRI: gradients, b-values, B-matrices. |
