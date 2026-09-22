@@ -363,7 +363,7 @@ def test_nrrd_to_zarr_dwi_metadata(tmp_path):
     assert dwmri_top["version"] == "1.0"
 
     # No DWMRI keys in keyvalues
-    kv = duckn_attrs["extensions"].get("keyvalues", {})
+    kv = duckn_attrs["extensions"].get("keyvalues", {}).get("entries", {})
     for k in kv:
         assert not k.startswith("DWMRI_"), f"DWMRI key leaked to keyvalues: {k}"
         assert k != "modality", "modality key leaked to keyvalues"

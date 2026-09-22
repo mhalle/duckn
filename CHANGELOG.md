@@ -20,6 +20,11 @@
   `microscopy`, `presentation`, `provenance`, `rendition`, `semantic`), at the top level
   and on each axis. `keyvalues` and unregistered extensions are now dropped, reversing the
   2026-08-29 rule that left extensions duckn does not own in place.
+- NRRD import writes `keyvalues` in its versioned form, `{"version": "1.0", "entries": {...}}`,
+  so a NRRD key named `version` no longer collides with the extension's own field. NRRD
+  export reads both forms; an unversioned object with a pair named `version` or `entries` is
+  still exported, and is reported as `keyvalues-legacy-ambiguous`. `keyvalue_entries()` reads
+  the pairs from either form.
 
 ## 0.5.1 — 2026-09-22
 

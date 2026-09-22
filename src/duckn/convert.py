@@ -17,7 +17,7 @@ from .models import (
     AxisKind, AxisMetadata, Centering, DwmriAxisExtension, DwmriExtension,
     DucknMetadata, SpaceName, _SPACE_ABBREVS,
 )
-from .diagnostics import Diagnostic
+from .diagnostics import About, Diagnostic
 from .dwi_nrrd import parse_dwi_keyvalues, serialize_dwi_extension
 from .seg_nrrd import parse_seg_keyvalues, serialize_seg_extension
 from .zarr_io import _is_zip_path, open_store
@@ -316,7 +316,7 @@ def _header_to_metadata(
                     break
 
         if remaining:
-            extensions["keyvalues"] = remaining
+            extensions["keyvalues"] = {"version": KEYVALUES_VERSION, "entries": remaining}
         if extensions:
             meta_kwargs["extensions"] = extensions
 
@@ -330,6 +330,35 @@ def _header_to_metadata(
             dimension_names = clean_labels
 
     return meta, dimension_names
+
+
+KEYVALUES_VERSION = "1.0"
+
+
+def keyvalue_entries(
+    ext: Any, *, diagnostics: list[Diagnostic] | None = None
+) -> dict[str, str]:
+    """The NRRD key/value pairs of a ``keyvalues`` extension object.
+
+    Written as ``{"version": ..., "entries": {...}}`` (keyvalues-extension §2).
+    The released converter wrote the pairs directly as the object, with no
+    ``version`` and no ``entries``; that form is read as every member being a
+    pair (§6). A legacy object holding a pair named ``version`` or ``entries``
+    is still read as legacy, since its ``entries`` would be a string, and the
+    ambiguity is reported.
+    """
+    if not isinstance(ext, dict):
+        return {}
+    if "version" in ext and isinstance(ext.get("entries"), dict):
+        return {str(k): str(v) for k, v in ext["entries"].items()}
+    clash = sorted(k for k in ("version", "entries") if k in ext)
+    if clash and diagnostics is not None:
+        diagnostics.append(Diagnostic(
+            "keyvalues-legacy-ambiguous", "warning", About.extension(),
+            f"keyvalues has no version and entries, so it is read as the unversioned "
+            f"form; its member(s) {clash} are taken as key/value pairs",
+        ))
+    return {str(k): str(v) for k, v in ext.items()}
 
 
 def _metadata_to_header(
@@ -476,7 +505,8 @@ def _metadata_to_header(
             for k, v in serialize_dwi_extension(dwi_top, dwi_axis).items():
                 header[k] = v
         if "keyvalues" in meta.extensions:
-            for k, v in meta.extensions["keyvalues"].items():
+            entries = keyvalue_entries(meta.extensions["keyvalues"], diagnostics=diagnostics)
+            for k, v in entries.items():
                 header[k] = v
 
     return header
@@ -683,7 +713,9 @@ def zarr_to_nrrd(
     if meta.extensions and "seg" in meta.extensions:
         data, meta, dim_names, seg_keyvalues = _export_seg(data, meta, dim_names, diagnostics)
 
-    header = _metadata_to_header(meta, dim_names=dim_names, seg_keyvalues=seg_keyvalues)
+    header = _metadata_to_header(
+        meta, dim_names=dim_names, seg_keyvalues=seg_keyvalues, diagnostics=diagnostics
+    )
     header["encoding"] = encoding
 
     nrrd.write(str(nrrd_path), data, header, index_order="C")

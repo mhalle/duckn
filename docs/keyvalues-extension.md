@@ -2,9 +2,8 @@
 
 **Extension name:** `keyvalues`
 **Version:** 1.0 (proposed)
-**Status:** Draft. Written 2026-09-22. The reader and writer in `convert.py` already produce an
-unversioned form of this object (§6); this document gives it a version, a shape that cannot
-collide with its own fields, and rules.
+**Status:** Draft. Written 2026-09-22. `convert.py` writes this form, and reads the unversioned
+form earlier converters wrote (§6).
 
 ---
 
@@ -18,8 +17,7 @@ losslessly.
 It is a compatibility store, and nothing more:
 
 1. **Preservation.** A NRRD file may carry key/value pairs no extension claims. A converter must
-   keep them somewhere, or a round trip loses them. The released converter already does this,
-   without a specification.
+   keep them somewhere, or a round trip loses them.
 2. **Interoperability with NRRD tools.** 3D Slicer, teem and pynrrd show and keep key/value
    pairs, so what was in the source header is there again after export.
 
@@ -160,8 +158,8 @@ for one extension, not general metadata, and is unaffected by this document.
 
 ## 6. Reading Older Files
 
-The released converter writes the pairs directly as the extension's object - no `version`, no
-`entries`:
+Converters released before this version wrote the pairs directly as the extension's object - no
+`version`, no `entries`:
 
 ```json
 "keyvalues": { "some_key": "some value" }

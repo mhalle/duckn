@@ -466,7 +466,7 @@ def round_trip_headers(orig_path: Path, tmp: Path) -> dict[str, Any]:
         if k not in _NRRD_SPEC_FIELDS:
             keyvalues[k] = str(v)
     if keyvalues:
-        meta_kwargs["extensions"] = {"keyvalues": keyvalues}
+        meta_kwargs["extensions"] = {"keyvalues": {"version": "1.0", "entries": keyvalues}}
 
     meta = DucknMetadata(**meta_kwargs)
 
@@ -542,7 +542,7 @@ def round_trip_headers(orig_path: Path, tmp: Path) -> dict[str, Any]:
 
     # keyvalues
     if meta.extensions and "keyvalues" in meta.extensions:
-        for k, v in meta.extensions["keyvalues"].items():
+        for k, v in meta.extensions["keyvalues"]["entries"].items():
             out[k] = v
 
     return out
