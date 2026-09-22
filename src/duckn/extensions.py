@@ -39,9 +39,17 @@ class SegmentView:
 
     @property
     def label_values(self) -> list[int]:
-        """The voxel values of this segment's layer that belong to it."""
+        """The voxel values of this segment's layer that belong to it, as listed. A
+        ``members`` segment lists none here: its values are resolved by the model
+        (``SegAccessor.model``), and ``members`` names what it is the union of."""
         lv = self._data.get("label_values")
         return list(lv) if isinstance(lv, list) else []
+
+    @property
+    def members(self) -> list[str]:
+        """The ids this segment is the union of; empty for one that lists values."""
+        m = self._data.get("members")
+        return list(m) if isinstance(m, list) else []
 
     @property
     def role(self) -> str | None:
@@ -76,7 +84,8 @@ class SegmentView:
 
     def __repr__(self) -> str:
         role = f", role={self.role!r}" if self.role else ""
-        return f"Segment({self.name!r}, labels={self.label_values}{role})"
+        what = f"members={self.members}" if self.members else f"labels={self.label_values}"
+        return f"Segment({self.name!r}, {what}{role})"
 
 
 class SegAccessor:
@@ -180,8 +189,21 @@ class SegAccessor:
         return self._data.get("metadata")
 
     def segments_for(self, label_value: int, *, layer: int = 0) -> list[SegmentView]:
-        """Every segment of ``layer`` listing ``label_value``, in ``segments`` order."""
-        return [s for s in self.segments if s.layer == layer and label_value in s.label_values]
+        """Every segment of ``layer`` whose values include ``label_value``, in
+        ``segments`` order - a ``members`` segment by its resolved union."""
+        from .seg_model import resolve_members
+
+        views = self.segments
+        if any(v.members for v in views):
+            try:
+                model = self.model
+            except Exception:                              # noqa: BLE001 - refused file
+                model = None
+            if model is not None:
+                hits = {s.id for s in model.segments
+                        if s.effective_layer == layer and label_value in s.values}
+                return [v for v in views if v.id in hits and v.layer == layer]
+        return [s for s in views if s.layer == layer and label_value in s.label_values]
 
     def segment(
         self,

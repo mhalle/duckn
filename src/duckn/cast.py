@@ -129,6 +129,7 @@ def _seg_after_cast(
             return without_seg()
         if to_integer:
             info = np.iinfo(target)
+            # a `members` segment lists nothing of its own: its values are its members'
             listed = [
                 v
                 for s in seg.get("segments") or [] if isinstance(s, dict)

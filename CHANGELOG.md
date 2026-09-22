@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0 — 2026-09-22
+
+### Added — file format (seg 0.8)
+- A segment may name `members` in place of `label_values`: the ids of the segments of its
+  layer it is the union of, resolved transitively. It is a spelling of a value set, not a
+  second kind of segment — a reader resolves it on load, and every rule and lookup sees
+  effective values — so a deep hierarchy states each union once. A member that does not
+  resolve, is in another layer, has a role, or closes a cycle is a refusal (rule 11c). No
+  `disjoint` or `exhaustive` claims come back, and a union a writer invented still belongs
+  outside the file. Migration keeps a 0.7 group's `members` where 0.8 can: a union of
+  structures with no values of its own.
+
+### Changed — Python API
+- `Segment.label_values` is optional beside `members`; `Segment.values` and
+  `sorted_values` answer for both, and are what converters and lookups read.
+  `resolve_members(segments)` fills the unions and returns what could not be resolved.
+  `SegmentView.members`; `SegAccessor.segments_for` answers by the resolved union.
+
 ## 0.4.1 — 2026-09-22
 
 Two fields of a `terminologies` entry are renamed for what they are *of*. `uri` and `url`

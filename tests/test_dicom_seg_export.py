@@ -473,3 +473,14 @@ class TestReviewFixes:
         segs = [{"id": "a", "name": "A", "label_values": [1], "color": "red", "dicom": DICOM}]
         _, reported = _export(tmp_path, np.array([[[0, 1]]], dtype=np.uint8), segs)
         assert [d.code for d in reported] == ["color-unreadable"]     # the reader's, once
+
+
+class TestMembersLabelmap:
+    def test_a_members_atlas_is_eligible_and_its_union_is_partly_represented(self, tmp_path):
+        segs = [ATLAS[0], {**ATLAS[1], "members": ["68", "667"], "label_values": None},
+                ATLAS[2], ATLAS[3]]
+        segs[1] = {k: v for k, v in segs[1].items() if v is not None}
+        data = np.array([[[0, 68, 667, 667]]], dtype=np.uint16)
+        ds, reported = _export(tmp_path, data, segs, segmentation_type="LABELMAP")
+        assert [int(i.SegmentNumber) for i in ds.SegmentSequence] == [0, 68, 667]
+        assert _codes(reported) == [("segment-not-represented", About.segment("184"))]

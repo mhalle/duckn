@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from typing import Annotated, Any, Iterable, Literal, Sequence
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 from .diagnostics import About, Diagnostic
 from .models import AxisMetadata, CodedEntry, Designation
@@ -27,7 +27,8 @@ ALGORITHM_TYPES = ("AUTOMATIC", "SEMIAUTOMATIC", "MANUAL")
 
 # Rules a reader refuses a file over (§5); the rest it reports and continues.
 REFUSAL_CODES = frozenset(
-    {"rule-1", "rule-2", "rule-4a", "rule-8a", "rule-11a", "rule-13", "rule-14", "rule-17"}
+    {"rule-1", "rule-2", "rule-4a", "rule-8a", "rule-11a", "rule-11c", "rule-13", "rule-14",
+     "rule-17"}
 )
 
 _VERSION_RE = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\Z")
@@ -93,7 +94,12 @@ class Segment(BaseModel):
 
     id: str
     name: str | None = None
-    label_values: Annotated[list[int], Field(min_length=1)]
+    # Exactly one of the two (rule 11a): the values listed, or the segments
+    # this one is the union of. `members` is a spelling of a value set: the
+    # extension resolves it on construction, and `values` answers the same
+    # for both.
+    label_values: Annotated[list[int], Field(min_length=1)] | None = None
+    members: Annotated[list[str], Field(min_length=1)] | None = None
     role: Literal["background", "unknown"] | None = None
     layer: Annotated[int, Field(ge=0)] | None = None
     # [min_i, max_i, min_j, max_j, min_k, max_k], inclusive; a cached index
@@ -109,6 +115,8 @@ class Segment(BaseModel):
     def _integers_only(cls, v: Any) -> Any:
         # Rule 11a. pydantic would coerce True -> 1 and 2.0 -> 2; a numpy bool
         # is not a Python bool but is the realistic way one arrives here.
+        if v is None:
+            return None
         if not isinstance(v, (list, tuple)):
             raise ValueError("label_values must be an array, even for one value")
         out = []
@@ -124,20 +132,53 @@ class Segment(BaseModel):
             out.append(e)
         return out
 
+    # Filled by SegmentationExtension for a `members` segment: the union of its
+    # members' values. Not a field, so it is never written. It is resolved at
+    # construction and by validation; a caller that mutates segments afterward
+    # calls `resolve_members` (or validates) before reading `values`.
+    _resolved: frozenset[int] | None = PrivateAttr(default=None)
+
+    @model_validator(mode="after")
+    def _one_spelling(self) -> "Segment":
+        if (self.label_values is None) == (self.members is None):
+            raise ValueError(
+                f"segment {self.id!r} has exactly one of label_values and members"
+            )
+        if self.members is not None and self.role is not None:
+            # a background or an unknown region is not a union of structures (rule 11c)
+            raise ValueError(f"segment {self.id!r}: a members segment has no role")
+        return self
+
+    @property
+    def is_resolved(self) -> bool:
+        """Whether this segment's values are known: always for ``label_values``, and
+        for ``members`` once an extension resolved them (rule 11c held)."""
+        return self.label_values is not None or self._resolved is not None
+
     @property
     def effective_layer(self) -> int:
         return self.layer or 0
 
     @property
     def values(self) -> frozenset[int]:
-        """``label_values`` read as a set (rule 11b)."""
-        return frozenset(self.label_values)
+        """The segment's effective values as a set: ``label_values`` read as a
+        set (rule 11b), or a ``members`` segment's resolved union. Empty for a
+        ``members`` segment that has not been resolved (rule 11c failed, or the
+        segment was built outside an extension)."""
+        if self.label_values is not None:
+            return frozenset(self.label_values)
+        return self._resolved if self._resolved is not None else frozenset()
+
+    @property
+    def sorted_values(self) -> list[int]:
+        """The effective values, ascending: what `label_values` would list."""
+        return sorted(self.values)
 
     @property
     def effective_value_set(self) -> frozenset[tuple[int, int]]:
-        """The ``(layer, value)`` pairs this segment lists (§3.2)."""
+        """The ``(layer, value)`` pairs this segment covers (§3.2)."""
         layer = self.effective_layer
-        return frozenset((layer, v) for v in self.label_values)
+        return frozenset((layer, v) for v in self.values)
 
 
 class SegmentationExtension(BaseModel):
@@ -153,6 +194,11 @@ class SegmentationExtension(BaseModel):
     metadata: dict[str, Any] | None = None
     legacy: dict[str, Any] | None = None
 
+    @model_validator(mode="after")
+    def _resolve_members(self) -> "SegmentationExtension":
+        resolve_members(self.segments)
+        return self
+
     @property
     def labeling_schemes(self) -> list[str]:
         """The declared scheme keys, repeats ignored (rule 3a)."""
@@ -164,6 +210,55 @@ class SegmentationExtension(BaseModel):
 # ---------------------------------------------------------------------------
 # Reading a segmentation
 # ---------------------------------------------------------------------------
+
+
+def resolve_members(segments: Sequence[Segment]) -> dict[str, str]:
+    """Fill every ``members`` segment's resolved value set from its members',
+    transitively. Returns what could NOT be resolved, ``{id: reason}`` (rule
+    11c: a member that does not resolve, is in another layer, has a role, or
+    closes a cycle); such a segment is left with no values. Ids are taken as
+    found; with a repeated id the first segment is the one a member names."""
+    by_id: dict[str, Segment] = {}
+    for seg in segments:
+        by_id.setdefault(seg.id, seg)
+    failed: dict[str, str] = {}
+    done: dict[int, frozenset[int]] = {}
+
+    def resolve(seg: Segment, path: tuple[str, ...]) -> frozenset[int] | None:
+        if seg.members is None:
+            return frozenset(seg.label_values or ())
+        if id(seg) in done:
+            return done[id(seg)]
+        if seg.id in path:
+            failed[seg.id] = "membership returns to " + " -> ".join((*path[path.index(seg.id):], seg.id))
+            return None
+        if len(set(seg.members)) != len(seg.members):
+            failed[seg.id] = "members are distinct"
+            return None
+        out: set[int] = set()
+        for ref in seg.members:
+            member = by_id.get(ref)
+            if member is None:
+                failed[seg.id] = f"member {ref!r} is no segment of the file"
+                return None
+            if member.effective_layer != seg.effective_layer:
+                failed[seg.id] = f"member {ref!r} is in layer {member.effective_layer}"
+                return None
+            if member.role is not None:
+                failed[seg.id] = f"member {ref!r} has the {member.role} role"
+                return None
+            got = resolve(member, (*path, seg.id))
+            if got is None:
+                failed.setdefault(seg.id, f"member {ref!r} does not resolve")
+                return None
+            out |= got
+        done[id(seg)] = frozenset(out)
+        return done[id(seg)]
+
+    for seg in segments:
+        if seg.members is not None:
+            seg._resolved = resolve(seg, ())
+    return failed
 
 
 def _is_float_dtype(dtype: Any) -> bool:
@@ -200,8 +295,8 @@ def background_value(ext: SegmentationExtension, layer: int = 0) -> int | None:
     """The background value of ``layer`` in a binary labelmap, or None when the
     layer has no background (§3.2 ``role``)."""
     seg = background_segment(ext, layer)
-    if seg is not None:
-        return seg.label_values[0]
+    if seg is not None and seg.sorted_values:
+        return seg.sorted_values[0]
     return None if ext.implicit_background is False else 0
 
 
@@ -209,7 +304,7 @@ def segments_for(
     ext: SegmentationExtension, value: int, *, layer: int = 0
 ) -> list[Segment]:
     """Every segment of ``layer`` listing ``value``, in ``segments`` order."""
-    return [seg for seg in _in_layer(ext, layer) if value in seg.label_values]
+    return [seg for seg in _in_layer(ext, layer) if value in seg.values]
 
 
 def topmost_for(
@@ -269,7 +364,7 @@ def color_map(ext: SegmentationExtension, *, layer: int = 0) -> dict[int, str]:
     for seg in _in_layer(ext, layer):
         if seg.color is None or parse_color(seg.color) is None:
             continue
-        for v in seg.label_values:
+        for v in seg.sorted_values:
             colors[v] = seg.color
     return colors
 
@@ -284,7 +379,7 @@ def rgb8_color_table(
         color = parse_color(seg.color) if seg.color is not None else None
         if color is None:
             continue
-        for v in seg.label_values:
+        for v in seg.sorted_values:
             parsed[v] = (seg, color)
     table: dict[int, tuple[int, int, int]] = {}
     diagnostics: list[Diagnostic] = []
@@ -515,7 +610,12 @@ def validate_seg_extension(
     info = None
     if dtype is not None and np.dtype(dtype).kind in "iu":
         info = np.iinfo(np.dtype(dtype))
+    unresolved = resolve_members(ext.segments)
     for i, seg in enumerate(ext.segments):
+        if seg.members is not None:
+            if seg.id in unresolved:
+                out.append(_err("rule-11c", about(i, seg), unresolved[seg.id]))
+            continue
         values = seg.label_values
         bad = (
             not values
@@ -555,8 +655,8 @@ def validate_seg_extension(
                     _err("rule-17", about(i, seg),
                          f"layer {seg.effective_layer} already holds a segment")
                 )
-            elif list(seg.label_values) != [1]:
-                out.append(_err("rule-17", about(i, seg), "label_values is [1]"))
+            elif seg.members is not None or list(seg.label_values) != [1]:
+                out.append(_err("rule-17", about(i, seg), "label_values is [1], never members"))
             used_layers.add(seg.effective_layer)
     else:
         for layer in layers_of(ext):
@@ -766,6 +866,7 @@ def normalized_for_writing(
         raise ValueError(f"cannot write a version {ext.version} extension as {SEG_VERSION}")
     out = ext.model_copy(deep=True)
     out.version = SEG_VERSION
+    resolve_members(out.segments)          # the copy's unions, from the copy's segments
     diagnostics: list[Diagnostic] = []
     if out.implicit_background is True:
         out.implicit_background = None
@@ -775,7 +876,8 @@ def normalized_for_writing(
     if not out.terminologies:
         out.terminologies = None
     for seg in out.segments:
-        seg.label_values = sorted(set(seg.label_values))
+        if seg.label_values is not None:
+            seg.label_values = sorted(set(seg.label_values))
         if seg.layer == 0:
             seg.layer = None
         if not seg.designations:

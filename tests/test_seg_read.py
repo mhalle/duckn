@@ -110,9 +110,12 @@ class TestGroups:
         )
         out, diagnostics = migrate_seg_extension(raw)
         assert [s["id"] for s in out["segments"]] == ["184", "68", "667", "184-rest"]
-        assert out["segments"][0] == {"id": "184", "label_values": [68, 184, 667],
+        # a union of structures keeps its members; its extent and claims go
+        assert out["segments"][0] == {"id": "184", "members": ["68", "667", "184-rest"],
                                       "color": "#ff0000"}
         assert _codes(diagnostics) == [("migrated-claim-dropped", _seg("184"))] * 2
+        ext = SegmentationExtension.model_validate(out)
+        assert ext.segments[0].sorted_values == [68, 184, 667]
 
     def test_0_6_references_and_nesting(self):
         raw = _old(
@@ -122,14 +125,18 @@ class TestGroups:
             version="0.6",
         )
         out, _ = migrate_seg_extension(raw)
-        assert [(s["id"], s["label_values"]) for s in out["segments"]] == [
-            ("abc", [1, 2, 3]), ("ab", [1, 2]), ("a", [1]), ("b", [2])]
+        # `ab` is a pure union and keeps members; `abc` has an integer of its own (3) and
+        # is written out, since a segment has one spelling or the other
+        assert [(s["id"], s.get("label_values"), s.get("members")) for s in out["segments"]] == [
+            ("abc", [1, 2, 3], None), ("ab", None, ["a", "b"]), ("a", [1], None), ("b", [2], None)]
+        ext = SegmentationExtension.model_validate(out)
+        assert ext.segments[1].sorted_values == [1, 2]
 
     def test_group_takes_the_layer_of_its_values(self):
         raw = _old([{"id": "a", "label_value": 1, "layer": 1},
                     {"id": "g", "members": ["a"]}])
         out, _ = migrate_seg_extension(raw)
-        assert out["segments"][1] == {"id": "g", "label_values": [1], "layer": 1}
+        assert out["segments"][1] == {"id": "g", "members": ["a"], "layer": 1}
 
     @pytest.mark.parametrize(
         "group",
@@ -152,7 +159,9 @@ class TestGroups:
                     {"id": "a", "label_value": 1},
                     {"id": "all", "members": ["a", "bg"]}])
         out, diagnostics = migrate_seg_extension(raw)
-        assert {s["id"]: s["label_values"] for s in out["segments"]}["all"] == [1]
+        # a role-bearing member was subtracted, which `members` cannot say: written out
+        assert {s["id"]: s.get("label_values") for s in out["segments"]}["all"] == [1]
+        assert "members" not in {s["id"]: s for s in out["segments"]}["all"]
         assert ("migrated-background-subtracted", _seg("all")) in _codes(diagnostics)
         ext = SegmentationExtension.model_validate(out)
         assert validate_seg_extension(ext) == []
@@ -232,7 +241,12 @@ class TestRead:
          ({"version": "0.8", "segments": [{"id": "a", "label_values": []}]}, "rule-11a"),
          ({"version": "0.8", "segments": [{"id": "a", "label_values": 1}]}, "rule-11a"),
          ({"version": "0.7", "segments": [{"id": "a", "label_value": True}]}, "rule-11a"),
-         ({"version": "0.8", "segments": [{"id": "a", "label_values": [1], "layer": -1}]}, "rule-2")],
+         ({"version": "0.8", "segments": [{"id": "a", "label_values": [1], "layer": -1}]}, "rule-2"),
+         ({"version": "0.8", "segments": [{"id": "a", "label_values": [1], "members": ["b"]}]}, "rule-11a"),
+         ({"version": "0.8", "segments": [{"id": "a", "members": ["nobody"]}]}, "rule-11c"),
+         ({"version": "0.8", "segments": [{"id": "a", "members": ["b"], "role": "background"},
+                                          {"id": "b", "label_values": [1]}]}, "rule-11c"),
+         ({"version": "0.8", "segments": [{"id": "a", "members": None}]}, "rule-11a")],
     )
     def test_a_refusal_the_model_enforces_still_has_its_code(self, raw, code):
         with pytest.raises(DiagnosticsError) as e:
@@ -317,3 +331,11 @@ def test_a_registry_entrys_url_becomes_definition_url():
                                             "definition_url": "https://browser.ihtsdotools.org"}}
     ext, _ = read_seg_extension(raw)
     assert ext.terminologies["SCT"].definition_url == "https://browser.ihtsdotools.org"
+
+
+def test_an_unresolved_background_union_is_refused_not_crashed():
+    raw = {"version": "0.8", "segments": [{"id": "bg", "members": ["nobody"], "role": "background"},
+                                          {"id": "a", "label_values": [1]}]}
+    with pytest.raises(DiagnosticsError) as e:
+        read_seg_extension(raw)
+    assert {d.code for d in e.value.diagnostics} == {"rule-11c"}

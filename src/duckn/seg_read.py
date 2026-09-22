@@ -114,7 +114,14 @@ def migrate_seg_extension(raw: dict[str, Any]) -> tuple[dict[str, Any], list[Dia
                     _warn("migrated-background-subtracted", About.segment(sid),
                           f"values of role-bearing member {member_id!r} were removed")
                 )
-            seg["label_values"] = values
+            # 0.8 keeps `members` where it can: a union of structures, with no
+            # integers of its own. Otherwise the value set is written out.
+            if graph.keeps_members(index):
+                seg["members"] = list(graph.members[index])
+                seg.pop("label_values", None)
+            else:
+                seg["label_values"] = values
+                seg.pop("members", None)
             seg["layer"] = layer
             seg.pop("extent", None)
         else:
@@ -126,7 +133,8 @@ def migrate_seg_extension(raw: dict[str, Any]) -> tuple[dict[str, Any], list[Dia
             elif "label_value" in seg:
                 seg["label_values"] = lv  # not a shape any version had; the model refuses it
         seg.pop("label_value", None)
-        seg.pop("members", None)
+        if not is_group or "members" not in seg:
+            seg.pop("members", None)
         for claim in ("disjoint", "exhaustive"):
             if seg.pop(claim, None):
                 out.append(_warn("migrated-claim-dropped", About.segment(sid), claim))
@@ -162,8 +170,8 @@ def migrate_seg_extension(raw: dict[str, Any]) -> tuple[dict[str, Any], list[Dia
 
     new_colors: dict[tuple[int, int], str] = {}
     for seg in segs:
-        if isinstance(seg.get("color"), str) and isinstance(seg.get("label_values"), list):
-            for v in seg["label_values"]:
+        if isinstance(seg.get("color"), str):
+            for v in sorted(_values_of(seg, segs)):
                 new_colors[(_layer(seg), v)] = seg["color"]
     for key in sorted(set(old_colors) | set(new_colors)):
         if old_colors.get(key) != new_colors.get(key):
@@ -259,6 +267,15 @@ class _Graph:
 
         return order if visit(index) else None
 
+    def keeps_members(self, index: int) -> bool:
+        """Whether a group may stay a `members` segment in 0.8: it lists no integers of
+        its own, and no member, transitively, has a role (a role-bearing member's values
+        would have been subtracted, which `members` cannot say)."""
+        closure = self._closure(index)
+        if closure is None or self.own[index]:
+            return False
+        return not any(self.has_role[i] for i in closure if i != index)
+
     def flatten(self, index: int) -> tuple[int, list[int], list[str]] | None:
         """``(layer, label_values, ids of role-bearing members subtracted)``,
         or None when the group has no 0.8 form."""
@@ -308,6 +325,24 @@ def _colors_as_0_7_resolved_them(segs: list[dict[str, Any]]) -> dict[tuple[int, 
     return colors
 
 
+def _values_of(seg: dict[str, Any], segs: list[dict[str, Any]]) -> set[int]:
+    """A migrated segment's value set, a `members` one resolved against `segs`."""
+    if isinstance(seg.get("label_values"), list):
+        return set(seg["label_values"])
+    by_id = {s.get("id"): s for s in segs}
+    out: set[int] = set()
+    seen: set[str] = set()
+    todo = list(seg.get("members") or [])
+    while todo:
+        ref = todo.pop()
+        if ref in seen or ref not in by_id:
+            continue
+        seen.add(ref)
+        out |= set(by_id[ref].get("label_values") or [])
+        todo.extend(by_id[ref].get("members") or [])
+    return out
+
+
 def _designation_key(d: Any) -> tuple | None:
     if not isinstance(d, dict):
         return None
@@ -328,7 +363,7 @@ def _set_aside_colliding_designations(segs: list[dict[str, Any]]) -> list[Diagno
     for (_, key), group in carriers.items():
         if len(group) < 2:
             continue
-        keeper = max(group, key=lambda s: len(s.get("label_values") or []))  # first max
+        keeper = max(group, key=lambda s: len(_values_of(s, segs)))          # first max
         for seg in group:
             if seg is keeper:
                 continue
@@ -351,8 +386,7 @@ def _order_by_containment(segs: list[dict[str, Any]]) -> list[dict[str, Any]]:
         positions.setdefault(_layer(seg), []).append(i)
     for slots in positions.values():
         pending = [segs[i] for i in slots]
-        values = {id(s): set(s["label_values"]) if isinstance(s.get("label_values"), list)
-                  and all(_is_int(v) for v in s["label_values"]) else set() for s in pending}
+        values = {id(s): _values_of(s, segs) for s in pending}
         for slot in slots:
             chosen = next(
                 s for s in pending
@@ -392,6 +426,10 @@ def _refusals_in_raw(data: Any) -> list[Diagnostic]:
         about = About.segment(seg["id"])
         if seg.get("role") not in (None, "background", "unknown"):
             err("rule-8a", about, f"role {seg.get('role')!r}")
+        if (seg.get("label_values") is None) == (seg.get("members") is None):
+            err("rule-11a", about, "exactly one of label_values and members")
+        if seg.get("members") is not None and seg.get("role") is not None:
+            err("rule-11c", about, "a members segment has no role")
         values = seg.get("label_values")
         if "label_values" in seg and not (
             isinstance(values, list) and values

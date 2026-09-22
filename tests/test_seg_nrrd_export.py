@@ -278,3 +278,17 @@ class TestSegConvert:
         labelmap, meta = seg_binary_to_labelmap(data, self._meta(seg, True))
         assert labelmap[0, 0].tolist() == [1, 2]
         assert meta.extensions["seg"]["version"] == "0.8"
+
+
+class TestMembersExport:
+    def test_a_members_segment_materializes_as_its_union(self):
+        ext = _ext([{"id": "184", "name": "Frontal pole", "members": ["68", "667"]},
+                    {"id": "68", "label_values": [68]}, {"id": "667", "label_values": [667]}])
+        data = np.array([[[0, 68, 667, 667]]], dtype=np.uint16)
+        result = export_seg_nrrd(ext, data)
+        kv = result.keyvalues
+        assert kv["Segment0_LabelValue"] == "1" and "Segment0_Layer" not in kv
+        assert result.data[0, 0, :, 0].tolist() == [0, 1, 1, 1]
+        assert result.data[0, 0, :, 1].tolist() == [0, 68, 667, 667]
+        back, _ = parse_seg_keyvalues(kv)
+        assert back.segments[0].members is None and back.segments[0].label_values == [1]

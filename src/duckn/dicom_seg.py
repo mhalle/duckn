@@ -307,7 +307,7 @@ def seg_fill_value(ext: SegmentationExtension) -> int:
     value = background_value(ext, 0)
     if value is not None:
         return value
-    return min(v for seg in ext.segments for v in seg.label_values)
+    return min(v for seg in ext.segments for v in seg.values)
 
 
 def fractional_slope(ds: Any) -> float | None:
@@ -509,7 +509,7 @@ def _plan_labelmap(
                 "algorithm type that DICOM defines no code for: declare a background "
                 "segment carrying them in its `dicom` field, or pass background_dicom")
     data = layer_data(0)
-    values = sorted({v for seg in ext.segments for v in seg.label_values})
+    values = sorted({v for seg in ext.segments for v in seg.values})
     if any(not 0 <= v <= 65535 for v in values):
         raise ValueError(
             "a DICOM LABELMAP holds values 0-65535; renumber the segmentation first")
@@ -521,7 +521,7 @@ def _plan_labelmap(
 
     innermost: dict[int, Segment] = {}
     for seg in ext.segments:
-        for v in seg.label_values:
+        for v in seg.sorted_values:
             innermost[v] = seg
     represented: dict[str, list[int]] = {}
     for v in values:

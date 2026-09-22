@@ -88,7 +88,7 @@ class TestModel:
         with pytest.raises(ValidationError):
             Segment(id="S", label_values=[1], role="foreground")
 
-    @pytest.mark.parametrize("field", ["label_value", "members", "background", "display"])
+    @pytest.mark.parametrize("field", ["label_value", "background", "display"])
     def test_0_7_fields_are_gone(self, field):
         with pytest.raises(ValidationError):
             Segment(**{"id": "S", "label_values": [1], field: 1})
@@ -459,3 +459,92 @@ def test_spec_examples_conform():
         out, diagnostics = normalized_for_writing(ext)
         assert diagnostics == []
         assert out.model_dump(exclude_none=True) == raw
+
+
+# ---------------------------------------------------------------------------
+# members: a union stated once
+# ---------------------------------------------------------------------------
+
+
+ATLAS = [
+    {"id": "184", "name": "Frontal pole", "members": ["68", "667", "rest"], "color": "#268f45"},
+    {"id": "68", "label_values": [68]},
+    {"id": "667", "label_values": [667]},
+    {"id": "rest", "label_values": [184]},
+]
+
+
+class TestMembers:
+    def test_one_spelling_per_segment(self):
+        with pytest.raises(ValidationError, match="exactly one"):
+            Segment(id="a", label_values=[1], members=["b"])
+        with pytest.raises(ValidationError, match="exactly one"):
+            Segment(id="a")
+        with pytest.raises(ValidationError):
+            Segment(id="a", members=[])
+
+    def test_a_union_resolves_transitively_and_is_a_value_set_to_every_reader(self):
+        ext = _ext([{"id": "top", "members": ["184"]}, *ATLAS])
+        assert ext.segments[0].sorted_values == [68, 184, 667]
+        assert ext.segments[1].effective_value_set == {(0, 68), (0, 184), (0, 667)}
+        assert [s.id for s in segments_for(ext, 667)] == ["top", "184", "667"]
+        assert topmost_for(ext, 184).id == "rest"
+        assert color_map(ext) == {68: "#268f45", 184: "#268f45", 667: "#268f45"}
+        assert is_nested(ext) and not is_label_table(ext)
+        assert validate_seg_extension(ext, dtype="uint16", fill_value=0) == []
+        # the file keeps the spelling it was given
+        assert ext.model_dump(exclude_none=True)["segments"][1] == ATLAS[0]
+        out, _ = normalized_for_writing(ext)
+        assert out.model_dump(exclude_none=True)["segments"][1] == ATLAS[0]
+
+    @pytest.mark.parametrize(
+        "segments, message",
+        [
+            ([{"id": "g", "members": ["nobody"]}], "no segment"),
+            ([{"id": "g", "members": ["a"]}, {"id": "a", "label_values": [1], "layer": 1}], "layer 1"),
+            ([{"id": "g", "members": ["bg"]}, {"id": "bg", "label_values": [0], "role": "background"}], "role"),
+            ([{"id": "g", "members": ["h"]}, {"id": "h", "members": ["g"]}], "returns to"),
+            ([{"id": "g", "members": ["a", "a"]}, {"id": "a", "label_values": [1]}], "distinct"),
+        ],
+    )
+    def test_rule_11c_refuses(self, segments, message):
+        ext = _ext(segments)
+        found = validate_seg_extension(ext)
+        rule = [d for d in found if d.code == "rule-11c"]
+        assert rule[0].about == _seg("g") and message in rule[0].message   # a cycle names both
+        assert refusals(found) == rule
+        assert ext.segments[0].values == frozenset()          # unresolved: no values
+
+    def test_rule_12_and_the_reader_properties_see_the_resolved_set(self):
+        ext = _ext([{"id": "68", "label_values": [68]}, {"id": "184", "members": ["68"]}])
+        assert _codes(validate_seg_extension(ext)) == []      # equal sets: not strict containment
+        ext = _ext([{"id": "68", "label_values": [68]}, {"id": "667", "label_values": [667]},
+                    {"id": "184", "members": ["68", "667"]}])
+        assert _codes(validate_seg_extension(ext)) == [("rule-12", _seg("184"))]
+
+    def test_a_members_segment_has_no_role(self):
+        with pytest.raises(ValidationError, match="no role"):
+            Segment(id="bg", members=["a"], role="background")
+
+    def test_membership_three_deep_and_first_of_a_repeated_id_wins(self):
+        ext = _ext([{"id": "top", "members": ["mid"]}, {"id": "mid", "members": ["low"]},
+                    {"id": "low", "members": ["a"]}, {"id": "a", "label_values": [1]},
+                    {"id": "a", "label_values": [2]}])
+        assert ext.segments[0].sorted_values == [1]
+        assert [d.code for d in refusals(validate_seg_extension(ext))] == ["rule-4a"]
+
+    def test_values_are_re_resolved_by_validation_and_by_writing(self):
+        ext = _ext([{"id": "a", "label_values": [1]}, {"id": "u", "members": ["a"]}])
+        assert not Segment(id="x", members=["a"]).is_resolved and ext.segments[1].is_resolved
+        ext.segments[0].label_values = [1, 7]
+        assert ext.segments[1].sorted_values == [1]              # stale until re-resolved
+        validate_seg_extension(ext)
+        assert ext.segments[1].sorted_values == [1, 7]
+        ext.segments[0].label_values = [1, 7, 9]
+        out, _ = normalized_for_writing(ext)
+        assert out.segments[1].sorted_values == [1, 7, 9]
+
+    def test_fractional_has_no_members(self):
+        ext = _ext([{"id": "a", "label_values": [1]}, {"id": "u", "members": ["a"], "layer": 1}],
+                   source_representation="fractional-labelmap")
+        assert ("rule-17", _seg("u")) in _codes(validate_seg_extension(ext))

@@ -38,7 +38,7 @@ class TestViews:
         assert repr(artifact) == "Segment(None, labels=[9], role='unknown')"
 
     @pytest.mark.parametrize(
-        "gone", ["label_value", "members", "is_group", "background", "disjoint", "exhaustive"])
+        "gone", ["label_value", "is_group", "background", "disjoint", "exhaustive"])
     def test_0_7_properties_are_gone(self, gone):
         with pytest.raises(AttributeError):
             getattr(SegAccessor(SEG).segments[0], gone)
@@ -146,3 +146,22 @@ class TestFillValue:
         assert vol.fill_value == 5 and vol.extensions.seg.diagnostics == []
         assert cast(vol, "uint16").fill_value == 5
         assert cast(vol, "float32", normalize=True).fill_value is None
+
+
+class TestMembers:
+    ATLAS = {"version": "0.8", "segments": [
+        {"id": "184", "name": "Frontal pole", "members": ["68", "667", "rest"], "color": "#268f45"},
+        {"id": "68", "label_values": [68], "color": "#2ea152"},
+        {"id": "667", "label_values": [667]},
+        {"id": "rest", "name": "Frontal pole, unresolved", "label_values": [184]}]}
+
+    def test_a_members_segment_answers_by_its_union(self):
+        a = SegAccessor(self.ATLAS)
+        top = a.segments[0]
+        assert top.members == ["68", "667", "rest"] and top.label_values == []
+        assert repr(top).startswith("Segment('Frontal pole', members=")
+        assert [s.id for s in a.segments_for(667)] == ["184", "667"]
+        assert a.name_for(667) == "Frontal pole"           # topmost with a name
+        assert a.color_map() == {68: "#2ea152", 184: "#268f45", 667: "#268f45"}
+        assert a.model.segments[0].sorted_values == [68, 184, 667]
+        assert a.diagnostics == []

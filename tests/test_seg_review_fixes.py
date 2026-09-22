@@ -64,7 +64,8 @@ class TestVersion:
         ext, _ = read_seg_extension(
             {"version": "v0.6", "segments": [{"id": "g", "label_value": ["a"]},
                                              {"id": "a", "label_value": 1}]})
-        assert ext.version == "0.8" and ext.segments[0].label_values == [1]
+        assert ext.version == "0.8" and ext.segments[0].members == ["a"]
+        assert ext.segments[0].sorted_values == [1]
 
 
 class TestFieldConstraints:
