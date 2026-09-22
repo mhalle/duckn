@@ -40,10 +40,12 @@ class TerminologyEntry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str | None = None
-    # What identifies the coding system across files; compared byte for byte.
-    uri: str | None = None
+    # A URI OF the coding system: what identifies it across files, compared
+    # byte for byte and never fetched. `definition_url` is where a person reads
+    # this version of it.
+    system_uri: str | None = None
     version: str | None = None
-    url: str | None = None
+    definition_url: str | None = None
     # Concept URL template; "{code}" is replaced with a coded entry's code.
     url_template: str | None = None
 
@@ -220,15 +222,15 @@ def topmost_for(
 
 def _scheme_identity(ext: SegmentationExtension, key: str) -> tuple[str, str]:
     entry = (ext.terminologies or {}).get(key)
-    if entry is not None and entry.uri is not None:
-        return ("uri", entry.uri)
+    if entry is not None and entry.system_uri is not None:
+        return ("uri", entry.system_uri)
     return ("key", key)
 
 
 def designation_identity(ext: SegmentationExtension, d: Designation) -> tuple:
     """A key under which two designations are equal exactly when they are *the
     same* (§4.1): same coding system, same code, same modifier. Two keys that
-    are equal name one registration, so comparing uri-or-key is the spec's test."""
+    are equal name one registration, so comparing system_uri-or-key is the spec's test."""
     modifier = designation_identity(ext, d.modifier) if d.modifier is not None else None
     return (_scheme_identity(ext, d.scheme), d.code, modifier)
 
@@ -458,7 +460,7 @@ def validate_seg_extension(
         if entry is None:
             out.append(_err("rule-5", About.scheme(key), "scheme is not registered"))
             continue
-        missing = [f for f in ("uri", "version") if getattr(entry, f) is None]
+        missing = [f for f in ("system_uri", "version") if getattr(entry, f) is None]
         if missing:
             out.append(
                 _err("rule-5", About.scheme(key),

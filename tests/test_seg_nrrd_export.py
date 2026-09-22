@@ -56,7 +56,7 @@ class TestImport:
         assert _codes(found) == [("designation-unverified", _seg("Left_kidney")),
                                  ("id-changed", _seg("2_25_123")),
                                  ("id-changed", _seg("Left_kidney"))]
-        assert ext.terminologies["SCT"].uri == "http://snomed.info/sct"
+        assert ext.terminologies["SCT"].system_uri == "http://snomed.info/sct"
         fresh = ext.model_copy(update={"legacy": None})
         out = serialize_seg_extension(fresh)
         assert (out["Segment0_ID"], out["Segment1_ID"]) == ("2.25.123", "Left kidney")

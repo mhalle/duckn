@@ -307,3 +307,13 @@ def test_migration_carries_an_undefined_algorithm_type_as_found():
         {"id": "a", "label_value": 1, "metadata": {"dicom": {"SegmentAlgorithmType": "AUTO"}}}]})
     assert ext.segments[0].dicom.algorithm_type == "AUTO"
     assert [d.code for d in diagnostics] == ["rule-8b"]
+
+
+def test_a_registry_entrys_url_becomes_definition_url():
+    raw = _old([{"id": "a", "label_value": 1}],
+               terminologies={"SCT": {"name": "SNOMED CT", "url": "https://browser.ihtsdotools.org"}})
+    out, _ = migrate_seg_extension(raw)
+    assert out["terminologies"] == {"SCT": {"name": "SNOMED CT",
+                                            "definition_url": "https://browser.ihtsdotools.org"}}
+    ext, _ = read_seg_extension(raw)
+    assert ext.terminologies["SCT"].definition_url == "https://browser.ihtsdotools.org"

@@ -1039,7 +1039,7 @@ class TestDicomSegExtraction:
         assert tumor.metadata == {"dicom": {"SegmentDescription": "d", "TrackingID": "t"}}
         # each in its own layer, so the shared type code collides with nothing
         assert [d.code for d in found] == ["designation-unverified"] * 2
-        assert ext.terminologies["SCT"].uri == "http://snomed.info/sct"
+        assert ext.terminologies["SCT"].system_uri == "http://snomed.info/sct"
 
     def test_seg_in_build_duckn_metadata(self):
         ds = _make_seg_dataset()

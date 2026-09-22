@@ -39,7 +39,7 @@ def _write(path, data, segments, *, version="0.8", layered=False, fill_value=0, 
     }
     if segments is not None:
         ext.setdefault("terminologies", {"SCT": {"name": "SNOMED Clinical Terms",
-                                                 "uri": "http://snomed.info/sct"}})
+                                                 "system_uri": "http://snomed.info/sct"}})
         duckn["extensions"] = {"seg": {"version": version, "segments": segments, **ext}}
     arr.attrs["duckn"] = duckn
     return path

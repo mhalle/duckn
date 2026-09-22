@@ -24,10 +24,10 @@ from .seg_model import (
 
 # Known terminology scheme → registry entry
 _KNOWN_SCHEMES: dict[str, dict[str, str]] = {
-    "SCT": {"name": "SNOMED Clinical Terms", "uri": "http://snomed.info/sct"},
+    "SCT": {"name": "SNOMED Clinical Terms", "system_uri": "http://snomed.info/sct"},
     "SRT": {"name": "DICOM SR Coding Scheme"},
     "DCM": {"name": "DICOM Controlled Terminology",
-            "uri": "http://dicom.nema.org/resources/ontology/DCM"},
+            "system_uri": "http://dicom.nema.org/resources/ontology/DCM"},
 }
 
 ROLE_TAG = "duckn.role"

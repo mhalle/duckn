@@ -16,7 +16,7 @@ Version 0.8 draws the extension's boundary with a stated test. A field belongs i
 
 1. a reader needs it to **interpret the voxels faithfully** — which values are which segment, which values mean "nothing here" and which mean "not evaluated"; or
 2. **a reference format carries its equivalent**, so that a round trip needs it. The reference formats for this extension are the DICOM Segmentation IOD and 3D Slicer's `.seg.nrrd`: a segment's label, coded property type, algorithm type, and recommended display color; a segment's name, color, and terminology entry; or
-3. it is **a handle by which documents outside the file find it**: a segment's `id`, its exact `designations` in any coding system, the registry's `uri` and `version` for each scheme, and the `labeling_scheme` declaration. Some of these interpret no voxel and no reference format carries them. They are in the file because they are what makes it possible for everything else to stay out (§7).
+3. it is **a handle by which documents outside the file find it**: a segment's `id`, its exact `designations` in any coding system, the registry's `system_uri` and `version` for each scheme, and the `labeling_scheme` declaration. Some of these interpret no voxel and no reference format carries them. They are in the file because they are what makes it possible for everything else to stay out (§7).
 
 Everything else is enrichment: alternative renditions, groupings and hierarchies, inexact correspondences between a segment and a concept, translations, measurements. Those are real needs, and experience shows several of them are common. But they change for their own reasons, under other authorities, and most of them are properties of a *labeling scheme* rather than of one file — the hierarchy of an atlas applies to every volume labeled with that atlas. They belong in documents outside the file that reference it.
 
@@ -161,13 +161,13 @@ An object registering the coding systems used in this extension's coded entries.
 "terminologies": {
   "SCT": {
     "name": "SNOMED Clinical Terms",
-    "uri": "http://snomed.info/sct",
+    "system_uri": "http://snomed.info/sct",
     "version": "2024-09-01",
     "url_template": "http://snomed.info/id/{code}"
   },
   "TotalSegmentator": {
     "name": "TotalSegmentator class labels, task total",
-    "uri": "https://github.com/wasserth/TotalSegmentator#total",
+    "system_uri": "https://github.com/wasserth/TotalSegmentator#total",
     "version": "2.4"
   }
 }
@@ -176,12 +176,12 @@ An object registering the coding systems used in this extension's coded entries.
 | Field | Required | Description |
 |-------|----------|-------------|
 | `name` | no | Full human-readable name of the coding system |
-| `uri` | no | A canonical identifier for the coding system. It is what identifies the system across files, since a key is local to its document (§7.1). Compared byte for byte, with no normalization |
+| `system_uri` | no | A URI *of the coding system*: what identifies it across files, since a key is local to its document (§7.1). Compared byte for byte, with no normalization, and never fetched |
 | `version` | no | Version of the coding system in use, compared as an exact string |
-| `url` | no | URL for the coding system's browser, specification, or landing page |
+| `definition_url` | no | A URL *of this version's definition*: the system's browser, specification, or landing page, for a person to read. Nothing compares it |
 | `url_template` | no | Template for concept URLs. The substring `{code}` is replaced with a coded entry's `code` |
 
-A writer registers every scheme it uses in `designations` or `dicom` entries, and should give each a `uri`. A scheme named by `labeling_scheme` has both `uri` and `version`, since those are what an external document is matched against. A reader does not reject a file for an unregistered scheme, and does not assume the registry enumerates every scheme in the file (§5).
+A writer registers every scheme it uses in `designations` or `dicom` entries, and should give each a `system_uri`. A scheme named by `labeling_scheme` has both `system_uri` and `version`, since those are what an external document is matched against. A reader does not reject a file for an unregistered scheme, and does not assume the registry enumerates every scheme in the file (§5).
 
 #### `segments`
 
@@ -356,7 +356,7 @@ Exact identifications in several coding systems are all designations and all bel
 
 Within a layer, at most one segment carries a given designation (§5); the same designation may appear in different layers. A lookup by code over a whole file therefore returns one segment per layer at most, and the choice between layers is the consumer's own.
 
-Two designations are **the same** when their schemes are the same coding system — their registrations have equal `uri`s, or, where either scheme is unregistered or has no `uri`, their keys are equal — their `code`s are equal, and their modifiers are both absent or are the same by this test. `meaning` is never compared.
+Two designations are **the same** when their schemes are the same coding system — their registrations have equal `system_uri`s, or, where either scheme is unregistered or has no `system_uri`, their keys are equal — their `code`s are equal, and their modifiers are both absent or are the same by this test. `meaning` is never compared.
 
 Coverage of the *anatomy* is a different question from identity. A liver segment from a scan cropped mid-organ is exactly liver — every voxel in it is liver, and it lists every liver value in the layer — and is designated so. That it is not all of the patient's liver is said by the unknown role on the region that was not evaluated, never by weakening the designation.
 
@@ -443,7 +443,7 @@ A segment's **effective value set** is the set of *(layer, value)* pairs defined
 **Identity**
 
 4. `id`. **4a** *error; reader refuses.* `id` is unique across `segments`. **4b** *error; reader continues,* using the id as found. `id` is a token as defined in §3.2.
-5. *error for a writer; reader continues.* Every `scheme` used in `designations` or `dicom` is registered in `terminologies`. Every key named by `labeling_scheme` is registered with a `uri` and a `version`. An unregistered scheme is identified by its key alone.
+5. *error for a writer; reader continues.* Every `scheme` used in `designations` or `dicom` is registered in `terminologies`. Every key named by `labeling_scheme` is registered with a `system_uri` and a `version`. An unregistered scheme is identified by its key alone.
 6. *error; reader continues.* When `labeling_scheme` is declared, a segment carries at most one designation in each declared scheme. A reader takes the first as the segment's class.
 7. *warning.* When `labeling_scheme` is declared, a segment with no `role` carries a designation in at least one declared scheme. A segment that carries none is one the scheme did not produce, and documents keyed by the scheme will not find it.
 8. *error.* `role`, when present, is `"background"` or `"unknown"` (*reader refuses*). `dicom.algorithm_type`, when present, is `"AUTOMATIC"`, `"SEMIAUTOMATIC"`, or `"MANUAL"` (*reader continues*, carrying the value as found; a DICOM exporter fails on it). These are `rule-8a` and `rule-8b`.
@@ -577,7 +577,7 @@ and writes `color(xyz-d65 X Y Z)` to seven decimal places. The same integers giv
 
 ### 6.3 Reading Older Files
 
-A reader for 0.8 that accepts older files migrates on load, and reports what the migration changed (§5). The steps run in this order, which matters because several of them read what others rewrite. The migrated extension declares `version` `"0.8"` and satisfies rules 1–4, 6, 8a, 9 and 11–14. This assumes the older file conformed to its own version; what was invalid before may be invalid after. Rule 5 is carried over as it was found, and so are rules 7 and 8b — a migration cannot invent a designation in a labeling scheme, and an older file could hold any string as its algorithm type, which step 2 carries into `dicom.algorithm_type` as found: older versions only recommended that a scheme be registered and had no `uri`, a migration cannot invent one, and a violation is reported as any other is. For rules 13 and 14 that rests on the older versions' own rules — 0.6 forbade the value 0 outright, and 0.7 allowed a layer one background leaf with one value that no other leaf could claim. Rule 15 depends on the array's `fill_value`, which a migration does not change; a file that breaks it is reported as any other is.
+A reader for 0.8 that accepts older files migrates on load, and reports what the migration changed (§5). The steps run in this order, which matters because several of them read what others rewrite. The migrated extension declares `version` `"0.8"` and satisfies rules 1–4, 6, 8a, 9 and 11–14. This assumes the older file conformed to its own version; what was invalid before may be invalid after. Rule 5 is carried over as it was found, and so are rules 7 and 8b — a migration cannot invent a designation in a labeling scheme, and an older file could hold any string as its algorithm type, which step 2 carries into `dicom.algorithm_type` as found: older versions only recommended that a scheme be registered and had no `system_uri`, a migration cannot invent one, and a violation is reported as any other is. For rules 13 and 14 that rests on the older versions' own rules — 0.6 forbade the value 0 outright, and 0.7 allowed a layer one background leaf with one value that no other leaf could claim. Rule 15 depends on the array's `fill_value`, which a migration does not change; a file that breaks it is reported as any other is.
 
 1. **Pre-0.6 shapes.** No specification of 0.5 survives in this repository; the reference for this step is the released library's pre-0.6 migration (`_migrate_segment_pre_0_6` and `_migrate_extension_pre_0_6` in `src/duckn/models.py`). In outline: a 0.5 `identifiers` object, a map from scheme to `{id, name}`, becomes entries appended to `designations` with `id` as `code` and `name` as `meaning`; the classification under a segment's `metadata.dicom` becomes the `dicom` field; and Slicer's fields move under `metadata.slicer`. A 0.8 reader that does not implement this step refuses a file whose version is below 0.6 rather than guessing.
 2. **Simple fields.**
@@ -590,6 +590,7 @@ A reader for 0.8 that accepts older files migrates on load, and reports what the
    | `layer: 0` | omitted |
    | `color: [r, g, b]` floats | hex or `color(srgb …)`, chosen as in §6.1, **read as sRGB** — the first time that assumption is written down. A color that becomes `color(srgb …)` is rounded to six significant digits, which is finer than any display resolves, and the rounding is not reported |
    | `display` (multilingual names) | kept under `metadata.duckn.display`; translations are now external (§7.2) |
+   | `terminologies[].url` | `terminologies[].definition_url`: the same landing page, named for what it is a URL of |
    | `SegmentAlgorithmType`, `SegmentAlgorithmName` under a segment's `metadata.dicom` | `dicom.algorithm_type`, `dicom.algorithm_name` |
 
 3. **Groups are flattened, against the original ids.** A group is a 0.7 segment with `members`, or a 0.6 segment whose `label_value` has string entries, alone or mixed with integers. Its effective values are its own integers together with the values of every segment in its transitive membership. When those all lie in one layer, the group becomes a segment in **that layer** — whatever `layer` it declared itself — whose `label_values` is that set, sorted, **minus every value listed by a role-bearing segment in its transitive membership**, keeping the group's `id`, `name`, `color`, `designations`, `dicom`, and `metadata`, and dropping its `extent`. A group has no 0.8 form when its values span layers, when a member does not resolve, when the members form a cycle, or when nothing is left after the subtraction: it is omitted, its original entry is kept in the extension's `metadata.duckn.omitted` (§3.1), and the omission is reported. `disjoint` and `exhaustive` are dropped, and each discarded claim is reported. Every subtraction of a role-bearing member's values from a group is reported; where the group is designated, it may no longer cover its concept.
@@ -634,13 +635,13 @@ Renditions, groupings, inexact correspondences, translations, and measurements l
 
 **Portable keys.** An id means something only in its own file. Three things mean the same in every file, and an external document may select by them with no file in hand:
 
-- a **designation**. A key of scheme and code matches a segment carrying a designation with that code, in the same coding system, *at any position* in `designations`, whatever its modifier; a key that includes a modifier matches only an equal modifier. Matching is equality of codes, with no reasoning over a terminology's hierarchy. "The same coding system" is decided by `uri`, below, not by the key.
+- a **designation**. A key of scheme and code matches a segment carrying a designation with that code, in the same coding system, *at any position* in `designations`, whatever its modifier; a key that includes a modifier matches only an equal modifier. Matching is equality of codes, with no reasoning over a terminology's hierarchy. "The same coding system" is decided by `system_uri`, below, not by the key.
 - a **role** — `background` or `unknown`. Selecting by role yields *(layer, value)* pairs: those of each segment with that role, which is also selectable by its id and by any designation it carries, and, for `background`, value 0 of each layer whose background is the implicit one, which has no segment and no id. A role-bearing segment is never an implicit member of a grouping defined over structures.
 - **undescribed** — values present in the data that no segment lists (§2). This key is data-dependent: it can be evaluated only by reading the voxels, and a consumer working from metadata alone treats it as matching nothing. It is never matched by the `unknown` role.
 
 The unresolved remainder of a hierarchical structure (§2) carries no designation and so has no portable key; an external document can reach it only by id.
 
-**Scheme identity.** A scheme key such as `SCT` is a name local to one document; one file's `SCT` is another's `SNOMED`. Two keys name the same coding system when their registrations have the same `uri` (§3.1). A consumer reconciling keys by any weaker evidence — equal `name`, equal `url` — may do so and must report that it did.
+**Scheme identity.** A scheme key such as `SCT` is a name local to one document; one file's `SCT` is another's `SNOMED`. Two keys name the same coding system when their registrations have the same `system_uri` (§3.1). A consumer reconciling keys by any weaker evidence — equal `name`, equal `url` — may do so and must report that it did.
 
 **Scheme version.** `labeling_scheme` and its registered `version` identify which documents written for a scheme apply to this file. An external document states the versions it applies to, and the check is exact string equality against that list: `"2.4"` and `"2.4.0"` are different versions. A document applied to a version it does not list is reported as such, not silently applied.
 
@@ -673,12 +674,12 @@ Two kidneys from a model with a declared labeling scheme, each identified exactl
   "source_representation": "binary-labelmap",
   "labeling_scheme": "TotalSegmentator",
   "terminologies": {
-    "SCT": { "name": "SNOMED Clinical Terms", "uri": "http://snomed.info/sct",
+    "SCT": { "name": "SNOMED Clinical Terms", "system_uri": "http://snomed.info/sct",
              "version": "2025-03", "url_template": "http://snomed.info/id/{code}" },
     "TA2": { "name": "Terminologia Anatomica 2nd Edition",
-             "uri": "https://ta2viewer.openanatomy.org" },
+             "system_uri": "https://ta2viewer.openanatomy.org" },
     "TotalSegmentator": { "name": "TotalSegmentator class labels, task total",
-             "uri": "https://github.com/wasserth/TotalSegmentator#total", "version": "2.4" }
+             "system_uri": "https://github.com/wasserth/TotalSegmentator#total", "version": "2.4" }
   },
   "segments": [
     {
@@ -727,7 +728,7 @@ A liver, a lesion that partially overlaps it, and a region degraded by motion th
   "version": "0.8",
   "source_representation": "binary-labelmap",
   "terminologies": {
-    "SCT": { "name": "SNOMED Clinical Terms", "uri": "http://snomed.info/sct", "version": "2025-03" }
+    "SCT": { "name": "SNOMED Clinical Terms", "system_uri": "http://snomed.info/sct", "version": "2025-03" }
   },
   "segments": [
     {
@@ -776,7 +777,7 @@ An excerpt of a whole-brain mouse atlas whose voxel values are Allen CCF structu
   "labeling_scheme": "CCF",
   "terminologies": {
     "CCF": { "name": "Allen Mouse Brain Common Coordinate Framework, structure ontology",
-             "uri": "https://atlas.brain-map.org/ccf/structure-graph", "version": "3" }
+             "system_uri": "https://atlas.brain-map.org/ccf/structure-graph", "version": "3" }
   },
   "segments": [
     { "id": "184", "name": "Frontal pole, cerebral cortex", "label_values": [68, 184, 667],
@@ -808,7 +809,7 @@ FreeSurfer's `aseg` has no "nothing here" class; its 0 is "Unknown." The file wi
   "labeling_scheme": "FreeSurferColorLUT",
   "terminologies": {
     "FreeSurferColorLUT": { "name": "FreeSurfer color lookup table",
-                            "uri": "https://surfer.nmr.mgh.harvard.edu/fswiki/FsTutorial/AnatomicalROI/FreeSurferColorLUT",
+                            "system_uri": "https://surfer.nmr.mgh.harvard.edu/fswiki/FsTutorial/AnatomicalROI/FreeSurferColorLUT",
                             "version": "7.4" }
   },
   "segments": [
@@ -854,7 +855,7 @@ On export to `.seg.nrrd` the file is materialized, since a segment other than a 
 
 **Why `labeling_scheme`.** It is the smallest thing that makes the external layer work. Without it, an external hierarchy must be matched to a file by guesswork; with it, the file says "my segments are classes of this scheme at this version," each such segment carries its class as an exact designation, and everything written for the scheme joins by code. Carrying one is a warning rather than an error because real files have segments the scheme did not produce, and a rule that such files cannot declare their scheme would only mean the declaration was omitted. It records a definition, not a process: nothing about the run, the weights, or the inputs, which are provenance.
 
-**Why schemes are identified by `uri`.** A scheme key is a local abbreviation, and the whole external layer joins files to documents by code. Two documents agree that `SCT` and `SNOMED` are one system only if something other than the key says so; `uri` is that thing, compared byte for byte, in the manner of a FHIR code system's canonical URL.
+**Why schemes are identified by `system_uri`, and why the two fields are named for what they are of.** `uri` and `url` are one letter apart and mean different things; `system_uri` is compared and never fetched, `definition_url` is fetched and never compared, and each name says what its value is *of*. A scheme key is a local abbreviation, and the whole external layer joins files to documents by code. Two documents agree that `SCT` and `SNOMED` are one system only if something other than the key says so; `system_uri` is that thing, compared byte for byte, in the manner of a FHIR code system's canonical URL.
 
 **Why designations are exact.** A designation is relied on as identity by every consumer that reads one. The alternative considered — a `relation` on each designation, or a `mappings` field beside them — is sound, and is where inexact correspondences will be recorded; but no reference format carries them, nothing about interpreting the voxels depends on them, and they are typically added by someone other than the producer, later. So in the file the rule is simply that a designation is exact or is not written. Exact identifications in further ontologies are designations like any other; laterality in schemes that lack it is reached exactly through a cross-scheme `modifier`, as DICOM does it.
 
@@ -907,7 +908,7 @@ A violation of a numbered rule has the code `rule-N`. Rule 10 has none, since no
 | `rule-1`, `rule-3a`, `rule-3b`, `rule-3c` | the extension |
 | `rule-2`, `rule-4b`, `rule-6`, `rule-7`, `rule-8a`, `rule-8b`, `rule-11a`, `rule-11b` | the segment that breaks the rule |
 | `rule-4a` | each segment, after the first in `segments` order, that has the repeated id |
-| `rule-5` | the scheme — one diagnostic per scheme, whichever of registration, `uri`, or `version` is missing |
+| `rule-5` | the scheme — one diagnostic per scheme, whichever of registration, `system_uri`, or `version` is missing |
 | `rule-9` | each segment of the layer, after the first in `segments` order, that carries the repeated designation |
 | `rule-12` | the containing segment that comes after a segment it strictly contains — one diagnostic per such segment, however many it contains |
 | `rule-13` | each background segment of the layer after the first; or the background segment that lists more than one value |
@@ -943,7 +944,7 @@ A violation of a numbered rule has the code `rule-N`. Rule 10 has none, since no
 | `migrated-claim-dropped` | migration | warning | segment | a `disjoint` or `exhaustive` claim was discarded (§6.3) |
 | `migrated-background-subtracted` | migration | warning | the flattened group's segment, one diagnostic per role-bearing member whose values were removed | a role-bearing member's value was removed from a flattened group (§6.3) |
 | `migrated-color-differs` | migration | warning | (layer, value) | the value's color resolves differently than it did in 0.7 (§6.3) |
-| `scheme-reconciled-weakly` | consumer of an external document | warning | scheme | two scheme keys were treated as one system without equal `uri`s (§7.1) |
+| `scheme-reconciled-weakly` | consumer of an external document | warning | scheme | two scheme keys were treated as one system without equal `system_uri`s (§7.1) |
 | `scheme-version-mismatch` | consumer of an external document | warning | scheme | a document was applied to a scheme version it does not list (§7.1) |
 | `group-member-absent` | consumer of an external document | warning | reference | a member of an external grouping matched no segment (§7.1) |
 | `reference-stale` | consumer of an external document | error | reference | a document names an id the file does not have (§7.1) |

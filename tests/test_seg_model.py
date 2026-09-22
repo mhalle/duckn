@@ -160,8 +160,8 @@ class TestLookups:
                                   {"scheme": "SNOMED", "code": "64033007",
                                    "modifier": {"scheme": "SCT", "code": "7771000"}}]},
             ],
-            terminologies={"SCT": {"uri": "http://snomed.info/sct"},
-                           "SNOMED": {"uri": "http://snomed.info/sct"}, "TA2": {}},
+            terminologies={"SCT": {"system_uri": "http://snomed.info/sct"},
+                           "SNOMED": {"system_uri": "http://snomed.info/sct"}, "TA2": {}},
         )
         assert [s.id for s in segments_by_designation(ext, "SCT", "64033007")] == ["r1", "r2"]
         left = ext.segments[1].designations[1].modifier
@@ -231,7 +231,7 @@ class TestRules:
 
     def test_rule_3(self):
         ext = _ext([], labeling_scheme=["A", "A"], implicit_background=True,
-                   terminologies={"A": {"uri": "u", "version": "1"}})
+                   terminologies={"A": {"system_uri": "u", "version": "1"}})
         assert _codes(validate_seg_extension(ext)) == [
             ("rule-3a", About.extension()), ("rule-3b", About.extension())]
         frac = _ext([], implicit_background=False)
@@ -255,14 +255,14 @@ class TestRules:
                                 "modifier": {"scheme": "SCT", "code": "7771000"}}],
               "dicom": {"type": {"scheme": "DCM", "code": "x"}}}],
             labeling_scheme="TS",
-            terminologies={"TS": {"uri": "u"}, "TA2": {}},
+            terminologies={"TS": {"system_uri": "u"}, "TA2": {}},
         )
         assert _codes(validate_seg_extension(ext)) == [
             ("rule-5", About.scheme("SCT")), ("rule-5", About.scheme("DCM")),
             ("rule-5", About.scheme("TS"))]
 
     def test_rules_6_and_7(self):
-        ts = {"uri": "u", "version": "2.4"}
+        ts = {"system_uri": "u", "version": "2.4"}
         ext = _ext(
             [{"id": "two", "label_values": [1],
               "designations": [{"scheme": "TS", "code": "a"}, {"scheme": "TS", "code": "b"}]},
@@ -281,8 +281,8 @@ class TestRules:
         assert ext.segments[0].dicom.algorithm_type == "AUTO"
 
     def test_rule_9_is_per_layer_and_by_uri(self):
-        reg = {"SCT": {"uri": "http://snomed.info/sct"},
-               "SNOMED": {"uri": "http://snomed.info/sct"}}
+        reg = {"SCT": {"system_uri": "http://snomed.info/sct"},
+               "SNOMED": {"system_uri": "http://snomed.info/sct"}}
         ext = _ext(
             [{"id": "a", "label_values": [1],
               "designations": [{"scheme": "SCT", "code": "1", "meaning": "x"}]},

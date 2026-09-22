@@ -44,12 +44,12 @@ CielabReading = Literal["d65", "d50"]
 SegmentationType = Literal["BINARY", "FRACTIONAL", "LABELMAP"]
 
 _KNOWN_SCHEMES: dict[str, dict[str, str]] = {
-    "SCT": {"name": "SNOMED Clinical Terms", "uri": "http://snomed.info/sct"},
+    "SCT": {"name": "SNOMED Clinical Terms", "system_uri": "http://snomed.info/sct"},
     "SRT": {"name": "DICOM SR Coding Scheme"},
     "DCM": {"name": "DICOM Controlled Terminology",
-            "uri": "http://dicom.nema.org/resources/ontology/DCM"},
-    "LN": {"name": "LOINC", "uri": "http://loinc.org"},
-    "UCUM": {"name": "Unified Code for Units of Measure", "uri": "http://unitsofmeasure.org"},
+            "system_uri": "http://dicom.nema.org/resources/ontology/DCM"},
+    "LN": {"name": "LOINC", "system_uri": "http://loinc.org"},
+    "UCUM": {"name": "Unified Code for Units of Measure", "system_uri": "http://unitsofmeasure.org"},
     "FMA": {"name": "Foundational Model of Anatomy"},
     "NCIt": {"name": "NCI Thesaurus"},
     "RADLEX": {"name": "RadLex"},

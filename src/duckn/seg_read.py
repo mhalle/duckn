@@ -79,6 +79,16 @@ def migrate_seg_extension(raw: dict[str, Any]) -> tuple[dict[str, Any], list[Dia
     if (int(m.group(1)), int(m.group(2))) < (0, 6):
         ext = _migrate_extension_pre_0_6(ext)
     ext["version"] = SEG_VERSION
+    # A registry entry's `url` (0.6, 0.7) is `definition_url`: the same landing page, named
+    # for what it is a url of.
+    terminologies = ext.get("terminologies")
+    if isinstance(terminologies, dict):
+        for key, entry in list(terminologies.items()):
+            if isinstance(entry, dict) and "url" in entry:
+                entry = dict(entry)
+                entry.setdefault("definition_url", entry.pop("url"))
+                entry.pop("url", None)
+                terminologies[key] = entry
     segs: list[dict[str, Any]] = ext["segments"]
 
     old_colors = _colors_as_0_7_resolved_them(segs)
@@ -308,7 +318,7 @@ def _designation_key(d: Any) -> tuple | None:
 def _set_aside_colliding_designations(segs: list[dict[str, Any]]) -> list[Diagnostic]:
     """For each designation carried by several segments of a layer, the one
     with the most values keeps it, the first among equals (§6.3 step 4).
-    Older files have no ``uri``, so a scheme is its key."""
+    Older files have no ``system_uri``, so a scheme is its key."""
     out: list[Diagnostic] = []
     carriers: dict[tuple, list[dict[str, Any]]] = {}
     for seg in segs:

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1 — 2026-09-22
+
+Two fields of a `terminologies` entry are renamed for what they are *of*. `uri` and `url`
+were one letter apart and meant different things.
+
+### Changed — file format (seg 0.8, breaking for the one-day-old 0.4.0 field)
+- `terminologies[].uri` is `system_uri`: a URI of the coding system, compared byte for byte
+  and never fetched. `terminologies[].url` (since 0.6) is `definition_url`: where a person
+  reads this version's definition, never compared. Migration renames `url`; `uri` shipped
+  only in 0.4.0 and is not migrated.
+
 ## 0.4.0 — 2026-09-21
 
 The `seg` extension moves to version 0.8, a **breaking change** in the file format and

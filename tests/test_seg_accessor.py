@@ -13,7 +13,7 @@ from duckn.volume import Volume
 SEG = {
     "version": "0.8",
     "labeling_scheme": "TS",
-    "terminologies": {"TS": {"uri": "u", "version": "2.4"},
+    "terminologies": {"TS": {"system_uri": "u", "version": "2.4"},
                       "SCT": {"url_template": "http://snomed.info/id/{code}"}},
     "segments": [
         {"id": "liver", "name": "Liver", "label_values": [1, 3], "color": "#dd8265",
