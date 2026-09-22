@@ -141,7 +141,7 @@ def test_multi_label_value():
         "Segment0_LabelValue": "3 2",
     }
     ext, _ = parse_seg_keyvalues(kv)
-    assert ext.version == "0.8"
+    assert ext.version == "0.9"
     assert [(s.id, s.label_values) for s in ext.segments] == [("S1", [2, 3])]
 
 

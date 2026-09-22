@@ -69,7 +69,7 @@ class TestModel:
         ext = _ext([{"id": "S1", "label_values": [1]}])
         assert ext.segments[0].effective_value_set == {(0, 1)}
         assert ext.model_dump(exclude_none=True) == {
-            "version": "0.8",
+            "version": "0.9",
             "segments": [{"id": "S1", "label_values": [1]}],
         }
 
@@ -207,7 +207,7 @@ class TestRules:
             dtype="uint8", fill_value=0,
         ) == []
 
-    @pytest.mark.parametrize("version", ["0.9", "1.0", "0.08", "v0.8", "0.8.1", " 0.8", "0.8 "])
+    @pytest.mark.parametrize("version", ["0.10", "1.0", "0.09", "v0.9", "0.9.1", " 0.9", "0.9 "])
     def test_rule_1(self, version):
         ext = SegmentationExtension(version=version, segments=[])
         found = validate_seg_extension(ext)
@@ -414,7 +414,7 @@ class TestNormalize:
         )
         out, diagnostics = normalized_for_writing(ext)
         assert out.model_dump(exclude_none=True) == {
-            "version": "0.8",
+            "version": "0.9",
             "labeling_scheme": "TS",
             "segments": [
                 {"id": "a", "label_values": [1, 3], "color": "#dd8265"},
@@ -425,8 +425,8 @@ class TestNormalize:
         assert _codes(diagnostics) == [("color-clamped", _seg("b")),
                                        ("color-unreadable", _seg("c"))]
         assert ext.segments[0].label_values == [3, 1, 3]  # the input is untouched
-        later = SegmentationExtension(version="0.9", segments=[])
-        with pytest.raises(ValueError, match="0.9"):
+        later = SegmentationExtension(version="0.10", segments=[])
+        with pytest.raises(ValueError, match="0.10"):
             normalized_for_writing(later)
 
 

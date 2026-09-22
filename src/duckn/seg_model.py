@@ -19,7 +19,7 @@ from .models import AxisMetadata, CodedEntry, Designation
 from .seg_color import SegColor, format_color, parse_color, to_rgb8
 
 # Version of the seg extension spec this module reads and writes.
-SEG_VERSION = "0.8"
+SEG_VERSION = "0.9"
 
 MAX_LABEL_MAGNITUDE = 2**53 - 1
 

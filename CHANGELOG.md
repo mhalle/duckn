@@ -2,14 +2,17 @@
 
 ## 0.5.0 — 2026-09-22
 
-### Added — file format (seg 0.8)
+### Changed — file format: seg 0.9
+- The extension's version is 0.9. A 0.8 reader does not accept `members`, so a file that
+  uses it is not a 0.8 file; every 0.8 file is a 0.9 file, and migration changes only its
+  version.
 - A segment may name `members` in place of `label_values`: the ids of the segments of its
   layer it is the union of, resolved transitively. It is a spelling of a value set, not a
   second kind of segment — a reader resolves it on load, and every rule and lookup sees
   effective values — so a deep hierarchy states each union once. A member that does not
   resolve, is in another layer, has a role, or closes a cycle is a refusal (rule 11c). No
   `disjoint` or `exhaustive` claims come back, and a union a writer invented still belongs
-  outside the file. Migration keeps a 0.7 group's `members` where 0.8 can: a union of
+  outside the file. Migration keeps a 0.7 group's `members` where 0.9 can: a union of
   structures with no values of its own.
 
 ### Changed — Python API

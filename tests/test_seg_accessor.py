@@ -11,7 +11,7 @@ from duckn.models import AxisMetadata, DucknMetadata
 from duckn.volume import Volume
 
 SEG = {
-    "version": "0.8",
+    "version": "0.9",
     "labeling_scheme": "TS",
     "terminologies": {"TS": {"system_uri": "u", "version": "2.4"},
                       "SCT": {"url_template": "http://snomed.info/id/{code}"}},
@@ -59,7 +59,7 @@ class TestLookups:
         assert a.label_values == [[1, 3], [2, 3], [9], [1]]
 
     def test_name_for_takes_the_topmost_segment_that_has_a_name(self):
-        a = SegAccessor({"version": "0.8", "segments": [
+        a = SegAccessor({"version": "0.9", "segments": [
             {"id": "lobe", "name": "Frontal lobe", "label_values": [1, 2]},
             {"id": "rest", "label_values": [1]}]})
         assert a.segment(label_value=1).id == "rest"
@@ -92,7 +92,7 @@ class TestReading:
         assert a.model.segments[0].role == "background"
 
     def test_refusal_surfaces_in_model_not_in_construction(self):
-        a = SegAccessor({"version": "0.8", "segments": [
+        a = SegAccessor({"version": "0.9", "segments": [
             {"id": "a", "label_values": [1]}, {"id": "a", "label_values": [2]}]})
         assert len(a.segments) == 2
         assert [d.code for d in a.diagnostics] == ["rule-4a"]
@@ -104,15 +104,15 @@ class TestReading:
                 a.model
 
     def test_a_later_version_is_refused_but_still_viewable(self):
-        a = SegAccessor({"version": "0.9", "segments": [{"id": "a", "label_values": [1]}]})
-        assert a.version == "0.9" and a.segments[0].id == "a"
+        a = SegAccessor({"version": "0.10", "segments": [{"id": "a", "label_values": [1]}]})
+        assert a.version == "0.10" and a.segments[0].id == "a"
         with pytest.raises(DiagnosticsError):
             a.model
 
     def test_a_volume_supplies_the_array_context(self):
         meta = DucknMetadata(
             axes=[AxisMetadata(kind="space")] * 3,
-            extensions={"seg": {"version": "0.8", "segments": [
+            extensions={"seg": {"version": "0.9", "segments": [
                 {"id": "a", "label_values": [300], "layer": 1}]}},
         )
         vol = Volume(np.zeros((2, 2, 2), dtype=np.uint8), meta)
@@ -123,7 +123,7 @@ class TestReading:
 
 
 class TestFillValue:
-    SEG = {"version": "0.8", "implicit_background": False,
+    SEG = {"version": "0.9", "implicit_background": False,
            "segments": [{"id": "a", "label_values": [5]}]}
 
     def _meta(self):
@@ -149,7 +149,7 @@ class TestFillValue:
 
 
 class TestMembers:
-    ATLAS = {"version": "0.8", "segments": [
+    ATLAS = {"version": "0.9", "segments": [
         {"id": "184", "name": "Frontal pole", "members": ["68", "667", "rest"], "color": "#268f45"},
         {"id": "68", "label_values": [68], "color": "#2ea152"},
         {"id": "667", "label_values": [667]},

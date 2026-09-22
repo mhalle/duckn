@@ -25,7 +25,7 @@ that does not recognize an extension ignores it.
 
 | Extension | Document | Purpose |
 |---|---|---|
-| `seg` | [segmentation-ext-spec.md](segmentation-ext-spec.md) | Segmentations (version 0.8): segments as sets of label values, background and unknown roles, labeling scheme, designations, CSS colors, DICOM SEG content. Groups, renditions, and inexact mappings live outside the file. Version 0.7 is in the [archive](archive/segmentation-ext-v07-spec.md). |
+| `seg` | [segmentation-ext-spec.md](segmentation-ext-spec.md) | Segmentations (version 0.9): segments as sets of label values, background and unknown roles, labeling scheme, designations, CSS colors, DICOM SEG content. Groups, renditions, and inexact mappings live outside the file. Version 0.7 is in the [archive](archive/segmentation-ext-v07-spec.md). |
 | `semantic` (superseded draft) | [semantic-ext-spec.md](semantic-ext-spec.md) | Not an in-file extension. Source material for the deferred external-document specification: entities, groups and claims, inexact mappings. See the `seg` specification, §7.2. |
 | `rendition` (superseded draft) | [rendition-ext-spec.md](rendition-ext-spec.md) | Not an in-file extension. Source material for the deferred external stylesheet format: named renditions, rules, cascade, paint order. See the `seg` specification, §7.2. |
 | `presentation` (early draft, parked) | [presentation-extension.md](presentation-extension.md) | Recommended grayscale presentation carried by imaging formats: display windows and inversion. Survives derivation while the quantity does. Not implemented. |

@@ -444,7 +444,7 @@ def _seg_volume(seg, dtype="uint8"):
 
 
 _SEG = {
-    "version": "0.8",
+    "version": "0.9",
     "segments": [{"id": "a", "label_values": [1], "extent": [0, 1, 0, 1, 0, 1], "color": "#ff0000"}],
     "metadata": {"slicer": {"reference_extent_offset": [0, 0, 0], "contained_representations": ["x"]}},
     "legacy": {"keyvalues": {"Segment0_ID": "a"}},
@@ -459,13 +459,13 @@ class TestSegmentationsAreDerivedCarefully:
     def test_nearest_keeps_seg_and_drops_what_the_grid_invalidated(self):
         out = resample(_seg_volume(_SEG), spacing=1.0, order=0)
         assert out.metadata.extensions["seg"] == {
-            "version": "0.8",
+            "version": "0.9",
             "segments": [{"id": "a", "label_values": [1], "color": "#ff0000"}],
             "metadata": {"slicer": {"contained_representations": ["x"]}},
         }
 
     def test_a_fractional_labelmap_may_be_interpolated(self):
-        seg = {"version": "0.8", "source_representation": "fractional-labelmap",
+        seg = {"version": "0.9", "source_representation": "fractional-labelmap",
                "segments": [{"id": "a", "label_values": [1]}]}
         out = resample(_seg_volume(seg, "float32"), spacing=1.0)
         assert out.metadata.extensions["seg"]["segments"][0]["id"] == "a"
@@ -480,7 +480,7 @@ class TestSegmentationsAreDerivedCarefully:
     def test_a_cast_that_cannot_hold_a_listed_value_drops_seg(self):
         from duckn.cast import cast
 
-        seg = {"version": "0.8", "segments": [{"id": "a", "label_values": [300]}]}
+        seg = {"version": "0.9", "segments": [{"id": "a", "label_values": [300]}]}
         vol = _seg_volume(seg, "int32")
         assert cast(vol, "uint8").metadata.extensions is None
         assert "seg" in cast(vol, "uint16").metadata.extensions
@@ -490,10 +490,10 @@ class TestSegmentationsAreDerivedCarefully:
     def test_a_cast_across_integer_and_float_writes_the_reading_down(self):
         from duckn.cast import cast
 
-        seg = {"version": "0.8", "segments": [{"id": "a", "label_values": [1]}]}
+        seg = {"version": "0.9", "segments": [{"id": "a", "label_values": [1]}]}
         out = cast(_seg_volume(seg), "float32")
         assert out.metadata.extensions["seg"]["source_representation"] == "binary-labelmap"
         assert [d.code for d in out.extensions.seg.diagnostics] == []
-        frac = {"version": "0.8", "segments": [{"id": "a", "label_values": [1]}]}
+        frac = {"version": "0.9", "segments": [{"id": "a", "label_values": [1]}]}
         assert cast(_seg_volume(frac, "float32"), "uint8").metadata.extensions is None
         assert cast(_seg_volume(frac, "float32"), "float64").metadata.extensions["seg"] == frac

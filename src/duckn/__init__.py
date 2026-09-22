@@ -100,7 +100,7 @@ DicomExtension
 DwmriExtension, DwmriAxisExtension, DwmriAcquisition
     Diffusion-weighted MRI metadata.
 SegmentationExtension, Segment, DicomContent, TerminologyEntry
-    Segmentation metadata (seg extension 0.8); ``read_seg_extension`` reads a
+    Segmentation metadata (seg extension 0.9); ``read_seg_extension`` reads a
     file of any supported version, and ``validate_seg_extension`` returns
     diagnostics.
 """

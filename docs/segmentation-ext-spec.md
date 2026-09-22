@@ -1,7 +1,7 @@
 # Segmentation Extension for duckn
 
 **Extension name:** `seg`
-**Version:** 0.8
+**Version:** 0.9
 **Status:** Draft. This is the version the released code reads and writes. It is a breaking change from 0.7, which is kept for reference as `archive/segmentation-ext-v07-spec.md`; older files are migrated on load (§6.3).
 
 ---
@@ -117,12 +117,12 @@ The `seg` extension is declared under the `"duckn"` object's `"extensions"` key.
 Required. The version of this extension specification, as a string.
 
 ```json
-"version": "0.8"
+"version": "0.9"
 ```
 
-**Version semantics.** While the major version is `0`, the *minor* version may introduce breaking changes; this overrides the duckn convention's default rule that minor increments are additive. From 1.0 onward, major increments signal breaking changes and minor increments are additive. `version` must be a string: a JSON number `0.10` is the float 0.1, and a reader that parsed it that way would mistake a later file for an earlier one. A missing or unparseable version is an error, never "older than everything." The two parts are decimal integers and are compared as integers, which is the reason the field is a string. A reader for 0.8 refuses, by its version and before looking at its fields, a file that declares a later minor version while the major version is `0`, or any later major version, since it cannot know what changed.
+**Version semantics.** While the major version is `0`, the *minor* version may introduce breaking changes; this overrides the duckn convention's default rule that minor increments are additive. From 1.0 onward, major increments signal breaking changes and minor increments are additive. `version` must be a string: a JSON number `0.10` is the float 0.1, and a reader that parsed it that way would mistake a later file for an earlier one. A missing or unparseable version is an error, never "older than everything." The two parts are decimal integers and are compared as integers, which is the reason the field is a string. A reader for 0.9 refuses, by its version and before looking at its fields, a file that declares a later minor version while the major version is `0`, or any later major version, since it cannot know what changed.
 
-Version 0.8 is a breaking change from 0.7; §6.3 describes what changed and how older files are read.
+Version 0.8 was a breaking change from 0.7. Version 0.9 adds `members` (§3.2), which a 0.8 reader does not accept, and changes nothing else: every 0.8 file is a 0.9 file. §6.3 describes how older files are read.
 
 #### `source_representation`
 
@@ -482,7 +482,7 @@ Rules 1, 3a, 3b, 4–9, 11b, 11c and 12 constrain the extension's metadata alone
 
 These are not constraints on files. They are conditions a reader or exporter tests to decide what it can do.
 
-**The label table.** A layer in which every segment has exactly one entry in `label_values`, and no value is shared, is a classic label table: one row per value, one color per value. Version 0.7 imposed this on every file; 0.8 makes it the special case.
+**The label table.** A layer in which every segment's effective value set has exactly one value, and no value is shared, is a classic label table: one row per value, one color per value. Version 0.7 imposed this on every file; 0.8 makes it the special case.
 
 **Disjointness.** Two segments in the same layer whose `label_values` do not intersect share no voxel. Two whose lists do intersect share a voxel only if a shared value occurs in the data. Two segments in different layers may overlap whatever their values. So metadata can prove that same-layer segments are disjoint, and only the data can prove that any two overlap.
 
@@ -593,12 +593,12 @@ and writes `color(xyz-d65 X Y Z)` to seven decimal places. The same integers giv
 
 ### 6.3 Reading Older Files
 
-A reader for 0.8 that accepts older files migrates on load, and reports what the migration changed (§5). The steps run in this order, which matters because several of them read what others rewrite. The migrated extension declares `version` `"0.8"` and satisfies rules 1–4, 6, 8a, 9 and 11–14. This assumes the older file conformed to its own version; what was invalid before may be invalid after. Rule 5 is carried over as it was found, and so are rules 7 and 8b — a migration cannot invent a designation in a labeling scheme, and an older file could hold any string as its algorithm type, which step 2 carries into `dicom.algorithm_type` as found: older versions only recommended that a scheme be registered and had no `system_uri`, a migration cannot invent one, and a violation is reported as any other is. For rules 13 and 14 that rests on the older versions' own rules — 0.6 forbade the value 0 outright, and 0.7 allowed a layer one background leaf with one value that no other leaf could claim. Rule 15 depends on the array's `fill_value`, which a migration does not change; a file that breaks it is reported as any other is.
+A reader for 0.9 that accepts older files migrates on load, and reports what the migration changed (§5). A 0.8 file needs no step but its version: it is a 0.9 file that uses no `members`. For 0.5 through 0.7 the steps run in this order, which matters because several of them read what others rewrite. The migrated extension declares `version` `"0.9"` and satisfies rules 1–4, 6, 8a, 9 and 11–14. This assumes the older file conformed to its own version; what was invalid before may be invalid after. Rule 5 is carried over as it was found, and so are rules 7 and 8b — a migration cannot invent a designation in a labeling scheme, and an older file could hold any string as its algorithm type, which step 2 carries into `dicom.algorithm_type` as found: older versions only recommended that a scheme be registered and had no `system_uri`, a migration cannot invent one, and a violation is reported as any other is. For rules 13 and 14 that rests on the older versions' own rules — 0.6 forbade the value 0 outright, and 0.7 allowed a layer one background leaf with one value that no other leaf could claim. Rule 15 depends on the array's `fill_value`, which a migration does not change; a file that breaks it is reported as any other is.
 
-1. **Pre-0.6 shapes.** No specification of 0.5 survives in this repository; the reference for this step is the released library's pre-0.6 migration (`_migrate_segment_pre_0_6` and `_migrate_extension_pre_0_6` in `src/duckn/models.py`). In outline: a 0.5 `identifiers` object, a map from scheme to `{id, name}`, becomes entries appended to `designations` with `id` as `code` and `name` as `meaning`; the classification under a segment's `metadata.dicom` becomes the `dicom` field; and Slicer's fields move under `metadata.slicer`. A 0.8 reader that does not implement this step refuses a file whose version is below 0.6 rather than guessing.
+1. **Pre-0.6 shapes.** No specification of 0.5 survives in this repository; the reference for this step is the released library's pre-0.6 migration (`_migrate_segment_pre_0_6` and `_migrate_extension_pre_0_6` in `src/duckn/models.py`). In outline: a 0.5 `identifiers` object, a map from scheme to `{id, name}`, becomes entries appended to `designations` with `id` as `code` and `name` as `meaning`; the classification under a segment's `metadata.dicom` becomes the `dicom` field; and Slicer's fields move under `metadata.slicer`. A 0.9 reader that does not implement this step refuses a file whose version is below 0.6 rather than guessing.
 2. **Simple fields.**
 
-   | Older shape | 0.8 shape |
+   | Older shape | 0.9 shape |
    |---|---|
    | `label_value: 5` (0.7; 0.6 scalar) | `label_values: [5]` |
    | `label_value: [3, 1, 3]` (0.6 list of integers) | `label_values: [1, 3]`, sorted and without repeats |
@@ -609,19 +609,19 @@ A reader for 0.8 that accepts older files migrates on load, and reports what the
    | `terminologies[].url` | `terminologies[].definition_url`: the same landing page, named for what it is a URL of |
    | `SegmentAlgorithmType`, `SegmentAlgorithmName` under a segment's `metadata.dicom` | `dicom.algorithm_type`, `dicom.algorithm_name` |
 
-3. **Groups become unions, against the original ids.** A group is a 0.7 segment with `members`, or a 0.6 segment whose `label_value` has string entries, alone or mixed with integers. Its effective values are its own integers together with the values of every segment in its transitive membership. When those all lie in one layer, the group becomes a segment in **that layer** — whatever `layer` it declared itself — keeping its `id`, `name`, `color`, `designations`, `dicom`, and `metadata`, and dropping its `extent`. It keeps `members` when 0.8 can: when it has no integers of its own and every member is a structure. Otherwise its value set is written out as `label_values`, sorted, **minus every value listed by a role-bearing segment in its transitive membership**, and each subtraction is reported; where the group is designated, it may then no longer cover its concept. A group has no 0.8 form when its values span layers, when a member does not resolve, when the members form a cycle, or when nothing is left after the subtraction: it is omitted, its original entry is kept in the extension's `metadata.duckn.omitted` (§3.1), and the omission is reported. `disjoint` and `exhaustive` are dropped, and each discarded claim is reported.
+3. **Groups become unions, against the original ids.** A group is a 0.7 segment with `members`, or a 0.6 segment whose `label_value` has string entries, alone or mixed with integers. Its effective values are its own integers together with the values of every segment in its transitive membership. When those all lie in one layer, the group becomes a segment in **that layer** — whatever `layer` it declared itself — keeping its `id`, `name`, `color`, `designations`, `dicom`, and `metadata`, and dropping its `extent`. It keeps `members` when 0.9 can: when it has no integers of its own and every member is a structure. Otherwise its value set is written out as `label_values`, sorted, **minus every value listed by a role-bearing segment in its transitive membership**, and each subtraction is reported; where the group is designated, it may then no longer cover its concept. A group has no 0.9 form when its values span layers, when a member does not resolve, when the members form a cycle, or when nothing is left after the subtraction: it is omitted, its original entry is kept in the extension's `metadata.duckn.omitted` (§3.1), and the omission is reported. `disjoint` and `exhaustive` are dropped, and each discarded claim is reported.
 4. **Designation collisions are resolved.** Older versions did not forbid two segments of a layer from carrying the same designation (§4.1), and flattening creates more: a migrated group and the leaf that was its unresolved remainder usually share one (§2). For each designation carried by several segments of a layer, the one with the most `label_values` keeps it — the first in order, among equals — and on the others it moves to the segment's `metadata.duckn.designations`, each move reported. The result satisfies rule 9.
 5. **Ids are made tokens**, as in §6.1 — the `N` of a `Segment_<N>` being the segment's index at this step, after step 3's omissions and before step 6's reordering — each original kept under `metadata.duckn.id` and each change reported, since references to the old id from outside the file no longer resolve.
 6. **Order.** Rule 12 is established layer by layer, by one procedure. The positions in `segments` occupied by a layer's segments stay that layer's; the segments are re-dealt into those positions in this order: repeatedly take, from the layer's segments not yet placed, the first in their existing order whose `label_values` are strictly contained by those of no other segment not yet placed. Segments of different layers keep their relative order, and a layer that already satisfies rule 12 is unchanged. 0.7 resolved the color of an uncolored leaf from the *first* group in document order that contained it; 0.8 takes the *topmost* containing segment that has a color, which after this step is the most specific one. The two agree unless a 0.7 file listed a broader colored group before a narrower colored one; the migration reports each *(layer, value)* whose color resolves differently.
 
 **What a migration cannot decide.**
 
-- A 0.7 `background: true` may have meant "not evaluated": 0.7 offered FreeSurfer's "Unknown" as its example of a background, and 0.8 calls that region unknown (§8.5). Nothing in a 0.7 file distinguishes the two, so the role migrates as `background`, and every such migration is reported for review.
+- A 0.7 `background: true` may have meant "not evaluated": 0.7 offered FreeSurfer's "Unknown" as its example of a background, and 0.8 on calls that region unknown (§8.5). Nothing in a 0.7 file distinguishes the two, so the role migrates as `background`, and every such migration is reported for review.
 - Leaves that an earlier migration synthesized for 0.6 islands (`label_3`, named "label 3") are kept. They cannot be told from segments an author wrote, a redundant single-value segment violates nothing, and deleting one could leave a value undescribed.
 - Colors that a pre-0.8 DICOM import computed from CIELab were read with a D65 white (§6.2). For the files dcmqi wrote, which is most of them, that reading recovered the author's color, and the migrated color is right, though the source integers cannot be recovered from it. For a file written as the standard intends the reading was wrong, and nothing in a 0.7 file says which kind it was.
 - A released importer never captured DICOM's algorithm attributes, so a migrated file usually has no `dicom.algorithm_type`, and a DICOM export of it must be given one by its caller (§4.2).
 
-Migration from 0.6 is nearly the identity, because 0.8's `label_values` is 0.6's list of integers made uniform. A 0.7 hierarchy survives as it was written, `members` and all, wherever its groups were unions of structures in one layer. What is lost is the partition claims and structures that spanned layers; the first belong to the scheme and are supplied from outside (§7.2), and the second is a real loss of expressiveness, accepted.
+Migration from 0.6 is nearly the identity, because 0.9's `label_values` is 0.6's list of integers made uniform. A 0.7 hierarchy survives as it was written, `members` and all, wherever its groups were unions of structures in one layer. What is lost is the partition claims and structures that spanned layers; the first belong to the scheme and are supplied from outside (§7.2), and the second is a real loss of expressiveness, accepted.
 
 ### 6.4 Notes for an Implementation
 
@@ -686,7 +686,7 @@ Two kidneys from a model with a declared labeling scheme, each identified exactl
 
 ```json
 {
-  "version": "0.8",
+  "version": "0.9",
   "source_representation": "binary-labelmap",
   "labeling_scheme": "TotalSegmentator",
   "terminologies": {
@@ -741,7 +741,7 @@ A liver, a lesion that partially overlaps it, and a region degraded by motion th
 
 ```json
 {
-  "version": "0.8",
+  "version": "0.9",
   "source_representation": "binary-labelmap",
   "terminologies": {
     "SCT": { "name": "SNOMED Clinical Terms", "system_uri": "http://snomed.info/sct", "version": "2025-03" }
@@ -773,7 +773,7 @@ The same liver and lesion, authored independently in two layers of an array with
 
 ```json
 {
-  "version": "0.8",
+  "version": "0.9",
   "source_representation": "binary-labelmap",
   "segments": [
     { "id": "liver", "name": "Liver", "label_values": [1], "color": "#dd8265" },
@@ -788,7 +788,7 @@ An excerpt of a whole-brain mouse atlas whose voxel values are Allen CCF structu
 
 ```json
 {
-  "version": "0.8",
+  "version": "0.9",
   "source_representation": "binary-labelmap",
   "labeling_scheme": "CCF",
   "terminologies": {
@@ -819,7 +819,7 @@ FreeSurfer's `aseg` has no "nothing here" class; its 0 is "Unknown." The file wi
 
 ```json
 {
-  "version": "0.8",
+  "version": "0.9",
   "source_representation": "binary-labelmap",
   "implicit_background": false,
   "labeling_scheme": "FreeSurferColorLUT",
@@ -843,7 +843,7 @@ On export to `.seg.nrrd` the file is materialized, since a segment other than a 
 
 ```json
 {
-  "version": "0.8",
+  "version": "0.9",
   "segments": [
     { "id": "S1", "label_values": [1], "name": "Liver" },
     { "id": "S2", "label_values": [2], "name": "Spleen" }
@@ -956,7 +956,7 @@ A violation of a numbered rule has the code `rule-N`. Rule 10 has none, since no
 | `values-renumbered` | exporter | warning | extension | materialization changed label values or layers (§6.1) |
 | `id-changed` | migration, importer | warning | segment | an id was not a token and was replaced (§6.1, §6.3) |
 | `migrated-background` | migration | warning | segment | `background: true` became `role: "background"`; it may have meant unknown (§6.3) |
-| `migrated-group-omitted` | migration | warning | the omitted group, by its original id, one diagnostic per group | a group had no 0.8 form and was kept under `metadata.duckn.omitted` (§6.3) |
+| `migrated-group-omitted` | migration | warning | the omitted group, by its original id, one diagnostic per group | a group had no 0.9 form and was kept under `metadata.duckn.omitted` (§6.3) |
 | `migrated-claim-dropped` | migration | warning | segment | a `disjoint` or `exhaustive` claim was discarded (§6.3) |
 | `migrated-background-subtracted` | migration | warning | the flattened group's segment, one diagnostic per role-bearing member whose values were removed | a role-bearing member's value was removed from a flattened group (§6.3) |
 | `migrated-color-differs` | migration | warning | (layer, value) | the value's color resolves differently than it did in 0.7 (§6.3) |

@@ -27,7 +27,7 @@ from .seg_model import (
     version_tuple,
 )
 
-# Older versions were read leniently ("v0.7", "0.7.1"); 0.8 is strict (rule 1).
+# Older versions were read leniently ("v0.7", "0.7.1"); 0.8 on is strict (rule 1).
 _OLD_VERSION_RE = re.compile(r"\s*v?(\d+)\.(\d+)")
 
 
@@ -56,11 +56,12 @@ def _layer(seg: dict[str, Any]) -> int:
 
 
 def migrate_seg_extension(raw: dict[str, Any]) -> tuple[dict[str, Any], list[Diagnostic]]:
-    """Migrate a 0.5, 0.6, or 0.7 seg extension dict to 0.8 (spec §6.3).
+    """Migrate a 0.5, 0.6, 0.7 or 0.8 seg extension dict to 0.9 (spec §6.3).
 
     Returns the migrated dict and what the migration changed. A dict that
-    declares 0.8 or later, or whose version cannot be read, is returned as it
-    is: the rules decide what to make of it. The input is not modified.
+    declares 0.9 or later, or whose version cannot be read, is returned as it
+    is: the rules decide what to make of it. The input is not modified. A 0.8
+    file is a 0.9 file that uses no `members`: only its version changes.
     """
     version = raw.get("version") if isinstance(raw, dict) else None
     m = _OLD_VERSION_RE.match(version) if isinstance(version, str) else None
@@ -70,6 +71,9 @@ def migrate_seg_extension(raw: dict[str, Any]) -> tuple[dict[str, Any], list[Dia
         isinstance(s, dict) for s in raw["segments"]
     ):
         return raw, []  # malformed; the model refuses it
+
+    if (int(m.group(1)), int(m.group(2))) == (0, 8):
+        return {**raw, "version": SEG_VERSION}, []
 
     out: list[Diagnostic] = []
     originals = deepcopy(raw["segments"])
@@ -114,7 +118,7 @@ def migrate_seg_extension(raw: dict[str, Any]) -> tuple[dict[str, Any], list[Dia
                     _warn("migrated-background-subtracted", About.segment(sid),
                           f"values of role-bearing member {member_id!r} were removed")
                 )
-            # 0.8 keeps `members` where it can: a union of structures, with no
+            # 0.9 keeps `members` where it can: a union of structures, with no
             # integers of its own. Otherwise the value set is written out.
             if graph.keeps_members(index):
                 seg["members"] = list(graph.members[index])
@@ -268,7 +272,7 @@ class _Graph:
         return order if visit(index) else None
 
     def keeps_members(self, index: int) -> bool:
-        """Whether a group may stay a `members` segment in 0.8: it lists no integers of
+        """Whether a group may stay a `members` segment in 0.9: it lists no integers of
         its own, and no member, transitively, has a role (a role-bearing member's values
         would have been subtracted, which `members` cannot say)."""
         closure = self._closure(index)
@@ -278,7 +282,7 @@ class _Graph:
 
     def flatten(self, index: int) -> tuple[int, list[int], list[str]] | None:
         """``(layer, label_values, ids of role-bearing members subtracted)``,
-        or None when the group has no 0.8 form."""
+        or None when the group has no 0.9 form."""
         closure = self._closure(index)
         if closure is None:
             return None

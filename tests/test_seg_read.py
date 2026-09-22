@@ -35,7 +35,7 @@ def _seg(id):
 
 class TestSimpleFields:
     def test_0_8_is_untouched(self):
-        raw = {"version": "0.8", "segments": [{"id": "a", "label_values": [1]}]}
+        raw = {"version": "0.9", "segments": [{"id": "a", "label_values": [1]}]}
         out, diagnostics = migrate_seg_extension(raw)
         assert out is raw and diagnostics == []
 
@@ -51,7 +51,7 @@ class TestSimpleFields:
         assert raw == before
         assert diagnostics == []
         assert out == {
-            "version": "0.8",
+            "version": "0.9",
             "segments": [
                 {"id": "a", "label_values": [5], "color": "#80ae80",
                  "metadata": {"duckn": {"display": {"de": "Leber"}}}},
@@ -217,16 +217,16 @@ class TestRead:
                   {"id": "a", "label_value": 1, "color": [1, 0, 0]}]),
             dtype="uint8", fill_value=0,
         )
-        assert ext.version == "0.8" and ext.segments[1].color == "#ff0000"
+        assert ext.version == "0.9" and ext.segments[1].color == "#ff0000"
         assert _codes(diagnostics) == [("migrated-background", _seg("bg"))]
 
     def test_non_string_color_is_absent(self):
         ext, diagnostics = read_seg_extension(
-            {"version": "0.8", "segments": [{"id": "a", "label_values": [1], "color": [1, 0, 0]}]})
+            {"version": "0.9", "segments": [{"id": "a", "label_values": [1], "color": [1, 0, 0]}]})
         assert ext.segments[0].color is None
         assert _codes(diagnostics) == [("color-unreadable", _seg("a"))]
 
-    @pytest.mark.parametrize("version", ["0.9", "1.0", "0.8.1", "0.08", "later"])
+    @pytest.mark.parametrize("version", ["0.10", "1.0", "0.9.1", "0.09", "later"])
     def test_refuses_by_version_before_fields(self, version):
         with pytest.raises(DiagnosticsError) as e:
             read_seg_extension({"version": version, "segments": [{"new_field": 1}]})
@@ -236,26 +236,26 @@ class TestRead:
         "raw, code",
         [({"segments": []}, "rule-1"),
          ({"version": 0.8, "segments": []}, "rule-1"),
-         ({"version": "0.8", "segments": [{"id": "a", "label_values": [1], "role": "fg"}]}, "rule-8a"),
-         ({"version": "0.8", "segments": [{"id": "a", "label_values": [1.5]}]}, "rule-11a"),
-         ({"version": "0.8", "segments": [{"id": "a", "label_values": []}]}, "rule-11a"),
-         ({"version": "0.8", "segments": [{"id": "a", "label_values": 1}]}, "rule-11a"),
+         ({"version": "0.9", "segments": [{"id": "a", "label_values": [1], "role": "fg"}]}, "rule-8a"),
+         ({"version": "0.9", "segments": [{"id": "a", "label_values": [1.5]}]}, "rule-11a"),
+         ({"version": "0.9", "segments": [{"id": "a", "label_values": []}]}, "rule-11a"),
+         ({"version": "0.9", "segments": [{"id": "a", "label_values": 1}]}, "rule-11a"),
          ({"version": "0.7", "segments": [{"id": "a", "label_value": True}]}, "rule-11a"),
-         ({"version": "0.8", "segments": [{"id": "a", "label_values": [1], "layer": -1}]}, "rule-2"),
-         ({"version": "0.8", "segments": [{"id": "a", "label_values": [1], "members": ["b"]}]}, "rule-11a"),
-         ({"version": "0.8", "segments": [{"id": "a", "members": ["nobody"]}]}, "rule-11c"),
-         ({"version": "0.8", "segments": [{"id": "a", "members": ["b"], "role": "background"},
+         ({"version": "0.9", "segments": [{"id": "a", "label_values": [1], "layer": -1}]}, "rule-2"),
+         ({"version": "0.9", "segments": [{"id": "a", "label_values": [1], "members": ["b"]}]}, "rule-11a"),
+         ({"version": "0.9", "segments": [{"id": "a", "members": ["nobody"]}]}, "rule-11c"),
+         ({"version": "0.9", "segments": [{"id": "a", "members": ["b"], "role": "background"},
                                           {"id": "b", "label_values": [1]}]}, "rule-11c"),
-         ({"version": "0.8", "segments": [{"id": "a", "members": None}]}, "rule-11a")],
+         ({"version": "0.9", "segments": [{"id": "a", "members": None}]}, "rule-11a")],
     )
     def test_a_refusal_the_model_enforces_still_has_its_code(self, raw, code):
         with pytest.raises(DiagnosticsError) as e:
             read_seg_extension(raw)
         assert [d.code for d in e.value.diagnostics] == [code]
 
-    @pytest.mark.parametrize("raw", [{"version": "0.8"}, {"version": "0.8", "segments": "no"},
-                                     {"version": "0.8", "segments": [{"label_values": [1]}]},
-                                     {"version": "0.8", "segments": [], "bogus": 1}])
+    @pytest.mark.parametrize("raw", [{"version": "0.9"}, {"version": "0.9", "segments": "no"},
+                                     {"version": "0.9", "segments": [{"label_values": [1]}]},
+                                     {"version": "0.9", "segments": [], "bogus": 1}])
     def test_not_a_seg_extension(self, raw):
         with pytest.raises(ValueError) as e:
             read_seg_extension(raw)
@@ -271,12 +271,12 @@ class TestRead:
             "migrated-background", "id-changed", "rule-14"]
 
     def test_refusal_and_strict(self):
-        dup = {"version": "0.8", "segments": [{"id": "a", "label_values": [1]},
+        dup = {"version": "0.9", "segments": [{"id": "a", "label_values": [1]},
                                                {"id": "a", "label_values": [2]}]}
         with pytest.raises(DiagnosticsError) as e:
             read_seg_extension(dup)
         assert [d.code for d in e.value.diagnostics] == ["rule-4a"]
-        unsorted = {"version": "0.8", "segments": [{"id": "a", "label_values": [2, 1]}]}
+        unsorted = {"version": "0.9", "segments": [{"id": "a", "label_values": [2, 1]}]}
         _, diagnostics = read_seg_extension(unsorted)
         assert [d.code for d in diagnostics] == ["rule-11b"]
         with pytest.raises(DiagnosticsError):
@@ -334,8 +334,17 @@ def test_a_registry_entrys_url_becomes_definition_url():
 
 
 def test_an_unresolved_background_union_is_refused_not_crashed():
-    raw = {"version": "0.8", "segments": [{"id": "bg", "members": ["nobody"], "role": "background"},
+    raw = {"version": "0.9", "segments": [{"id": "bg", "members": ["nobody"], "role": "background"},
                                           {"id": "a", "label_values": [1]}]}
     with pytest.raises(DiagnosticsError) as e:
         read_seg_extension(raw)
     assert {d.code for d in e.value.diagnostics} == {"rule-11c"}
+
+
+def test_a_0_8_file_is_a_0_9_file_with_a_new_version():
+    raw = {"version": "0.8", "segments": [{"id": "a", "label_values": [1, 3]},
+                                          {"id": "b", "label_values": [2, 3], "color": "#cc3333"}]}
+    out, diagnostics = migrate_seg_extension(raw)
+    assert out == {**raw, "version": "0.9"} and diagnostics == []
+    ext, found = read_seg_extension(raw)
+    assert ext.version == "0.9" and found == []

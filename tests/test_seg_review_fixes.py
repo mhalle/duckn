@@ -18,7 +18,7 @@ from duckn.seg_read import read_seg_extension
 
 
 def _ext(segments, **kw):
-    return SegmentationExtension(version="0.8", segments=segments, **kw)
+    return SegmentationExtension(version="0.9", segments=segments, **kw)
 
 
 class TestAccessorAnswersFromOneShape:
@@ -27,7 +27,7 @@ class TestAccessorAnswersFromOneShape:
             {"id": "liver", "name": "Liver", "label_value": [1, 3]},
             {"id": "tumor", "name": "Tumor", "label_value": [2, 3]}]}
         a = SegAccessor(raw)
-        assert a.version == "0.8" and a.file_version == "0.6"
+        assert a.version == "0.9" and a.file_version == "0.6"
         by = {s.id: s for s in a.segments}
         assert by["liver"].label_values == [1, 3] and a.label_for("Tumor") == [2, 3]
         assert a.name_for(1) == "Liver"
@@ -55,16 +55,16 @@ class TestVersion:
             read_seg_extension({"version": "banana", "segments": [{"id": "a", "label_value": 1}]})
 
     def test_a_future_or_prerelease_version_is_refused_not_stamped_down(self):
-        raw = {"version": "0.9-rc1", "segments": [{"id": "a", "label_value": 1}]}
+        raw = {"version": "0.10-rc1", "segments": [{"id": "a", "label_value": 1}]}
         with pytest.raises(DiagnosticsError, match="rule-1"):
             read_seg_extension(raw)
-        assert raw["version"] == "0.9-rc1"
+        assert raw["version"] == "0.10-rc1"
 
     def test_a_v_prefixed_old_version_still_migrates(self):
         ext, _ = read_seg_extension(
             {"version": "v0.6", "segments": [{"id": "g", "label_value": ["a"]},
                                              {"id": "a", "label_value": 1}]})
-        assert ext.version == "0.8" and ext.segments[0].members == ["a"]
+        assert ext.version == "0.9" and ext.segments[0].members == ["a"]
         assert ext.segments[0].sorted_values == [1]
 
 
@@ -138,7 +138,7 @@ class TestSecondRound:
             {"id": "a", "label_value": 1, "tags": {"x": "y"},
              "metadata": {"dicom": {"category": {"scheme": "SCT", "code": "1"}}}}]}
         a = SegAccessor(raw)
-        assert a.version == "0.8" and a.file_version == "0.5"
+        assert a.version == "0.9" and a.file_version == "0.5"
         assert a.segments[0].dicom["category"]["code"] == "1"       # the view hands dicts back
         assert a.segments[0].metadata == {"slicer": {"tags": {"x": "y"}}}
         m = a.model.segments[0]

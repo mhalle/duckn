@@ -26,7 +26,7 @@ _SPACE = [
 ]
 
 
-def _write(path, data, segments, *, version="0.8", layered=False, fill_value=0, **ext):
+def _write(path, data, segments, *, version="0.9", layered=False, fill_value=0, **ext):
     """Write a minimal duckn segmentation store."""
     arr = zarr.create_array(store=str(path), shape=data.shape, dtype=data.dtype,
                             chunks=data.shape, zarr_format=3, fill_value=fill_value)
@@ -329,7 +329,7 @@ class TestRoundTrip:
                 LIVER_TUMOR[1]]
         _export(tmp_path, data, segs)
         arr, seg, duckn = self._back(tmp_path, tmp_path / "out.dcm")
-        assert seg["version"] == "0.8" and arr.shape == (2, 2, 2, 4)      # overlap: layers
+        assert seg["version"] == "0.9" and arr.shape == (2, 2, 2, 4)      # overlap: layers
         assert [(s["id"], s["name"], s["label_values"], s.get("layer")) for s in seg["segments"]] == [
             ("Segment_1", "Liver", [1], None), ("Segment_2", "Tumor", [1], 1)]
         assert seg["segments"][0]["color"] == "color(xyz-d65 0.2459822 0.2813858 0.1198888)"

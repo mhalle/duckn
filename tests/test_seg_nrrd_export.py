@@ -21,7 +21,7 @@ from duckn.seg_nrrd import (
 
 
 def _ext(segments, **kwargs):
-    return SegmentationExtension(version="0.8", segments=segments, **kwargs)
+    return SegmentationExtension(version="0.9", segments=segments, **kwargs)
 
 
 def _codes(diagnostics):
@@ -277,7 +277,7 @@ class TestSegConvert:
         data[0, 0, 0, 0] = data[1, 0, 0, 1] = 1
         labelmap, meta = seg_binary_to_labelmap(data, self._meta(seg, True))
         assert labelmap[0, 0].tolist() == [1, 2]
-        assert meta.extensions["seg"]["version"] == "0.8"
+        assert meta.extensions["seg"]["version"] == "0.9"
 
 
 class TestMembersExport:
