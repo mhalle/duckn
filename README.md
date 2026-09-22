@@ -185,7 +185,7 @@ to get wrong, with the bugs that motivated them.
 
 - [duckn convention](docs/duckn-spec.md) — core metadata convention
 - [DWI extension](docs/dwi-extension.md) — diffusion-weighted MRI
-- [Segmentation extension](docs/segmentation-ext-spec.md) — segments, label values, roles, colors (0.8)
+- [Segmentation extension](docs/segmentation-ext-spec.md) — segments, label values, roles, colors (0.9)
 - [NIfTI extension](docs/nifti-spec.md) — NIfTI provenance
 - [DICOM extension](docs/dicom-spec.md) — DICOM provenance
 - [FITS extension](docs/fits-extension.md) — astronomy FITS provenance (first pass at a non-medical imaging domain)
