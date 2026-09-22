@@ -259,8 +259,16 @@ Rules:
 - Each extension object may contain an optional `"schema"` field: a URL pointing to a schema or specification document for the extension. What the URL resolves to is up to the extension author — a JSON Schema for machine validation, a human-readable specification, or both. Readers may use this for validation or surface it to users as documentation. If absent, the reader has only the extension name and version to work with.
 - Extension names must be unique. A registry of well-known extension names may be established separately.
 - Keys at the top level of the `"duckn"` object (outside `"extensions"`) are reserved for this convention, and the complete set is the one documented in §3.1. Domain-specific metadata must not be added there.
-- A reader that encounters an unknown extension name must ignore it.
+- A reader that encounters an unknown extension name must ignore it when interpreting the array. Ignoring is not dropping: a tool that writes the array again as duckn without deriving it (§4.5) keeps every extension, including ones it does not know, unchanged. A tool that derives an array does not carry forward an extension it does not know, because it cannot tell which of its fields remain true.
 - Extensions may depend on NRRD convention fields such as `measurement_frame` or `space`. These dependencies should be documented in the extension's specification.
+
+**Unregistered extensions.** An extension needs neither a registry entry nor a published specification to be used. A project, tool or community with metadata this convention does not cover writes it as an extension under a name of its own. This is the place for such metadata: not new top-level keys, and not `keyvalues`, which holds only NRRD header strings (`keyvalues-extension.md`).
+
+- Choose a name specific to the owner, and one you would keep: when an extension is later specified and registered, registration adopts its name rather than renaming it, so files already written stay valid.
+- A major version of `0` (`"0.1"`) marks the extension as unstable. Any 0.x version may change its fields incompatibly, and a reader must not assume one 0.x version reads like another. Move to `1.0` once the fields have settled and a specification exists; from then on the usual compatibility rules apply.
+- Point `schema` at whatever documents the fields, even a page of prose.
+- Use JSON's types: a number as a number, a list as an array, a flag as a boolean. Do not encode structure or numbers in strings.
+- Where a number has a unit, name the unit in a form `units-spec.md` defines. Where the extension puts it is the extension's choice.
 
 Extensions also appear per-axis; see §3.2.
 

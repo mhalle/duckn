@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Changed — specification
+- duckn-spec §3.1: an unknown extension is ignored when interpreting the array, but ignoring
+  is not dropping. A tool that writes the array again as duckn without deriving it keeps
+  every extension unchanged; a tool that derives an array drops the extensions it does not
+  know (§4.5).
+- duckn-spec §3.1, "Unregistered extensions": metadata the convention does not cover is
+  written as an extension under the owner's own name, with no registry entry needed. A 0.x
+  version marks it unstable, `schema` points at its documentation, values use JSON's types,
+  and units use `units-spec.md`. Registering it later adopts the name, so files already
+  written stay valid.
+- New draft `keyvalues-extension.md`: `keyvalues` is a compatibility store for NRRD header
+  pairs no extension claims. Values are strings only, and it is not a place for new metadata.
+
+### Changed — Python API
+- `resample` keeps only the registered extensions it knows stay true (`seg`, `dwmri`,
+  `microscopy`, `presentation`, `provenance`, `rendition`, `semantic`), at the top level
+  and on each axis. `keyvalues` and unregistered extensions are now dropped, reversing the
+  2026-08-29 rule that left extensions duckn does not own in place.
+
 ## 0.5.1 — 2026-09-22
 
 ### Changed — file format (seg 0.9, additive)

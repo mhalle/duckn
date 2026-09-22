@@ -203,13 +203,15 @@ class TestDerivationDropsSourceProvenance:
         out = resample(self._vol_with_dicom_ext(), factor=2.0, order=1)
         assert "dicom" not in (out.metadata.extensions or {})
 
-    def test_resample_keeps_extensions_it_does_not_own(self):
-        """Only format provenance is dropped; other extensions are not ours."""
+    def test_resample_drops_extensions_it_does_not_know(self):
+        """Derivation cannot tell which fields of an unknown extension remain
+        true, so it drops them (duckn-spec §3.1, §4.5). This reverses the
+        2026-08-29 rule that left unowned extensions alone."""
         pytest.importorskip("scipy")
         from duckn.resample import resample
 
         out = resample(self._vol_with_dicom_ext(), factor=2.0, order=1)
-        assert (out.metadata.extensions or {}).get("custom") == {"keep": "me"}
+        assert "custom" not in (out.metadata.extensions or {})
 
     def test_source_array_is_untouched(self):
         pytest.importorskip("scipy")

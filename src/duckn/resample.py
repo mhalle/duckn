@@ -42,10 +42,15 @@ class Interpolation(IntEnum):
     CUBIC = 3
 
 
-# Extensions that describe a *source file* rather than this array. They do
-# not survive derivation (duckn-spec §4.5); recording what an array was
-# derived from is the `provenance` extension's job, not theirs.
-_SOURCE_PROVENANCE_EXTENSIONS = frozenset({"dicom", "nifti", "fits"})
+# The registered extensions a resampled array keeps (duckn-spec §3.1, §4.5).
+# Everything else is dropped: `dicom`, `nifti` and `fits` describe a *source
+# file* rather than this array (recording what an array was derived from is
+# the `provenance` extension's job, not theirs); `keyvalues` are a source
+# header's strings; and an unregistered extension is one this tool cannot
+# know stays true.
+_EXTENSIONS_KEPT_BY_RESAMPLING = frozenset(
+    {"seg", "dwmri", "microscopy", "presentation", "provenance", "rendition", "semantic"}
+)
 
 
 def _resolve_centering(vol: Volume, override: Centering | None) -> Centering:
@@ -317,12 +322,13 @@ def resample(
     # A resampled array is derived with respect to whatever its source
     # format described, so format-specific provenance does not survive
     # (spec §4.5). What that metadata says about an acquisition is no
-    # longer true of this array's values or its grid.
+    # longer true of this array's values or its grid, and an extension this
+    # tool does not know may not be either (spec §3.1).
     if new_meta.extensions:
         kept = {
             name: ext
             for name, ext in new_meta.extensions.items()
-            if name not in _SOURCE_PROVENANCE_EXTENSIONS
+            if name in _EXTENSIONS_KEPT_BY_RESAMPLING
         }
         if "seg" in kept:
             # The grid changed: cached extents and source strings no longer hold.
@@ -336,6 +342,13 @@ def resample(
     origin_shift = np.zeros(len(new_meta.space_origin or []) or geom.ndim)
     spatial_idx = 0
     for i, ax in enumerate(new_meta.axes):
+        # A per-axis entry needs its top-level declaration, so it goes with it.
+        if ax.extensions:
+            ax.extensions = {
+                name: ext
+                for name, ext in ax.extensions.items()
+                if name in _EXTENSIONS_KEPT_BY_RESAMPLING
+            } or None
         if ax.space_direction is None:
             continue
         data_axis = spatial_indices[spatial_idx]

@@ -256,6 +256,25 @@ class TestMetadata:
         result = resample(vol, spacing=1.0)
         assert result.metadata.axes[0].samples is None
 
+    def test_extensions_it_does_not_know_are_dropped(self):
+        """Derivation drops what the tool cannot know stays true (spec §3.1, §4.5):
+        unregistered extensions and NRRD header strings go, registered ones stay."""
+        vol = _make_volume(shape=(4, 8, 8))
+        vol.metadata.extensions = {
+            "feldglas": {"version": "0.1", "layer": "encoder.stage5"},
+            "keyvalues": {"version": "1.0", "entries": {"Scanner": "unit-3"}},
+            "provenance": {"version": "1.0"},
+        }
+        vol.metadata.axes[0].extensions = {"feldglas": {"stage": 5}, "provenance": {"note": "kept"}}
+        result = resample(vol, spacing=1.0)
+        assert set(result.metadata.extensions) == {"provenance"}
+        assert result.metadata.axes[0].extensions == {"provenance": {"note": "kept"}}
+        vol.metadata.extensions = {"keyvalues": {"version": "1.0", "entries": {"k": "v"}}}
+        vol.metadata.axes[0].extensions = {"feldglas": {"stage": 5}}
+        result = resample(vol, spacing=1.0)
+        assert result.metadata.extensions is None
+        assert result.metadata.axes[0].extensions is None
+
 
 # ---- Mutual exclusivity ----
 
