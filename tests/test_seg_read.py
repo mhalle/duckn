@@ -125,11 +125,11 @@ class TestGroups:
             version="0.6",
         )
         out, _ = migrate_seg_extension(raw)
-        # `ab` is a pure union and keeps members; `abc` has an integer of its own (3) and
-        # is written out, since a segment has one spelling or the other
+        # both keep their members; `abc` keeps its own integer beside them
         assert [(s["id"], s.get("label_values"), s.get("members")) for s in out["segments"]] == [
-            ("abc", [1, 2, 3], None), ("ab", None, ["a", "b"]), ("a", [1], None), ("b", [2], None)]
+            ("abc", [3], ["ab"]), ("ab", None, ["a", "b"]), ("a", [1], None), ("b", [2], None)]
         ext = SegmentationExtension.model_validate(out)
+        assert ext.segments[0].sorted_values == [1, 2, 3]
         assert ext.segments[1].sorted_values == [1, 2]
 
     def test_group_takes_the_layer_of_its_values(self):
@@ -242,7 +242,6 @@ class TestRead:
          ({"version": "0.9", "segments": [{"id": "a", "label_values": 1}]}, "rule-11a"),
          ({"version": "0.7", "segments": [{"id": "a", "label_value": True}]}, "rule-11a"),
          ({"version": "0.9", "segments": [{"id": "a", "label_values": [1], "layer": -1}]}, "rule-2"),
-         ({"version": "0.9", "segments": [{"id": "a", "label_values": [1], "members": ["b"]}]}, "rule-11a"),
          ({"version": "0.9", "segments": [{"id": "a", "members": ["nobody"]}]}, "rule-11c"),
          ({"version": "0.9", "segments": [{"id": "a", "members": ["b"], "role": "background"},
                                           {"id": "b", "label_values": [1]}]}, "rule-11c"),

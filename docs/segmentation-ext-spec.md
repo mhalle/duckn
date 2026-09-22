@@ -74,10 +74,10 @@ Within a layer, a designation then determines one voxel set, whoever wrote the f
 
 The unresolved remainder — the voxels valued 184 alone — is not the concept and does not carry its designation; a writer that wants to name it gives it a segment of its own with a `name` and no designation in the scheme.
 
-Two consequences follow. Where one segment's values contain another's, the containing segment is listed **first** (§5), so that the topmost segment for a value is always the most specific one. And a broad structure of a deep hierarchy lists many values. A writer may state that union once, as **members**: the segment names the segments it is the union of, and its values are theirs (§3.2). The two forms are one thing to a reader; a segment's voxels are its *effective value set*, however the file spelled it.
+Two consequences follow. Where one segment's values contain another's, the containing segment is listed **first** (§5), so that the topmost segment for a value is always the most specific one. And a broad structure of a deep hierarchy lists many values. A writer may state that union once, as **members**: the segment names the segments whose voxels are also its own, beside any values that are its own directly (§3.2). The two spellings are one thing to a reader; a segment's voxels are its *effective value set*, however the file spelled it.
 
 ```json
-{ "id": "184", "name": "Frontal pole, cerebral cortex", "members": ["68", "667", "184-unresolved"] }
+{ "id": "184", "name": "Frontal pole, cerebral cortex", "label_values": [184], "members": ["68", "667"] }
 ```
 
 A writer **should** put a composite in the file only when it is *authoritative*: the labeling scheme defines it, or a coding system has an exact code for it, so that it can carry a designation. A union a writer invented — five lobes called "lungs" because their names share a prefix, when no scheme says so — is a fact about the scheme, if it is one at all, and is kept outside the file (§7.2). This is a writer's practice and is not checkable: a file cannot say whether a union is anyone's definition, and it is about composites however spelled, since a `label_values` union is as easily invented as a `members` one.
@@ -205,7 +205,7 @@ Optional. Verbatim source metadata preserved so a file converted *from* another 
 
 ### 3.2 Segment Object Fields
 
-Each element of `segments` is a JSON object. All fields are optional except `id`, and exactly one of `label_values` and `members`.
+Each element of `segments` is a JSON object. All fields are optional except `id`, and at least one of `label_values` and `members`.
 
 #### `id`
 
@@ -229,7 +229,7 @@ In this convention the string is a *name*, never a *label*: "label" means an int
 
 #### `label_values`
 
-The integer voxel values belonging to this segment, as a non-empty array of distinct integers **in ascending order**. The segment's voxels are all voxels in its layer whose value is in the array. A segment has `label_values` or `members`, never both.
+The integer voxel values belonging to this segment, as a non-empty array of distinct integers **in ascending order**. The segment's voxels are all voxels in its layer whose value is in the array, together with its members' voxels when it has `members`.
 
 ```json
 "label_values": [1, 3]
@@ -239,13 +239,13 @@ It is always an array, even for one value: `[1]`, never `1`. A value may appear 
 
 #### `members`
 
-The ids of the segments this segment is the **union** of, as a non-empty array of distinct segment ids, in place of `label_values`. Its effective value set is the union of its members' effective value sets, resolved transitively; a member may itself have members.
+The ids of segments whose voxels are also this segment's, as a non-empty array of distinct segment ids. Its effective value set is its own `label_values`, if it has any, together with the union of its members' effective value sets, resolved transitively; a member may itself have members. A segment with both fields is the ordinary shape of an interior structure of a hierarchy: the frontal pole is its own value, the voxels no child claims, and its children.
 
 ```json
-"members": ["68", "667", "184-unresolved"]
+{ "id": "184", "name": "Frontal pole, cerebral cortex", "label_values": [184], "members": ["68", "667"] }
 ```
 
-A member is a segment of the **same layer** (a union has one layer, and a structure whose voxels span layers has no form in this extension), is not role-bearing (a structure does not contain a background or an unknown region, rule 14), and resolves to a segment of the file without a cycle (rule 11c). `members` is a spelling, not a second kind of segment: a reader that has resolved the file holds every segment as its effective value set, and a lookup, a color table, the covering rule and the ordering rule see no difference. It exists so that a deep hierarchy — an atlas of a thousand structures over a dozen levels — is not written as a thousand overlapping integer lists. A writer may equally list the values; a reader never needs to know which was written. A `members` segment has no `extent` of its own to cache; a writer may still cache one.
+A member is a segment of the **same layer** (a union has one layer, and a structure whose voxels span layers has no form in this extension), is not role-bearing (a structure does not contain a background or an unknown region, rule 14), and resolves to a segment of the file without a cycle (rule 11c). `members` is a spelling, not a second kind of segment: a reader that has resolved the file holds every segment as its effective value set, and a lookup, a color table, the covering rule and the ordering rule see no difference. It exists so that a deep hierarchy — an atlas of a thousand structures over a dozen levels — is not written as a thousand overlapping integer lists. A writer may equally list the values; a reader never needs to know which was written. A writer may cache an `extent` for a `members` segment over its whole effective set.
 
 #### `role`
 
@@ -468,7 +468,7 @@ A segment's **effective value set** is the set of *(layer, value)* pairs defined
 
 **Values**
 
-11. `label_values` and `members`. **11a** *error; reader refuses.* A segment has exactly one of the two. `label_values` is a non-empty array of integers, each representable in the array's data type and no greater in magnitude than 2^53 − 1; booleans are not integers. **11b** *error; reader continues,* reading the array as a set. Its entries are distinct and in ascending order. **11c** *error; reader refuses.* `members` is a non-empty array of distinct ids, each the id of a segment of the same layer that has no `role`, and no chain of membership returns to its start.
+11. `label_values` and `members`. **11a** *error; reader refuses.* A segment has at least one of the two. `label_values`, when present, is a non-empty array of integers, each representable in the array's data type and no greater in magnitude than 2^53 − 1; booleans are not integers. **11b** *error; reader continues,* reading the array as a set. Its entries are distinct and in ascending order. **11c** *error; reader refuses.* `members` is a non-empty array of distinct ids, each the id of a segment of the same layer that has no `role`, and no chain of membership returns to its start.
 12. *error; reader continues.* Where one segment's effective value set strictly contains another's in the same layer, the containing segment comes first in `segments`. A reader takes the order as it finds it.
 13. *error; reader refuses; binary labelmaps.* At most one segment per layer has the background role, and it lists exactly one value.
 14. *error; reader refuses; binary labelmaps.* A layer's background value (§3.2 `role`) is listed by no segment other than its background segment. A value listed by a segment with a `role` is listed by no other segment of the layer: "nothing here" and "not evaluated" do not overlap a structure, or each other.
@@ -609,7 +609,7 @@ A reader for 0.9 that accepts older files migrates on load, and reports what the
    | `terminologies[].url` | `terminologies[].definition_url`: the same landing page, named for what it is a URL of |
    | `SegmentAlgorithmType`, `SegmentAlgorithmName` under a segment's `metadata.dicom` | `dicom.algorithm_type`, `dicom.algorithm_name` |
 
-3. **Groups become unions, against the original ids.** A group is a 0.7 segment with `members`, or a 0.6 segment whose `label_value` has string entries, alone or mixed with integers. Its effective values are its own integers together with the values of every segment in its transitive membership. When those all lie in one layer, the group becomes a segment in **that layer** — whatever `layer` it declared itself — keeping its `id`, `name`, `color`, `designations`, `dicom`, and `metadata`, and dropping its `extent`. It keeps `members` when 0.9 can: when it has no integers of its own and every member is a structure. Otherwise its value set is written out as `label_values`, sorted, **minus every value listed by a role-bearing segment in its transitive membership**, and each subtraction is reported; where the group is designated, it may then no longer cover its concept. A group has no 0.9 form when its values span layers, when a member does not resolve, when the members form a cycle, or when nothing is left after the subtraction: it is omitted, its original entry is kept in the extension's `metadata.duckn.omitted` (§3.1), and the omission is reported. `disjoint` and `exhaustive` are dropped, and each discarded claim is reported.
+3. **Groups become unions, against the original ids.** A group is a 0.7 segment with `members`, or a 0.6 segment whose `label_value` has string entries, alone or mixed with integers. Its effective values are its own integers together with the values of every segment in its transitive membership. When those all lie in one layer, the group becomes a segment in **that layer** — whatever `layer` it declared itself — keeping its `id`, `name`, `color`, `designations`, `dicom`, and `metadata`, and dropping its `extent`. It keeps `members` when 0.9 can: when every member, transitively, is a structure; integers of its own stay in `label_values` beside them. Otherwise its value set is written out as `label_values`, sorted, **minus every value listed by a role-bearing segment in its transitive membership**, and each subtraction is reported; where the group is designated, it may then no longer cover its concept. A group has no 0.9 form when its values span layers, when a member does not resolve, when the members form a cycle, or when nothing is left after the subtraction: it is omitted, its original entry is kept in the extension's `metadata.duckn.omitted` (§3.1), and the omission is reported. `disjoint` and `exhaustive` are dropped, and each discarded claim is reported.
 4. **Designation collisions are resolved.** Older versions did not forbid two segments of a layer from carrying the same designation (§4.1), and flattening creates more: a migrated group and the leaf that was its unresolved remainder usually share one (§2). For each designation carried by several segments of a layer, the one with the most `label_values` keeps it — the first in order, among equals — and on the others it moves to the segment's `metadata.duckn.designations`, each move reported. The result satisfies rule 9.
 5. **Ids are made tokens**, as in §6.1 — the `N` of a `Segment_<N>` being the segment's index at this step, after step 3's omissions and before step 6's reordering — each original kept under `metadata.duckn.id` and each change reported, since references to the old id from outside the file no longer resolve.
 6. **Order.** Rule 12 is established layer by layer, by one procedure. The positions in `segments` occupied by a layer's segments stay that layer's; the segments are re-dealt into those positions in this order: repeatedly take, from the layer's segments not yet placed, the first in their existing order whose `label_values` are strictly contained by those of no other segment not yet placed. Segments of different layers keep their relative order, and a layer that already satisfies rule 12 is unchanged. 0.7 resolved the color of an uncolored leaf from the *first* group in document order that contained it; 0.8 takes the *topmost* containing segment that has a color, which after this step is the most specific one. The two agree unless a 0.7 file listed a broader colored group before a narrower colored one; the migration reports each *(layer, value)* whose color resolves differently.

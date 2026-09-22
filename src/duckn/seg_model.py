@@ -94,10 +94,10 @@ class Segment(BaseModel):
 
     id: str
     name: str | None = None
-    # Exactly one of the two (rule 11a): the values listed, or the segments
-    # this one is the union of. `members` is a spelling of a value set: the
-    # extension resolves it on construction, and `values` answers the same
-    # for both.
+    # At least one of the two (rule 11a): the values that are this segment's
+    # directly, and the segments whose values are also its own. Its effective
+    # value set is the union; the extension resolves it on construction, and
+    # `values` answers with it.
     label_values: Annotated[list[int], Field(min_length=1)] | None = None
     members: Annotated[list[str], Field(min_length=1)] | None = None
     role: Literal["background", "unknown"] | None = None
@@ -140,9 +140,9 @@ class Segment(BaseModel):
 
     @model_validator(mode="after")
     def _one_spelling(self) -> "Segment":
-        if (self.label_values is None) == (self.members is None):
+        if self.label_values is None and self.members is None:
             raise ValueError(
-                f"segment {self.id!r} has exactly one of label_values and members"
+                f"segment {self.id!r} has label_values, members, or both"
             )
         if self.members is not None and self.role is not None:
             # a background or an unknown region is not a union of structures (rule 11c)
@@ -153,7 +153,7 @@ class Segment(BaseModel):
     def is_resolved(self) -> bool:
         """Whether this segment's values are known: always for ``label_values``, and
         for ``members`` once an extension resolved them (rule 11c held)."""
-        return self.label_values is not None or self._resolved is not None
+        return self.members is None or self._resolved is not None
 
     @property
     def effective_layer(self) -> int:
@@ -162,12 +162,13 @@ class Segment(BaseModel):
     @property
     def values(self) -> frozenset[int]:
         """The segment's effective values as a set: ``label_values`` read as a
-        set (rule 11b), or a ``members`` segment's resolved union. Empty for a
+        set (rule 11b), together with its members' resolved values. A
         ``members`` segment that has not been resolved (rule 11c failed, or the
-        segment was built outside an extension)."""
-        if self.label_values is not None:
-            return frozenset(self.label_values)
-        return self._resolved if self._resolved is not None else frozenset()
+        segment was built outside an extension) contributes only its own."""
+        own = frozenset(self.label_values or ())
+        if self.members is None:
+            return own
+        return own | (self._resolved if self._resolved is not None else frozenset())
 
     @property
     def sorted_values(self) -> list[int]:
@@ -225,6 +226,7 @@ def resolve_members(segments: Sequence[Segment]) -> dict[str, str]:
     done: dict[int, frozenset[int]] = {}
 
     def resolve(seg: Segment, path: tuple[str, ...]) -> frozenset[int] | None:
+        """The union of the segment's own values and its members'."""
         if seg.members is None:
             return frozenset(seg.label_values or ())
         if id(seg) in done:
@@ -235,7 +237,7 @@ def resolve_members(segments: Sequence[Segment]) -> dict[str, str]:
         if len(set(seg.members)) != len(seg.members):
             failed[seg.id] = "members are distinct"
             return None
-        out: set[int] = set()
+        out: set[int] = set(seg.label_values or ())
         for ref in seg.members:
             member = by_id.get(ref)
             if member is None:
@@ -257,7 +259,9 @@ def resolve_members(segments: Sequence[Segment]) -> dict[str, str]:
 
     for seg in segments:
         if seg.members is not None:
-            seg._resolved = resolve(seg, ())
+            got = resolve(seg, ())
+            # what the members contribute; `values` adds the segment's own
+            seg._resolved = None if got is None else got - frozenset(seg.label_values or ())
     return failed
 
 
@@ -612,9 +616,9 @@ def validate_seg_extension(
         info = np.iinfo(np.dtype(dtype))
     unresolved = resolve_members(ext.segments)
     for i, seg in enumerate(ext.segments):
-        if seg.members is not None:
-            if seg.id in unresolved:
-                out.append(_err("rule-11c", about(i, seg), unresolved[seg.id]))
+        if seg.members is not None and seg.id in unresolved:
+            out.append(_err("rule-11c", about(i, seg), unresolved[seg.id]))
+        if seg.label_values is None:
             continue
         values = seg.label_values
         bad = (

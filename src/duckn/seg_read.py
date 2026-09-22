@@ -122,7 +122,11 @@ def migrate_seg_extension(raw: dict[str, Any]) -> tuple[dict[str, Any], list[Dia
             # integers of its own. Otherwise the value set is written out.
             if graph.keeps_members(index):
                 seg["members"] = list(graph.members[index])
-                seg.pop("label_values", None)
+                own = sorted(v for _, v in graph.own[index])
+                if own:
+                    seg["label_values"] = own
+                else:
+                    seg.pop("label_values", None)
             else:
                 seg["label_values"] = values
                 seg.pop("members", None)
@@ -272,11 +276,11 @@ class _Graph:
         return order if visit(index) else None
 
     def keeps_members(self, index: int) -> bool:
-        """Whether a group may stay a `members` segment in 0.9: it lists no integers of
-        its own, and no member, transitively, has a role (a role-bearing member's values
-        would have been subtracted, which `members` cannot say)."""
+        """Whether a group may stay a `members` segment in 0.9: no member, transitively,
+        has a role (a role-bearing member's values would have been subtracted, which
+        `members` cannot say). Integers of its own stay in `label_values` beside them."""
         closure = self._closure(index)
-        if closure is None or self.own[index]:
+        if closure is None:
             return False
         return not any(self.has_role[i] for i in closure if i != index)
 
@@ -330,11 +334,11 @@ def _colors_as_0_7_resolved_them(segs: list[dict[str, Any]]) -> dict[tuple[int, 
 
 
 def _values_of(seg: dict[str, Any], segs: list[dict[str, Any]]) -> set[int]:
-    """A migrated segment's value set, a `members` one resolved against `segs`."""
-    if isinstance(seg.get("label_values"), list):
-        return set(seg["label_values"])
+    """A migrated segment's value set: its own `label_values` and, resolved against
+    `segs`, its `members`'."""
     by_id = {s.get("id"): s for s in segs}
-    out: set[int] = set()
+    own = seg.get("label_values")
+    out: set[int] = {v for v in own if _is_int(v)} if isinstance(own, list) else set()
     seen: set[str] = set()
     todo = list(seg.get("members") or [])
     while todo:
@@ -430,8 +434,8 @@ def _refusals_in_raw(data: Any) -> list[Diagnostic]:
         about = About.segment(seg["id"])
         if seg.get("role") not in (None, "background", "unknown"):
             err("rule-8a", about, f"role {seg.get('role')!r}")
-        if (seg.get("label_values") is None) == (seg.get("members") is None):
-            err("rule-11a", about, "exactly one of label_values and members")
+        if seg.get("label_values") is None and seg.get("members") is None:
+            err("rule-11a", about, "label_values, members, or both")
         if seg.get("members") is not None and seg.get("role") is not None:
             err("rule-11c", about, "a members segment has no role")
         values = seg.get("label_values")

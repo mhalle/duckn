@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.1 — 2026-09-22
+
+### Changed — file format (seg 0.9, additive)
+- A segment may have both `label_values` and `members`: its effective value set is the
+  union. An interior structure of a hierarchy is then its own value plus its children, and
+  no segment has to be invented for the voxels no child claims. Migration keeps a 0.6 or 0.7
+  group's own integers beside its members. Nothing that was valid becomes invalid; the
+  extension's version stays 0.9.
+
 ## 0.5.0 — 2026-09-22
 
 ### Changed — file format: seg 0.9

@@ -475,11 +475,11 @@ ATLAS = [
 
 
 class TestMembers:
-    def test_one_spelling_per_segment(self):
-        with pytest.raises(ValidationError, match="exactly one"):
-            Segment(id="a", label_values=[1], members=["b"])
-        with pytest.raises(ValidationError, match="exactly one"):
+    def test_at_least_one_spelling_per_segment(self):
+        with pytest.raises(ValidationError, match="or both"):
             Segment(id="a")
+        both = Segment(id="a", label_values=[1], members=["b"])
+        assert both.values == frozenset({1}) and not both.is_resolved
         with pytest.raises(ValidationError):
             Segment(id="a", members=[])
 
@@ -543,6 +543,24 @@ class TestMembers:
         ext.segments[0].label_values = [1, 7, 9]
         out, _ = normalized_for_writing(ext)
         assert out.segments[1].sorted_values == [1, 7, 9]
+
+    def test_own_values_and_members_are_a_union(self):
+        """An interior structure is its own value plus its children: no segment is
+        invented for the voxels no child claims."""
+        ext = _ext([{"id": "184", "label_values": [184], "members": ["68", "667"],
+                     "color": "#268f45"},
+                    {"id": "68", "label_values": [68]}, {"id": "667", "label_values": [667]}])
+        top = ext.segments[0]
+        assert top.sorted_values == [68, 184, 667] and top.is_resolved
+        assert topmost_for(ext, 184).id == "184" and topmost_for(ext, 68).id == "68"
+        assert color_map(ext) == {68: "#268f45", 184: "#268f45", 667: "#268f45"}
+        assert validate_seg_extension(ext, dtype="uint16", fill_value=0) == []
+        assert ext.model_dump(exclude_none=True)["segments"][0] == {
+            "id": "184", "label_values": [184], "members": ["68", "667"], "color": "#268f45"}
+        # rules 11a/11b still apply to the values it lists
+        bad = _ext([{"id": "u", "label_values": [3, 1], "members": ["a"]},
+                    {"id": "a", "label_values": [2]}])
+        assert _codes(validate_seg_extension(bad)) == [("rule-11b", _seg("u"))]
 
     def test_fractional_has_no_members(self):
         ext = _ext([{"id": "a", "label_values": [1]}, {"id": "u", "members": ["a"], "layer": 1}],
