@@ -529,7 +529,7 @@ def test_source_representation_key_spelling_preserved():
     assert "Segmentation_MasterRepresentation" not in flat
 
 
-def test_unmodelled_seg_keys_survive_round_trip():
+def test_unmodeled_seg_keys_survive_round_trip():
     """Keys the model doesn't represent are consumed on parse — don't lose them."""
     kv = {
         "Segment0_ID": "S1",

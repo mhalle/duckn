@@ -1,5 +1,5 @@
 /**
- * Behaviour of the duckn value-transform chain, mirroring the Python tests
+ * Behavior of the duckn value-transform chain, mirroring the Python tests
  * in tests/test_value_transforms.py so the two implementations cannot drift.
  *
  * Run: npm test  (in js/duckn-cornerstone)

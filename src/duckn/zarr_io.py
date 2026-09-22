@@ -50,7 +50,7 @@ def open_store(path: str | Path, *, mode: str = "r", overwrite: bool = False):
             try:
                 store.close()
             except AttributeError:
-                pass  # ZipStore uninitialised (no data written)
+                pass  # ZipStore uninitialized (no data written)
     else:
         yield zarr.storage.LocalStore(str(path))
 

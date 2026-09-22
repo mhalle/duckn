@@ -303,7 +303,7 @@ segmentation specification's relationship to its own implementation.
   not in.
 - **`duckn.io` transposed NRRD arrays** relative to their header geometry.
   Round trips through `duckn.io` alone looked correct because the read and
-  write errors cancelled.
+  write errors canceled.
 
 Convention version is now 1.1 (adds the `lut` value transform). Extension
 versions are independent; `seg` is 0.6.

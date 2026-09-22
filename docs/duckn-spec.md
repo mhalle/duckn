@@ -491,7 +491,7 @@ This section defines what stored values mean, what a reader owes a caller, and w
 
 ### 4.1 Encoding and Quantity
 
-An array holds one physical quantity — Hounsfield units, millimetres, a probability. `sample_units` names that quantity. `value_transforms` describes only how the quantity is *encoded* in the stored values.
+An array holds one physical quantity — Hounsfield units, millimeters, a probability. `sample_units` names that quantity. `value_transforms` describes only how the quantity is *encoded* in the stored values.
 
 These are independent. `uint16` plus a linear transform and `float32` with no transform are two encodings of the same quantity; neither is more correct, and both carry the same `sample_units`. A change of encoding never changes `sample_units`, and a change of quantity is not an encoding change at all.
 
