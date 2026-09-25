@@ -261,7 +261,10 @@ def __getattr__(name: str) -> object:
 
         return dicom_to_zarr_streaming
     if name == "io":
-        from . import io
+        # Not ``from . import io``: that statement asks this module for ``io`` first, which
+        # lands back here and recurses until the stack runs out, in any process that had not
+        # imported ``duckn.io`` already.
+        import importlib
 
-        return io
+        return importlib.import_module(".io", __name__)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

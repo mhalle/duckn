@@ -1171,7 +1171,7 @@ class TestPerSampleMetadata:
         )
         meta = build_duckn_metadata(geom, datasets, anonymized=None, include_tags=True)
 
-        # Varying tags should be in per-sample extensions
+        # Varying tags should be in per-sample metadata
         slice_axis = meta.axes[0]
         assert slice_axis.samples is not None
         s0_ext = slice_axis.samples[0].metadata
@@ -1211,7 +1211,7 @@ class TestPerSampleMetadata:
         meta = build_duckn_metadata(geom, datasets, anonymized=None, include_tags=True)
         dicom_ext = meta.extensions["dicom"]
         assert "ImagePositionPatient" not in dicom_ext.get("tags", {})
-        # Also not in per-sample extensions
+        # Also not in per-sample metadata
         slice_axis = meta.axes[0]
         if slice_axis.samples:
             for s in slice_axis.samples:

@@ -1738,7 +1738,7 @@ def build_duckn_metadata(
 
     if include_tags:
         series_tags = _dataset_to_tags(ds0, _include_binary=include_binary)
-        # Remove varying keys — they're in per-sample extensions
+        # Remove varying keys — they are in per-sample metadata
         for key in varying_keys:
             series_tags.pop(key, None)
 

@@ -14,6 +14,10 @@
   written stay valid.
 - New draft `keyvalues-extension.md`: `keyvalues` is a compatibility store for NRRD header
   pairs no extension claims. Values are strings only, and it is not a place for new metadata.
+- dicom-spec §6.1 and §6.3: per-slice DICOM tags go in `samples[i].metadata.dicom`, the
+  per-sample metadata dict the convention defines. The sections said
+  `samples[i].extensions.dicom`, which `SampleMetadata` refuses and duckn's own converter never
+  wrote.
 
 ### Changed — Python API
 - `resample` keeps only the registered extensions it knows stay true (`seg`, `dwmri`,
@@ -25,6 +29,18 @@
   export reads both forms; an unversioned object with a pair named `version` or `entries` is
   still exported, and is reported as `keyvalues-legacy-ambiguous`. `keyvalue_entries()` reads
   the pairs from either form.
+- New `duckn.dicom_tags`: `tags_from_sitk(per_slice)` converts the per-slice dictionaries
+  SimpleITK's `ImageSeriesReader` reports into the `dicom` extension's encoding, split into
+  series-level `tags` and per-slice dicts for `samples[i].metadata.dicom`, following
+  dicom-spec §2, §4, §6 and §9. `to_sitk_strings` restores series tags onto a SimpleITK image.
+  pydicom is used only for its data dictionary (the `dicom` extra). Unlike the pydicom
+  converter, it keeps per-slice identifiers such as `SOPInstanceUID` (§6.3 names them) and
+  leaves out Pixel Spacing, Spacing Between Slices, Slice Thickness, Bits Stored and High Bit,
+  which §2 lists as captured by convention fields. It was written for haversack's cached input
+  copies.
+- `from duckn import io` no longer recurses without end in a process that had not imported
+  `duckn.io` yet: the lazy attribute imported the submodule with `from . import io`, which asks
+  the package for `io` first.
 
 ## 0.5.1 — 2026-09-22
 

@@ -405,11 +405,11 @@ DICOM metadata exists at multiple levels of the information model hierarchy (pat
 
 ### 6.1 Tag Splitting
 
-Tags that are identical across all instances in the series belong in the top-level `dicom.tags`. Tags that vary per instance belong in per-sample extensions on the slice axis.
+Tags that are identical across all instances in the series belong in the top-level `dicom.tags`. Tags that vary per instance belong in per-sample metadata on the slice axis.
 
-The converter compares each tag across all source datasets. If a tag has the same value in every instance, it goes in the series-level `tags`. If it differs, it goes in `samples[i].extensions.dicom` on the slice axis.
+The converter compares each tag across all source datasets. If a tag has the same value in every instance, it goes in the series-level `tags`. If it differs, it goes in `samples[i].metadata.dicom` on the slice axis.
 
-Tags that are losslessly captured by convention fields are excluded entirely (see §2 and §9). For example, `ImagePositionPatient` is not stored in `tags` or per-sample extensions because the per-slice spatial position is fully captured by the `samples` array's `position` or `origin` fields on the slice axis.
+Tags that are losslessly captured by convention fields are excluded entirely (see §2 and §9). For example, `ImagePositionPatient` is not stored in `tags` or per-sample metadata because the per-slice spatial position is fully captured by the `samples` array's `position` or `origin` fields on the slice axis.
 
 ### 6.2 Per-Sample Geometry
 
@@ -427,9 +427,9 @@ The converter chooses between them automatically:
 
 If all samples are uniformly spaced (positions match the `space_direction` model within tolerance), `samples` is omitted entirely.
 
-### 6.3 Per-Sample Extensions
+### 6.3 Per-Sample Metadata
 
-Per-instance DICOM tags that vary across slices are stored in `samples[i].extensions.dicom` on the slice axis:
+Per-instance DICOM tags that vary across slices are stored in `samples[i].metadata.dicom` on the slice axis - the per-sample open metadata dict the convention defines, keyed by standard name (duckn convention §3.2, `samples`). A sample has no `extensions` field; earlier drafts of this section put the tags there, which no reader accepted and no converter wrote:
 
 ```json
 {
@@ -441,7 +441,7 @@ Per-instance DICOM tags that vary across slices are stored in `samples[i].extens
   "samples": [
     {
       "position": 0.0,
-      "extensions": {
+      "metadata": {
         "dicom": {
           "InstanceNumber": 1,
           "AcquisitionTime": "143025.000"
@@ -450,7 +450,7 @@ Per-instance DICOM tags that vary across slices are stored in `samples[i].extens
     },
     {
       "position": 2.5,
-      "extensions": {
+      "metadata": {
         "dicom": {
           "InstanceNumber": 2,
           "AcquisitionTime": "143025.250"
@@ -459,7 +459,7 @@ Per-instance DICOM tags that vary across slices are stored in `samples[i].extens
     },
     {
       "position": 5.5,
-      "extensions": {
+      "metadata": {
         "dicom": {
           "InstanceNumber": 3,
           "AcquisitionTime": "143025.500"
