@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.2 — 2026-09-25
 
 ### Changed — specification
 - duckn-spec §3.1: an unknown extension is ignored when interpreting the array, but ignoring
