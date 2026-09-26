@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.3 — 2026-09-26
 
 ### Changed — specification (dicom-spec)
 The spec contradicted itself in places, and the two converters followed different halves of it.
