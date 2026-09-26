@@ -185,7 +185,7 @@ def test_datasets_keep_sequences_binary_and_private_tags(tmp_path):
     assert not {"OverlayData", "WaveformData", "PixelData"} & (series.keys() | slices[0].keys())
     assert not any(k.startswith("6000") or k.startswith("5400") for k in series)
     # a native transfer syntax says nothing about the values' history: no lossy_compressed
-    assert ext == {"source_transfer_syntax": "1.2.840.10008.1.2.1"}
+    assert ext == {"source_transfer_syntax": "1.2.840.10008.1.2.1", "stored_values": False}
 
 
 def test_datasets_exclude_what_the_convention_captures_and_the_file_meta(tmp_path):
@@ -232,7 +232,7 @@ def test_datasets_a_tag_some_slices_lack_is_per_slice_and_an_iterable_is_enough(
     assert series == {"Modality": "MR"}
     assert slices == [{"EchoTime": 5.0, "InstanceNumber": 0}, {"InstanceNumber": 1},
                       {"EchoTime": 5.0, "InstanceNumber": 2}]
-    assert ext == {}
+    assert ext == {"stored_values": False}
     assert dt.tags_from_datasets([]) == ({}, [], {})
 
 
@@ -245,6 +245,37 @@ def test_bits_stored_only_where_the_array_holds_stored_values(tmp_path):
     assert not {"BitsStored", "HighBit"} & dropped.keys()
     assert not {"BitsAllocated", "PixelRepresentation"} & kept.keys()   # always the dtype's
     assert kept["PhotometricInterpretation"] == "MONOCHROME2"          # always kept
+
+
+def test_nothing_in_stored_units_is_stated_of_rescaled_values(tmp_path):
+    """Real GE and Siemens CT state Pixel Padding Value -2000 in STORED units; in rescaled
+    values the padding is -3024. Nothing stored-valued may reach tags of such an array."""
+    import pydicom
+    from pydicom.dataset import Dataset
+    from pydicom.sequence import Sequence
+    files = sorted(_series(tmp_path / "s").iterdir())
+    for i, f in enumerate(files):
+        ds = pydicom.dcmread(f)
+        ds.add_new(0x00280120, "SS", -2000)                 # Pixel Padding Value
+        ds.add_new(0x00280106, "SS", -2000)                 # Smallest Image Pixel Value
+        ds.add_new(0x00280107, "SS", 3000 + i)              # Largest, per slice
+        rw = Dataset()
+        rw.RealWorldValueSlope, rw.RealWorldValueIntercept = 1.0, -1024.0
+        ds.RealWorldValueMappingSequence = Sequence([rw])
+        ds.PlanarConfiguration = 0
+        ds.add_new(0x60000010, "US", 3)                      # Overlay Rows
+        ds.add_new(0x60000102, "US", 12)                     # Overlay Bit Position
+        ds.save_as(f, enforce_file_format=True)
+    stored = {"PixelPaddingValue", "SmallestImagePixelValue", "LargestImagePixelValue",
+              "RealWorldValueMappingSequence", "BitsStored", "HighBit"}
+    s, sl, ext = dt.tags_from_files(files)
+    everything = s.keys() | {k for x in sl for k in x}
+    assert not (stored | {"PlanarConfiguration", "OverlayRows", "OverlayBitPosition"}) & everything
+    assert ext["stored_values"] is False
+    s, sl, ext = dt.tags_from_files(files, stored_values=True)
+    everything = s.keys() | {k for x in sl for k in x}
+    assert stored <= everything and ext["stored_values"] is True
+    assert not {"PlanarConfiguration", "OverlayRows", "OverlayBitPosition"} & everything
 
 
 def test_file_meta_is_never_in_tags(tmp_path):

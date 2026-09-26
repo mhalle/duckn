@@ -17,6 +17,13 @@ Settled (2026-09-26):
   `SliceLocation` map a slice back to its source instance.
 - **An empty value is not a redaction** (§4.3, §7): empty text is `""`, an empty number is left
   out, an empty sequence is `[]`, at every depth; `null` stays reserved for removed values.
+- **Tags never contradict the array** (§5.10, §3.1, §10.1): nothing in stored-value units is
+  written of an array that holds rescaled values - Bits Stored / High Bit, the pixel value
+  ranges, Pixel Padding Value / Range Limit, Real World Value Mapping. Real GE and Siemens CT
+  state Pixel Padding Value -2000 in stored units; rescaled, the padding is -3024. New
+  extension field `stored_values` says which kind the array holds, so a private element's
+  units can be judged by a reader of the file alone. Planar Configuration and the overlay and
+  curve groups are always left out.
 - **The file meta group (0002) is never in `tags`** (§9, §3.1); `source_transfer_syntax` carries
   its one fact about the data, written only when every file states the same one.
 - Bulk data spelled out (§4.5, §9): pixel data in all three forms and its offset tables, overlay

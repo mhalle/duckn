@@ -80,17 +80,28 @@ EXCLUDED = frozenset({
     0x00200032, 0x00200037,                  # Image Position / Orientation (Patient)
     0x00280010, 0x00280011, 0x00280008,      # Rows, Columns, Number of Frames
     0x00280100, 0x00280103,                  # Bits Allocated, Pixel Representation (the dtype)
+    0x00280006,                              # Planar Configuration (the axes give the layout)
     0x00281052, 0x00281053, 0x00281054,      # Rescale Intercept, Slope, Type
     0x00283000, 0x00283002, 0x00283006,      # Modality LUT Sequence, LUT Descriptor, LUT Data
     0x00283004,                              # Modality LUT Type (-> sample_units)
     0x00280030, 0x00180088,                  # Pixel Spacing, Spacing Between Slices
     0x00180050,                              # Slice Thickness (-> axes[i].thickness)
 })
-#: Bits Stored and High Bit: true of the array only while it holds the source's stored values
-#: (dicom-spec §5.10) - 12 significant bits in a 16-bit container, which the dtype does not say.
-#: A caller whose reader rescaled or widened the values leaves them out (``stored_values=False``,
-#: the default: never assert what may be stale).
-STORED_ENCODING = frozenset({0x00280101, 0x00280102})
+#: Attributes stated in STORED-value units or about the stored encoding: true of the array only
+#: while it holds the source's stored values (dicom-spec §5.10) - 12 significant bits in a
+#: 16-bit container, the padding value, the pixel range, the real-world mapping FROM stored
+#: values. A caller whose reader rescaled or widened the values leaves them out
+#: (``stored_values=False``, the default: never assert what may be stale). Found on real data
+#: (2026-09-26): GE and Siemens CT state Pixel Padding Value -2000 in stored units; in a copy
+#: of rescaled values the padding is -3024, and masking -2000 would have masked nothing.
+STORED_ENCODING = frozenset({
+    0x00280101, 0x00280102,                  # Bits Stored, High Bit
+    0x00280106, 0x00280107,                  # Smallest / Largest Image Pixel Value
+    0x00280108, 0x00280109,                  # Smallest / Largest Pixel Value in Series
+    0x00280110, 0x00280111,                  # Smallest / Largest Image Pixel Value in Plane
+    0x00280120, 0x00280121,                  # Pixel Padding Value, Pixel Padding Range Limit
+    0x00409096,                              # Real World Value Mapping Sequence
+})
 #: SimpleITK's keys for the two excluded attributes whose facts a caller moves into convention
 #: fields (dicom-spec §2): Slice Thickness -> the slice axis' ``thickness`` (or per sample),
 #: Rescale Type -> the array's ``sample_units``.
@@ -174,8 +185,12 @@ def encode(tag: int, text: str) -> Any:
 
 
 def _left_out(tag: int, stored_values: bool) -> bool:
-    """Whether a top-level attribute stays out of ``tags`` (§2, §5.10, §9)."""
-    return (tag in EXCLUDED or (tag & 0xFFFF) == 0 or (tag >> 16) == 0x0002 or _bulk(tag)
+    """Whether a top-level attribute stays out of ``tags`` (§2, §5.10, §9). The overlay and
+    curve groups go whole: their data is never in the array, and an overlay's bit position
+    would point into pixel bits the array does not keep."""
+    group = tag >> 16
+    return (tag in EXCLUDED or (tag & 0xFFFF) == 0 or group == 0x0002 or _bulk(tag)
+            or 0x5000 <= group <= 0x50FF or 0x6000 <= group <= 0x60FF
             or (not stored_values and tag in STORED_ENCODING))
 
 
@@ -300,8 +315,10 @@ def tags_from_datasets(datasets, *, stored_values: bool = False, binary: bool = 
     time. The split is :func:`tags_from_sitk`'s: a value equal on every dataset is series-level,
     anything else per slice (§6.1). ``stored_values`` as there (§5.10). ``extension_fields``
     holds what §3.1 asks of the files: ``source_transfer_syntax`` when every file states the
-    same one, and ``lossy_compressed: true`` when any file says its values were lossy compressed
-    (never ``false``: a native transfer syntax says nothing about the values' history)."""
+    same one, ``lossy_compressed: true`` when any file says its values were lossy compressed
+    (never ``false``: a native transfer syntax says nothing about the values' history), and
+    ``stored_values`` as the caller said - so a reader of the file alone knows whether anything
+    stated in stored-value units (a private scale factor, say) is about these values."""
     from .dicom_convert import _get_transfer_syntax, _is_lossy_compressed
     per: list[dict[str, Any]] = []
     syntaxes: set = set()
@@ -321,7 +338,7 @@ def tags_from_datasets(datasets, *, stored_values: bool = False, binary: bool = 
         else:
             varying.append(k)
     slices = [{k: d[k] for k in varying if k in d} for d in per]
-    ext: dict[str, Any] = {}
+    ext: dict[str, Any] = {"stored_values": bool(stored_values)}
     if len(syntaxes) == 1 and None not in syntaxes:
         ext["source_transfer_syntax"] = next(iter(syntaxes))
     if lossy:

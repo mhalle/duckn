@@ -126,6 +126,16 @@ Omit when unknown. Absent means "not known to be lossy", not "known to be lossle
 
 Where the source records them, `LossyImageCompressionRatio` and `LossyImageCompressionMethod` belong in `tags` alongside the other provenance attributes.
 
+#### `stored_values`
+
+Boolean. `true` when the array holds the source's **stored** pixel values — as the files encoded them, before the Modality LUT stage (whose mapping, if any, is then in `value_transforms`). `false` when it holds values *after* that stage: rescaled to real-world units, widened to a larger type, or converted to floating point, as many readers hand them over.
+
+```json
+"stored_values": false
+```
+
+It decides which attributes may appear in `tags` at all (§5.10): nothing stated in stored-value units is written when it is `false`. It is also the one statement a reader of the file alone needs about everything this extension cannot vet — a private element in stored-value units (a vendor scale factor, say) describes values the array does not hold when it is `false`. Converters should write it whenever they write `tags`; absent means unknown.
+
 #### `standard_version`
 
 The DICOM standard edition the source data conforms to (e.g., `"2024a"`). Useful when keyword definitions may have changed between editions.
@@ -403,7 +413,18 @@ These are the most commonly anonymized fields. When anonymized, include them wit
 
 `BitsStored`, `HighBit`, `PhotometricInterpretation`, `PlanarConfiguration` and `SamplesPerPixel` have no such counterpart: they record things the Zarr dtype does not say, such as 12 significant bits in a 16-bit container or an inverted display polarity, and a DICOM writer needs them to reconstruct a faithful object. They stay, with the caveat and the rule below.
 
-**`BitsStored` and `HighBit` stay only while the array holds the source's stored values.** They describe stored values, so they follow the same test as the rescale attributes: a writer that keeps the stored values (and describes their mapping in `value_transforms`) keeps them; a writer whose array holds the values *after* the Modality LUT stage — rescaled, widened to a larger type, or floating point, as a reader such as SimpleITK hands them over — leaves them out, because "12 bits stored" is no longer true of anything in the array. `BitsAllocated` and `PixelRepresentation` are always excluded: in both cases the Zarr dtype states them.
+**Nothing in stored-value units is written about an array that does not hold stored values.** The tags must never contradict what a reader gets from the array itself. Attributes stated in stored-value units, or about the stored encoding, follow the same test as the rescale attributes: a writer that keeps the stored values (`stored_values: true`, the mapping in `value_transforms`) keeps them; a writer whose array holds the values *after* the Modality LUT stage (`stored_values: false`) leaves them out, because they are no longer true of anything in the array. They are:
+
+| Keyword | Why it is in stored units |
+|---|---|
+| `BitsStored`, `HighBit` | Describe the stored encoding |
+| `SmallestImagePixelValue`, `LargestImagePixelValue`, `SmallestPixelValueInSeries`, `LargestPixelValueInSeries`, `SmallestImagePixelValueInPlane`, `LargestImagePixelValueInPlane` | Ranges of stored values |
+| `PixelPaddingValue`, `PixelPaddingRangeLimit` | Stored values marking padding |
+| `RealWorldValueMappingSequence` | Maps *from* stored values |
+
+The padding value is the case that makes this a rule rather than tidiness: CT scanners commonly state `PixelPaddingValue` −2000 with a rescale intercept of −1024, so in an array of Hounsfield units the padding is −3024, and a reader masking −2000 would mask nothing.
+
+`BitsAllocated` and `PixelRepresentation` are always excluded: the Zarr dtype states them. `PlanarConfiguration` is always excluded too: it describes how the source interleaved color samples in its bytes, and the array's layout is given by its axes. The VOI stage (`WindowCenter`, `WindowWidth`, `VOILUTSequence`) is in real-world units and stays (§11).
 
 **Caveat — they describe the source encoding.** A decoder may hand back a different layout than the source stored: JPEG-compressed color is commonly `YBR_FULL_422` in the tag while `pixel_array` returns RGB, and `BitsStored` ceases to describe an array that has been materialized to floating point. Writers should normalize such tags to the decoded array where they can, and readers must treat the convention fields as authoritative for anything the two both appear to describe (§2).
 
@@ -748,11 +769,12 @@ A CT volume that includes coded anatomy using DICOM's standard sequence pattern:
 | Image Orientation (Patient) | Losslessly captured by `axes[i].space_direction` |
 | Rows, Columns, Number of Frames | Losslessly captured by Zarr `shape` |
 | Bits Allocated, Pixel Representation | Losslessly captured by Zarr `data_type` |
-| Bits Stored, High Bit — *only when the array does not hold the source's stored values* | No longer true of the array (§5.10) |
+| Planar Configuration | The array's layout is given by its axes |
+| Bits Stored, High Bit, pixel value ranges, Pixel Padding Value / Range Limit, Real World Value Mapping — *when `stored_values` is `false`* | Stated in stored-value units, which the array does not hold (§5.10) |
 | Rescale Slope, Rescale Intercept, Rescale Type | Captured by `value_transforms` and `sample_units`, which are authoritative for the array as written |
 | Modality LUT Sequence, LUT Descriptor, LUT Data | Captured by the `lut` value transform |
 | Float / Double Float Pixel Data, Extended Offset Table | Bulk data: the Zarr array itself |
-| Overlay Data, Curve Data (60xx,3000 / 50xx,3000) | Bulk data; a separate array if needed |
+| Overlay and Curve groups (60xx, 50xx), whole | Their data is never in the array (a separate array if needed), and an overlay's bit position points into stored pixel bits |
 | Waveform Data | Bulk data; out of scope (not imaging) |
 | File Meta Information (group 0002) | Describes each file, not the data; its transfer syntax is `source_transfer_syntax` (§3.1) |
 | Group Length tags | Encoding artifact, per PS3.18 |
@@ -772,6 +794,8 @@ Everything in this extension describes a **source DICOM object**. That is what m
 A duckn array converted from DICOM is not the DICOM object; it is a re-encoding of that object's pixels together with a description of where they came from. So long as the array remains a faithful re-encoding — the same quantity on the same sampling grid — the extension is a true statement about its origin, and the convention fields are a true statement about the array itself. The two do not compete, because they describe different things (§2).
 
 Consequently, a reader must never consult this extension to interpret the array's values, geometry, or layout. Where an attribute appears to say something about those, the convention fields are authoritative and the tag is history.
+
+A writer's side of the same bargain: what it writes must not contradict the array. Public attributes it can judge, and it leaves out what the array has made untrue (§5.10). Private elements it cannot judge — their meaning is the vendor's — so it states `stored_values` (§3.1), which is what a private element's stored-value units would have to be checked against.
 
 ### 10.2 Derived arrays
 

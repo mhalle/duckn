@@ -1624,6 +1624,7 @@ def build_duckn_metadata(
 
         ext_kwargs["anonymized"] = anon if anon else None
         ext_kwargs["source_transfer_syntax"] = tag_fields.get("source_transfer_syntax")
+        ext_kwargs["stored_values"] = tag_fields.get("stored_values")
         ext_kwargs["tags"] = series_tags if series_tags else None
 
     # Lossiness is recorded even when tags are excluded. The transfer syntax

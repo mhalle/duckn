@@ -741,6 +741,11 @@ class DicomExtension(BaseModel):
     # source_transfer_syntax is — a reader should not have to search a tag
     # dictionary to learn the data is degraded.
     lossy_compressed: bool | None = None
+    # True when the array holds the source's STORED pixel values (before the
+    # Modality LUT stage); False when it holds values after it (rescaled,
+    # widened). Says whether anything the source states in stored-value units
+    # - a private scale factor - is about these values (dicom-spec §3.1).
+    stored_values: bool | None = None
     standard_version: str | None = None
     schema_url: str | None = Field(None, alias="schema")
     tags: dict[str, Any] | None = None
