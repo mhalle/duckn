@@ -93,6 +93,7 @@ def from_sitk(
             else SpaceName.LEFT_POSTERIOR_SUPERIOR
         )
         new_meta = DucknMetadata(
+            version="1.0",   # the convention's own rule: always present (duckn-spec §3.1)
             space=default_space,
             space_origin=[0.0] * ndim,
             axes=[

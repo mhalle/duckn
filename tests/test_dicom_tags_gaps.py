@@ -80,3 +80,12 @@ def test_a_file_without_the_preamble_is_read(tmp_path):
     assert p.read_bytes()[128:132] != b"DICM"
     s, _, _ = dt.tags_from_files([p])
     assert s["Modality"] == "CT"
+
+
+def test_an_adapters_new_metadata_states_the_convention_version():
+    """duckn-spec §3.1: `version` should always be present; from_sitk wrote none (found
+    checking haversack's input copies against the spec, 2026-09-26)."""
+    SimpleITK = pytest.importorskip("SimpleITK")
+    from duckn.sitk_adapter import from_sitk
+    vol = from_sitk(SimpleITK.Image([3, 3, 3], SimpleITK.sitkInt16))
+    assert vol.metadata.version == "1.0"

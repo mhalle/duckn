@@ -139,6 +139,7 @@ def from_nifti(
         from .models import AxisKind, AxisMetadata, Centering
         flip = np.array([1, 1, 1], dtype=float)  # RAS
         new_meta = DucknMetadata(
+            version="1.0",   # the convention's own rule: always present (duckn-spec §3.1)
             space=SpaceName.RIGHT_ANTERIOR_SUPERIOR,
             space_origin=[0.0, 0.0, 0.0],
             axes=[
