@@ -155,7 +155,7 @@ An object containing DICOM data elements. Each key is a DICOM keyword from PS3.6
   "Modality": "CT",
   "Manufacturer": "GE MEDICAL SYSTEMS",
   "KVP": 120,
-  "PixelSpacing": [0.703, 0.703],
+  "ConvolutionKernel": ["STANDARD"],
   "PatientName": null
 }
 ```
@@ -195,7 +195,9 @@ DICOM values are encoded using JSON-native types. The mapping from DICOM Value R
 | PN (Person Name) | string or null | `"Doe^John"` or `null` if redacted |
 | AT (Attribute Tag) | string | `"00081030"` (uppercase hex) |
 | SQ (Sequence) | array of objects | See §4.4 |
-| OB, OW, OF, OD, OL, OV (binary) | string (base64) | See §4.5 |
+| OB, OW, OF, OD, OL, OV, UN (binary) | string (base64) | See §4.5 |
+
+A value that does not parse as its VR's type — a malformed DS or IS, which real archives carry — is kept as its text, never guessed, and never costs the other attributes their encoding. Empty parts of a numeric multi-value (`"40\\ "`) are dropped, and a numeric attribute with no value at all is left out (§4.3). A private element is encoded by the VR its reader knows; a reader that knows none (SimpleITK's metadata dictionary, for one) gives its text, and a binary float read from such text carries only the digits that reader printed.
 
 **Key differences from PS3.18 Annex F (DICOM JSON Model):**
 
@@ -261,9 +263,9 @@ The **Modality** LUT is the exception: `ModalityLUTSequence`, `LUTDescriptor` an
 DICOM attributes with Value Multiplicity (VM) > 1 are encoded as JSON arrays:
 
 ```json
-"PixelSpacing": [0.703, 0.703],
-"ImagePositionPatient": [-249.5, -249.5, -150.0],
-"ImageOrientationPatient": [1, 0, 0, 0, 1, 0],
+"ImageType": ["ORIGINAL", "PRIMARY", "AXIAL"],
+"ConvolutionKernel": ["STANDARD"],
+"OperatorsName": ["Doe^Jane"],
 "WindowCenter": [40],
 "WindowWidth": [400]
 ```
@@ -407,11 +409,11 @@ These are the most commonly anonymized fields. When anonymized, include them wit
 | `LossyImageCompressionRatio` | DS | Approximate compression ratio |
 | `LossyImageCompressionMethod` | CS | Compression method (e.g. `"ISO_10918_1"`) |
 
-`LossyImageCompression` itself is surfaced as the extension-level `lossy_compressed` field (§3.1) rather than as a tag.
+`LossyImageCompression` is also surfaced as the extension-level `lossy_compressed` field (§3.1), which is what a reader should consult; where the source carries the attribute it stays in `tags` as provenance.
 
 **Value-mapping attributes are excluded; pixel-description attributes are not.** The line runs through whether the duckn convention has an authoritative counterpart. `RescaleSlope`/`RescaleIntercept`/`RescaleType` and the Modality LUT attributes do — `value_transforms` and `sample_units` describe the array's value mapping as written — so carrying the DICOM copies is redundant while the array is unchanged and false once a writer materializes or re-encodes it. They are excluded (§9).
 
-`BitsStored`, `HighBit`, `PhotometricInterpretation`, `PlanarConfiguration` and `SamplesPerPixel` have no such counterpart: they record things the Zarr dtype does not say, such as 12 significant bits in a 16-bit container or an inverted display polarity, and a DICOM writer needs them to reconstruct a faithful object. They stay, with the caveat and the rule below.
+`BitsStored`, `HighBit`, `PhotometricInterpretation` and `SamplesPerPixel` have no such counterpart: they record things the Zarr dtype does not say, such as 12 significant bits in a 16-bit container or an inverted display polarity, and a DICOM writer needs them to reconstruct a faithful object. They stay, with the caveat and the rule below.
 
 **Nothing in stored-value units is written about an array that does not hold stored values.** The tags must never contradict what a reader gets from the array itself. Attributes stated in stored-value units, or about the stored encoding, follow the same test as the rescale attributes: a writer that keeps the stored values (`stored_values: true`, the mapping in `value_transforms`) keeps them; a writer whose array holds the values *after* the Modality LUT stage (`stored_values: false`) leaves them out, because they are no longer true of anything in the array. They are:
 
@@ -439,6 +441,8 @@ DICOM metadata exists at multiple levels of the information model hierarchy (pat
 Tags that are identical across all instances in the series belong in the top-level `dicom.tags`. Tags that vary per instance belong in per-sample metadata on the slice axis.
 
 The converter compares each tag across all source datasets. If a tag has the same value in every instance, it goes in the series-level `tags`. If it differs, it goes in `samples[i].metadata.dicom` on the slice axis.
+
+**A time series** (a time axis before the slice axis) splits each varying tag onto the axis it varies along: a tag whose value depends on the slice alone goes in the slice axis' samples, one that depends on the time point alone in the time axis' samples, and one that varies with both — every instance's `SOPInstanceUID` — belongs to no one sample of either axis and is left out. Stating time point 0's instance identifiers on the slice axis would claim each slice at every time point was one instance.
 
 Nothing that varies is dropped for being "redundant." In particular the instance-level identifiers — `SOPInstanceUID`, `InstanceNumber`, `SliceLocation` — are kept per slice: they are how a reader maps slice *i* of the array back to the source instance it came from, which is what makes the source (still available from its archive) usable from the array.
 
@@ -514,7 +518,7 @@ Common per-instance tags include `InstanceNumber`, `SOPInstanceUID`, `Acquisitio
 - Multi-valued attributes (VM > 1 in PS3.6) must be encoded as JSON arrays, even when only one value is present.
 - Single-valued attributes (VM = 1 in PS3.6) must be bare values, not wrapped in arrays.
 - Sequence attributes must be encoded as arrays of objects, even when containing a single item.
-- When a tag appears in both `tags` and is represented by a convention field (e.g., `SliceThickness` in `tags` and `thickness` on an axis), the convention field is authoritative for processing. The `tags` value is provenance.
+- When a tag appears to state something a convention or extension field also states (e.g., `LossyImageCompression` in `tags` and `lossy_compressed`), the field is authoritative for processing. The `tags` value is provenance. Attributes the convention fields capture outright (§2, §9) are not written to `tags` at all.
 - The `anonymized` flag should be set to `true` when any tags have been redacted. When set, readers should expect `null` values on patient-identifying fields.
 
 ---
@@ -592,8 +596,6 @@ An anonymized chest CT with full acquisition metadata:
             "XRayTubeCurrent": 200,
             "ExposureTime": 570,
             "ConvolutionKernel": ["STANDARD"],
-            "SliceThickness": 5.0,
-            "PixelSpacing": [0.703, 0.703],
             "ReconstructionDiameter": 360.0,
             "GantryDetectorTilt": 0.0,
 
@@ -616,7 +618,7 @@ An anonymized chest CT with full acquisition metadata:
 }
 ```
 
-Note that `SliceThickness` and `PixelSpacing` overlap with convention fields. They are preserved in `tags` for provenance; the convention fields are authoritative. The value-mapping attributes (`RescaleSlope`, `RescaleIntercept`, `RescaleType`) are *not* preserved — they describe the source's pixel encoding, which a duckn writer may legitimately change, so `value_transforms` and `sample_units` are the only record of how this array's values are encoded (§9).
+`SliceThickness` and `PixelSpacing` are not in `tags`: the slice axis' `thickness` and the axes' `space_direction` state them (§2, §9). The value-mapping attributes (`RescaleSlope`, `RescaleIntercept`, `RescaleType`) are *not* preserved — they describe the source's pixel encoding, which a duckn writer may legitimately change, so `value_transforms` and `sample_units` are the only record of how this array's values are encoded (§9).
 
 ### 8.2 MR Brain
 
@@ -653,9 +655,6 @@ A T1-weighted brain MRI with MR-specific acquisition parameters:
       "ReceiveCoilName": "HeadNeck_64",
       "InPlanePhaseEncodingDirection": "ROW",
 
-      "SliceThickness": 1.0,
-      "PixelSpacing": [1.0, 1.0],
-      "SpacingBetweenSlices": 1.0,
 
       "PatientName": "Doe^John",
       "PatientID": "MRN12345",
@@ -704,8 +703,6 @@ A PET volume with radiopharmaceutical information:
       "AttenuationCorrectionMethod": "CT-based",
       "ReconstructionMethod": "PSF+TOF 3i21s",
 
-      "SliceThickness": 2.0,
-      "PixelSpacing": [2.0, 2.0],
 
       "PatientWeight": 75.0,
       "PatientSex": "F",
@@ -778,6 +775,10 @@ A CT volume that includes coded anatomy using DICOM's standard sequence pattern:
 | Waveform Data | Bulk data; out of scope (not imaging) |
 | File Meta Information (group 0002) | Describes each file, not the data; its transfer syntax is `source_transfer_syntax` (§3.1) |
 | Group Length tags | Encoding artifact, per PS3.18 |
+| Pixel Value Transformation Sequence | An Enhanced object's rescale: captured by `value_transforms` |
+| Per-frame Functional Groups Sequence, whole | Per-frame geometry the axes state, in the source's frame order (below) |
+
+**Where DICOM states the rescale and the geometry elsewhere.** A rescale that *varies* across instances cannot be one `value_transforms` entry; the array then holds uncalibrated stored values, `sample_units` is not written, and each slice's `RescaleSlope`, `RescaleIntercept` and `RescaleType` stay in its `samples[i].metadata.dicom` — the only statement of its mapping. An Enhanced object's `PerFrameFunctionalGroupsSequence` is left out whole: it restates per-frame geometry the axes state, in the source's frame order, and its other per-frame values would belong in `samples[i].metadata`, which this version does not map. Its `SharedFunctionalGroupsSequence` is kept with the rules of this section applied at every depth — `PixelMeasuresSequence`'s spacing, `PlaneOrientationSequence`'s orientation and the whole `PixelValueTransformationSequence` (the object's rescale) go, and a macro left with nothing is dropped — so a reader cannot apply the rescale a second time.
 
 Private tags are **kept by default**, under their hex codes, each block with its private creator (§4.1): a converter's output is often the only copy of the header a pipeline keeps, and private elements carry acquisition parameters found nowhere else (diffusion b-values and gradient directions, vendor scale factors).
 

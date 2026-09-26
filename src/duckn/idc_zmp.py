@@ -1041,31 +1041,33 @@ def build_dicomweb_zmp(
             ),
         ]
 
-        # DICOM extension tags
+        # DICOM extension tags: the one conversion (duckn.dicom_tags), from each instance's
+        # PS3.18 JSON as a pydicom dataset - until 2026-09-26 this was a third converter that
+        # followed none of dicom-spec (geometry kept, instance 0's identifiers stated
+        # series-wide, sequences as raw PS3.18 JSON, VM arrays bare). Stored values are what
+        # the store references, with the rescale in value_transforms.
         extensions = None
         if tags:
-            from pydicom.datadict import keyword_for_tag
+            import pydicom
+            from .dicom_tags import tags_from_datasets
 
-            skip_tags = {
-                T["Rows"], T["Columns"], T["BitsAllocated"],
-                T["PixelRepresentation"], T["ImagePositionPatient"],
-                T["ImageOrientationPatient"], T["PixelSpacing"],
-                T["SOPInstanceUID"], T["NumberOfFrames"],
-            }
-            dicom_tags = {}
-            for tag_code, entry in inst0.items():
-                if tag_code in skip_tags:
-                    continue
-                values = entry.get("Value")
-                if values is None:
-                    continue
-                keyword = keyword_for_tag(int(tag_code, 16)) or tag_code
-                dicom_tags[keyword] = values[0] if len(values) == 1 else values
-
-            dicom_ext = {"version": "1.0"}
-            if dicom_tags:
-                dicom_ext["tags"] = dicom_tags
+            def _no_bulk(*_a, **_k):
+                return b""
+            datasets = [pydicom.Dataset.from_json(si["instance"], bulk_data_uri_handler=_no_bulk)
+                        for si in sorted_instances]
+            series_tags, slice_tags, fields = tags_from_datasets(
+                datasets, stored_values=True, binary=False)
+            dicom_ext = {"version": "1.0", **fields}
+            if series_tags:
+                dicom_ext["tags"] = series_tags
             extensions = {"dicom": dicom_ext}
+            if any(slice_tags):
+                slice_axis = axes[0]
+                if slice_axis.samples is None:
+                    slice_axis.samples = [SampleMetadata() for _ in sorted_instances]
+                for sample, t in zip(slice_axis.samples, slice_tags):
+                    if t:
+                        sample.metadata = {**(sample.metadata or {}), "dicom": t}
 
         space = SpaceName.LEFT_POSTERIOR_SUPERIOR
 

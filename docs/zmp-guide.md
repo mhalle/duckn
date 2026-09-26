@@ -1,5 +1,12 @@
 # Building ZMP Manifests
 
+> **Deprecated (2026-09-26).** ZMP is being replaced by valiz, a similar idea built on zip
+> files, still under development. These builders remain for now and are not being extended.
+> Known limitation, not to be fixed here: a virtual reference to a DICOM file's pixel bytes
+> cannot mask unused high bits or sign-extend a value narrower than its container (Bits Stored
+> < Bits Allocated), so such data reads as container words. For new work, write duckn metadata
+> into a Zarr v3 zip store (see the README, "Where duckn fits").
+
 [ZMP](https://github.com/mhalle/zarr-zmp) (Zarr Manifest Parquet) is a general-purpose index format for Zarr stores. A ZMP maps chunk paths to byte ranges in external files — zip archives, DICOM files on S3, NIfTI files, DICOMweb servers — giving Zarr-compatible random access without copying or converting data. ZMP is an independent project with no dependency on duckn.
 
 This guide covers the tools in the duckn library that build ZMP manifests from imaging sources. These tools optionally inject duckn metadata (spatial calibration, axis semantics, domain extensions) into the ZMP's `zarr.json` entry, but duckn metadata is not required — you can build ZMPs without it.

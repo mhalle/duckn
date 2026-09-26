@@ -1,5 +1,70 @@
 # Changelog
 
+## Unreleased
+
+An adversarial review of 0.5.3 (2026-09-26) found the two DICOM readers still encoding values
+two ways, a malformed value able to crash a conversion, and places where the stored metadata
+contradicted the array. All fixed here, each pinned by a test that fails on 0.5.3.
+
+### Positioning
+- **duckn's sweet spot is a modern NRRD in a plain zip file** (README, "Where duckn fits"):
+  NRRD's semantics, a standard Zarr v3 zip store as the container instead of a header prepended
+  to the data, many kinds of data in one file, complete Zarr v3 compatibility.
+- **ZMP is deprecated** in favor of valiz (a zip-based successor, under development). The ZMP
+  builders stay for now and are not extended; their known limitation (a virtual reference
+  cannot mask or sign-extend Bits Stored < Bits Allocated) is documented, not fixed.
+
+### Fixed - DICOM tags
+- **One encoding for both readers.** A pydicom value with a text form now goes through the same
+  `encode` as SimpleITK's strings. Multi-valued person names were a Python repr
+  (`'[A^B, C^D]'`), a VM 1-n name with one value was bare, multi-valued attribute tags were a
+  repr and SimpleITK's `(0018,1063)` was kept as written, a VM-1 text with a backslash was split.
+  All follow §4.2 / §4.6 now, on both paths. Remaining difference, documented (§4.2): a binary
+  float read from SimpleITK's text carries only the digits GDCM printed.
+- **A malformed value costs only itself.** A DS or IS pydicom cannot parse (`"abc"`, `"40\ "`)
+  raised out of `dicom_to_zarr`, the streaming converter and `tags_from_files` - and haversack
+  lost whole input copies over one bad KVP. It is kept as its text, empty parts of a numeric
+  multi-value dropped; an element pydicom cannot convert at all is read as its bytes' text.
+- **An empty multi-valued number is left out** (§4.3), not `[]` (SimpleITK path).
+- **`to_sitk_strings` restores no private element**: a private binary value's VR is unknown
+  there, and a Siemens CSA series header put 214 KB of base64 into NRRD headers.
+- **Enhanced objects**: the Shared Functional Groups are converted with the exclusions applied
+  at every depth (spacing, orientation and the object's rescale - Pixel Value Transformation -
+  gone; empty macros dropped), and the Per-frame Functional Groups are left out whole. Before,
+  a reader could apply an Enhanced CT's rescale a second time.
+- **Time series** (`dicom_to_zarr`, 4D): tags come from every instance and sit on the axis they
+  vary along (new `split_time_and_slice`); one that varies with both is left out. 0.5.3 put
+  time point 0's instance identifiers on the slice axis, claiming each slice at every time point
+  was one instance.
+- **A rescale that varies per slice** is kept in each slice's `samples[i].metadata.dicom` (the
+  only statement of it) and `sample_units` is not claimed over the uncalibrated values; the
+  warning said this and 0.5.3 dropped them and kept `"HU"`.
+- **The streaming converter** byte-copies only when Bits Stored fills the container: signed
+  12-bit -1 was stored as 4095 beside `stored_values: true`.
+- **`build_dicomweb_zmp`** builds its tags through the one conversion (it was a third converter
+  that followed none of dicom-spec: geometry kept, instance 0's identifiers stated series-wide,
+  sequences as raw PS3.18 JSON).
+- **`zarr_to_dicom`** writes Lossy Image Compression "01" for a store saying
+  `lossy_compressed` (§3.1's MUST), and never writes a kept per-slice rescale into per-frame
+  groups.
+- **BIDS sidecars** carry no empty strings (`"InstitutionName": ""` since 0.5.3's `""` rule).
+
+### Changed - specification (dicom-spec)
+- §4.2: UN in the binary row; malformed and empty numbers; how private values are encoded.
+- §6.1: the time-series rule. §9: the varying-rescale exception, the functional-group rules.
+- Contradictions removed: §5.10 no longer lists Planar Configuration among the attributes that
+  stay; the §3.2, §4.6 and §8 examples no longer show excluded geometry in `tags`; §7's example
+  and §5.10's Lossy Image Compression wording now agree with the rest.
+
+### Known, not changed
+- `DicomExtension` forbids unknown fields, so duckn 0.5.2 refuses a 0.5.3+ extension's
+  `stored_values` when it validates one (0.5.2 itself reads extensions as dicts).
+
+### Tests
+- The mutation run's gap tests are adopted (`test_dicom_tags_gaps.py`,
+  `test_dicom_convert_gaps.py`): the stored-unit list is literal on purpose - a test
+  parametrized over `STORED_ENCODING` shrinks with the set it guards.
+
 ## 0.5.3 — 2026-09-26
 
 ### Changed — specification (dicom-spec)

@@ -18,27 +18,39 @@ Semantic elements are clearly separated so they don't overlap the core Zarr and 
 
 **What the user gets:**
 
-- **Round-trip fidelity.** Convert a DICOM series or NIfTI file to duckn and back without losing metadata.
-- **Progressive disclosure.** A bare duckn store is a valid Zarr array any reader can open. Adding spatial metadata makes it an oriented image. Adding domain extensions makes it a lossless representation of the source format's semantics.
+- **Faithful conversion.** A DICOM series or a NIfTI file becomes the same data on the same grid, with the source's metadata kept as provenance you can use - JSON, never a second copy of a header to parse. Faithful to the data, not to the source's bytes: the source keeps those (dicom-spec §1).
+- **Progressive disclosure.** A bare duckn store is a valid Zarr array any reader can open. Adding spatial metadata makes it an oriented image. Adding domain extensions carries the source format's metadata alongside it, never contradicting the array.
 - **One format across domains** with shared tooling.
 - **Full Zarr compatibility**, which brings high-performance data access on the desktop, in the cloud, and everything in between.
 - **Extensible** to new imaging domains and evolutions of existing ones.
 
-## Two independent projects
+## Where duckn fits: a modern NRRD, in a plain zip file
 
-This repository contains two things that work well together but are completely independent:
+duckn metadata works wherever Zarr v3 works - a directory, an object store, a zip file - because
+it is nothing but attributes in a standard `zarr.json`. Its sweet spot is **a modern NRRD**:
 
-**duckn** is a metadata convention for Zarr V3 arrays. It defines what goes in the `"duckn"` key of a Zarr array's attributes — spatial calibration, axis semantics, and domain-specific extensions. Any Zarr store can carry duckn metadata. duckn has no dependency on ZMP.
+- **NRRD's semantics.** Per-axis kinds and centering, a named space with directions and an
+  origin, measurement frames, a value mapping - the coordinate model NRRD got right, stated
+  once for every domain.
+- **A plain zip file as the container.** Where NRRD prepends a text header to the data (or
+  keeps a detached pair), a duckn file is a standard Zarr v3 zip store: `zarr.json` plus chunk
+  members, in an ordinary zip any tool can list and any Zarr v3 reader can open. Chunks are
+  stored, not deflated, so a reader can range-read them in place, locally or over HTTP.
+- **Many kinds of data in one file.** Zarr v3 groups and its sharding codec put volumes,
+  segmentations, derived fields and their metadata side by side in one zip, with a large array
+  still a handful of members.
+- **Complete Zarr v3 compatibility.** Nothing duckn adds needs a duckn reader: a Zarr v3 library
+  reads the array; a duckn reader also gets its axes, its place in space and what its values
+  mean.
 
-**[ZMP](https://github.com/mhalle/zarr-zmp)** (Zarr Manifest Parquet) is a lightweight index format for Zarr stores. A ZMP maps chunk paths to byte ranges in external files — zip archives, DICOM files on S3, NIfTI files, DICOMweb servers. ZMP works with any Zarr store and has no dependency on duckn.
-
-**Together**, a ZMP can carry duckn metadata in its `zarr.json` entry, giving you both virtual data access and rich imaging semantics in a single small file. But each is useful on its own:
-
-| | duckn alone | ZMP alone | duckn + ZMP |
-|---|---|---|---|
-| Use case | Zarr store with imaging metadata | Virtual index to remote data | Virtual imaging data with full metadata |
-| Example | `brain.zarr/` with spatial calibration | 20 KB manifest → 47 GB zip on S3 | Same, plus coordinate systems and provenance |
-| Size | Part of the Zarr store | 10-100 KB | 10-100 KB |
+**ZMP is deprecated.** [ZMP](https://github.com/mhalle/zarr-zmp) (Zarr Manifest Parquet), the
+virtual index this library could build over zip archives, DICOM files and DICOMweb servers, is
+being replaced by **valiz**, a similar idea built on zip files, which is still under development.
+The ZMP builders remain for now and are not being extended; a known limitation stays unfixed: a
+virtual reference to a DICOM file's pixel bytes cannot mask unused high bits or sign-extend a
+stored value narrower than its container (Bits Stored < Bits Allocated). New work should write
+duckn metadata into Zarr v3 zip stores. See the [ZMP guide](docs/zmp-guide.md) for the existing
+tools.
 
 ## Design principles
 
@@ -160,7 +172,9 @@ Domain-specific metadata lives inside `duckn.extensions`. Extensions depend on d
 - **nifti** — NIfTI provenance (sform/qform codes, intent, legacy affines)
 - **dicom** — DICOM provenance (tags, transfer syntax, anonymization status)
 
-## ZMP integration
+## ZMP integration (deprecated)
+
+ZMP is deprecated in favor of valiz (under development); see "Where duckn fits" above.
 
 This library includes tools that build [ZMP](https://github.com/mhalle/zarr-zmp) manifests with duckn metadata from various imaging sources. ZMP is a separate project — a general-purpose virtual index for Zarr stores. duckn uses it but does not require it.
 
@@ -193,7 +207,7 @@ to get wrong, with the bugs that motivated them.
 - [Provenance extension](docs/provenance-extension.md) — general processing history
 - [Space transforms](docs/transform-spec.md) — named coordinate spaces and affine transforms
 - [Units](docs/units-spec.md) — structured unit system
-- [ZMP building guide](docs/zmp-guide.md) — virtual and hydrated manifests
+- [ZMP building guide](docs/zmp-guide.md) — virtual and hydrated manifests (deprecated)
 
 ## License
 

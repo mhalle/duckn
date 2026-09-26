@@ -3,7 +3,10 @@
 duckn is a metadata convention layered inside Zarr V3: a store remains a
 valid Zarr array that any reader can open, and readers that understand the
 convention additionally get axis semantics, spatial embedding, and value
-interpretation.
+interpretation. It works wherever Zarr v3 works; its sweet spot is a modern
+NRRD - NRRD's semantics in a plain Zarr v3 zip file rather than a header
+prepended to the data (see the top-level README, "Where duckn fits"). ZMP is
+deprecated in favor of valiz, which is under development.
 
 **Start here:** [duckn-spec.md](duckn-spec.md) is the convention. If you
 are writing code against duckn rather than reading the specification,
@@ -41,7 +44,7 @@ that does not recognize an extension ignores it.
 | Document | Purpose |
 |---|---|
 | [implementers-guide.md](implementers-guide.md) | Writing readers and writers: calibration, axis order, geometry, derivation. |
-| [zmp-guide.md](zmp-guide.md) | Building ZMP manifests — Zarr-compatible access to data at rest in other formats. |
+| [zmp-guide.md](zmp-guide.md) (deprecated) | Building ZMP manifests — Zarr-compatible access to data at rest in other formats. |
 | [performance.md](performance.md) | Benchmarks for virtual DICOM access through ZMP. |
 
 ## Archive

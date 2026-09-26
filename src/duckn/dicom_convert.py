@@ -246,9 +246,9 @@ def _uniform_rescale_value(datasets: list[Any], keyword: str, cast: Any) -> Any:
         warnings.warn(
             f"{keyword} varies across the series ({sorted(unique)!r}"
             f"{', and is absent on some instances' if len(present) != len(values) else ''})"
-            "; it cannot be represented as a single value transform, so no "
-            "calibration is recorded. The per-instance values are preserved "
-            "in the dicom extension.",
+            "; it cannot be represented as a single value transform, so the "
+            "array holds uncalibrated stored values and each slice's mapping is "
+            "kept in that slice's samples[i].metadata.dicom.",
             stacklevel=3,
         )
         return None
@@ -1552,10 +1552,34 @@ def build_duckn_metadata(
     # Tags, split series / per slice by the one conversion (duckn.dicom_tags).
     # This converter stores the source's stored values: stored_values=True.
     series_tags, slice_tags, tag_fields = ({}, None, {})
+    time_tags = None
     if include_tags:
-        from .dicom_tags import tags_from_datasets
-        series_tags, slice_tags, tag_fields = tags_from_datasets(
-            slice_datasets, stored_values=True, binary=include_binary)
+        from .dicom_tags import split_time_and_slice, tags_from_datasets
+        n_t = geometry.shape[0]
+        if slice_datasets is not datasets and len(datasets) >= n_t * len(slice_datasets):
+            # a time series: tags over EVERY instance, each on the axis it varies along
+            n_z = len(slice_datasets)
+            series_tags, per_ds, tag_fields = tags_from_datasets(
+                datasets[:n_t * n_z], stored_values=True, binary=include_binary)
+            time_tags, slice_tags = split_time_and_slice(per_ds, n_t, n_z)
+        else:
+            series_tags, slice_tags, tag_fields = tags_from_datasets(
+                slice_datasets, stored_values=True, binary=include_binary)
+    # A rescale that varies per instance cannot be one value transform (see
+    # _uniform_rescale_value); each slice's own mapping is then the only statement of it, so it
+    # is kept per slice (dicom-spec §9) - 0.5.3's warning promised this and dropped them.
+    if include_tags and slice_tags is not None and not _is_dicom_seg(slice_datasets[0]) \
+            and (geometry.rescale_slope is None or geometry.rescale_intercept is None) \
+            and any(hasattr(ds, "RescaleSlope") or hasattr(ds, "RescaleIntercept")
+                    for ds in slice_datasets):
+        from .dicom_tags import encode
+        for ds, tags in zip(slice_datasets, slice_tags):
+            for tag, kw in ((0x00281053, "RescaleSlope"), (0x00281052, "RescaleIntercept"),
+                            (0x00281054, "RescaleType")):
+                if kw in ds:
+                    value = encode(tag, str(ds[kw].value))
+                    if value is not None:
+                        tags[kw] = value
     samples = _build_samples(
         slice_datasets, slice_normal, geometry.space_origin,
         slice_dir, slice_tags,
@@ -1574,6 +1598,12 @@ def build_duckn_metadata(
         if i == 0 and samples is not None:
             ax_kwargs["samples"] = samples
         axes.append(AxisMetadata(**ax_kwargs))
+
+    # Per-time-point tags onto the time axis' samples (the axis is first: 4D prepends it).
+    if time_tags and any(time_tags) and axes and axes[0].samples:
+        for sample, tags in zip(axes[0].samples, time_tags):
+            if tags:
+                sample.metadata = {**(sample.metadata or {}), "dicom": tags}
 
     # Channel axis (RGB color) — appended after spatial axes (channel-last).
     if is_color:
@@ -1609,7 +1639,10 @@ def build_duckn_metadata(
             lut_type = str(getattr(seq[0], "ModalityLUTType", "") or "").strip()
             if lut_type:
                 sample_units = lut_type
-    if sample_units is None and geometry.rescale_type:
+    # Units only where a transform makes the values mean them: a series whose rescale varies
+    # has no value_transforms, and its stored values are not in RescaleType's units (0.5.3
+    # claimed "HU" over them).
+    if sample_units is None and geometry.rescale_type and value_transforms is not None:
         sample_units = geometry.rescale_type
 
     # DICOM extension (series-level tags only)
@@ -2063,7 +2096,13 @@ def dicom_to_zarr_streaming(
     if is_big_endian and geometry.dtype.itemsize > 1:
         is_uncompressed = False  # need byte-swap, can't raw copy
 
-    use_raw_copy = is_uncompressed and compressor == "none"
+    # The file's bytes ARE the stored values only when the stored bits fill the container:
+    # with BitsStored < BitsAllocated the unused high bits must be masked and a signed value
+    # sign-extended, which pixel_array does and a byte copy does not (2026-09-26: signed
+    # 12-bit -1 was stored as 4095, beside `stored_values: true`).
+    fills = all(int(getattr(h, "BitsStored", 0) or 0) == int(getattr(h, "BitsAllocated", 0) or 0)
+                for h in headers)
+    use_raw_copy = is_uncompressed and compressor == "none" and fills
 
     # Phase 2: create Zarr store and write chunks
     is_zip = _is_zip_path(output_p)
@@ -2173,6 +2212,9 @@ _PER_FRAME_SKIP = frozenset({
     "SOPInstanceUID", "InstanceNumber", "SliceLocation", "ImagePositionPatient",
     "InstanceCreationDate", "InstanceCreationTime", "ContentDate", "ContentTime",
     "SmallestImagePixelValue", "LargestImagePixelValue",
+    # a per-slice rescale kept because it varied (no value transform could state it) is not a
+    # per-frame attribute; the export's mapping comes from value_transforms alone
+    "RescaleSlope", "RescaleIntercept", "RescaleType",
 })
 
 
@@ -2436,6 +2478,12 @@ def zarr_to_dicom(
     ds.SOPClassUID = sop_class_uid
     ds.SOPInstanceUID = sop_instance_uid
     ds.Modality = modality
+
+    # dicom-spec §3.1: a writer converting back to DICOM MUST carry `lossy_compressed` into
+    # Lossy Image Compression - the fact is sticky (PS3.3 C.7.6.1.1.5), and a store whose
+    # tags do not state it (the extension field is where it lives) exported as not lossy.
+    if meta.extensions and (meta.extensions.get("dicom") or {}).get("lossy_compressed"):
+        ds.LossyImageCompression = "01"
 
     # Image dimensions
     ds.Rows = rows

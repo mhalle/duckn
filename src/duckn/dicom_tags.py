@@ -67,6 +67,7 @@ __all__ = [
     "BULK",
     "STORED_ENCODING",
     "dataset_tags",
+    "split_time_and_slice",
     "tags_from_datasets",
     "tags_from_files",
     "tags_from_sitk",
@@ -87,7 +88,19 @@ EXCLUDED = frozenset({
     0x00283004,                              # Modality LUT Type (-> sample_units)
     0x00280030, 0x00180088,                  # Pixel Spacing, Spacing Between Slices
     0x00180050,                              # Slice Thickness (-> axes[i].thickness)
+    0x00289145,                              # Pixel Value Transformation Sequence (the
+                                             #   rescale of an Enhanced object -> value_transforms)
+    0x52009230,                              # Per-frame Functional Groups Sequence: per-frame
+                                             #   geometry the axes state, in the SOURCE's frame
+                                             #   order - its other per-frame values would belong
+                                             #   in samples[i].metadata, which nothing maps yet
 })
+#: Shared Functional Groups Sequence: carried, but converted with the top-level exclusions
+#: applied at every depth - its macros state geometry (Pixel Measures, Plane Orientation) and
+#: the rescale that the convention fields state authoritatively (§2, §9), and a macro left with
+#: nothing is dropped (2026-09-26: an Enhanced CT carried its rescale here, so a reader could
+#: apply it twice).
+SHARED_FUNCTIONAL_GROUPS = 0x52009229
 #: Attributes stated in STORED-value units or about the stored encoding: true of the array only
 #: while it holds the source's stored values (dicom-spec §5.10) - 12 significant bits in a
 #: 16-bit container, the padding value, the pixel range, the real-world mapping FROM stored
@@ -164,22 +177,45 @@ def _number(text: str, integer: bool):
     return int(v) if integer and v == int(v) else v
 
 
+def _at(part: str) -> str:
+    """An Attribute Tag value as §4.2 writes it - eight uppercase hex digits - from either
+    reader's text: GDCM's ``(0018,1063)`` or a bare ``00181063``. Anything else is kept as it
+    came (never guessed)."""
+    h = part.strip().strip("()").replace(",", "").replace(" ", "")
+    try:
+        return f"{int(h, 16):08X}" if len(h) == 8 else part.strip()
+    except ValueError:
+        return part.strip()
+
+
 def encode(tag: int, text: str) -> Any:
-    """One SimpleITK value (a string) in the spec's JSON-native form (§4.2, §4.6); None for an
-    empty numeric value, which a caller leaves out."""
+    """One value, given as DICOM text (backslash-separated), in the spec's JSON-native form
+    (§4.2, §4.6); None for an empty numeric value, which a caller leaves out (§4.3). The ONE
+    encoding of a text value: SimpleITK's strings and pydicom's elements (as their text) both
+    come here, so the two readers cannot encode a value two ways (2026-09-26 - they did, on
+    person names, attribute tags, empty and malformed numbers). A malformed number is kept as
+    its text, never guessed; empty parts of a numeric multi-value are dropped."""
     vr, vm = _vr_vm(tag)
     if vr is not None and " or " in vr:       # "US or SS": both integers
         vr = vr.split(" or ")[0]
     parts = [p.strip() for p in str(text).split("\\")]
     multi = vm is not None and vm != "1"
     if vr in _NUMERIC_INT or vr in _NUMERIC_FLOAT:
+        present = [p for p in parts if p != ""]
         try:
-            values = [_number(p, vr in _NUMERIC_INT) for p in parts if p != ""]
+            values = [_number(p, vr in _NUMERIC_INT) for p in present]
         except ValueError:                    # a malformed number: keep the text, never guess
-            return parts if multi or len(parts) != 1 else parts[0]
-        if multi:
-            return values
-        return values[0] if values else None
+            if not present:
+                return None
+            return present if multi or len(present) != 1 else present[0]
+        if not values:
+            return None                       # empty, however many separators: absent
+        return values if multi else values[0]
+    if vr == "AT":
+        values = [_at(p) for p in parts if p != ""]
+        if not values:
+            return None
+        return values if multi else values[0]
     if multi:
         return [p.rstrip("\x00 ").lstrip() for p in parts]
     return str(text).rstrip("\x00 ").lstrip()
@@ -258,8 +294,9 @@ def _text(value: Any) -> str:
 
 def to_sitk_strings(tags: dict[str, Any]) -> dict[str, str]:
     """Series-level tags as SimpleITK shows them: ``gggg|eeee`` -> string. A ``null`` (a
-    redacted value, §4.3), a sequence and a binary value (no SimpleITK string form) are left
-    out - a binary one would otherwise land, base64, in any NRRD header written from the image."""
+    redacted value, §4.3), a sequence, a binary value and every private element are left out -
+    a binary one would otherwise land, base64, in any NRRD header written from the image (a
+    Siemens CSA series header is 214 KB of it)."""
     out = {}
     for keyword, value in tags.items():
         tag = _tag_of_keyword(keyword)
@@ -267,6 +304,9 @@ def to_sitk_strings(tags: dict[str, Any]) -> dict[str, str]:
             continue
         if isinstance(value, list) and any(isinstance(v, dict) for v in value):
             continue
+        if _private(tag):
+            continue                          # SimpleITK shows none unless asked, and a private
+                                              # binary value (VR unknown here) would be base64
         vr, _ = _vr_vm(tag)
         if vr is not None and vr.split(" or ")[0] in _BINARY_VRS:
             continue                          # base64: no string SimpleITK would show
@@ -274,25 +314,56 @@ def to_sitk_strings(tags: dict[str, Any]) -> dict[str, str]:
     return out
 
 
-def _pydicom_value(elem: Any, binary: bool, private: bool = True) -> Any:
-    """One pydicom element in the spec's encoding (§4), or None to leave it out. Scalars by
-    :mod:`duckn.dicom_convert`'s value rules; a sequence item by :func:`dataset_tags`, so empty
-    values follow one rule at every depth: an empty number is left out, an empty string is
-    ``""`` (``[""]`` where the VM makes it an array) - an attribute present and empty says
-    something an absent one does not, and ``null`` is reserved for a value removed (§4.3)."""
-    from .dicom_convert import _convert_value, _should_be_array
+_NATIVE_NUMERIC = frozenset({"US", "SS", "UL", "SL", "UV", "SV", "FL", "FD"})
+
+
+def _text_of(value: Any, vr: str | None) -> str:
+    """A pydicom value as DICOM text, for :func:`encode`: multi-values joined by backslashes,
+    person names and decimal strings as written, attribute tags as eight hex digits."""
+    if value is None:
+        return ""
+    from pydicom.multival import MultiValue
+    # only a multi-value is several values: a PersonName is iterable too (over its characters)
+    vals = list(value) if isinstance(value, (MultiValue, list, tuple)) else [value]
+    if vr == "AT":
+        return "\\".join(f"{int(v):08X}" for v in vals)
+    return "\\".join("" if v is None else str(v) for v in vals)
+
+
+def _pydicom_value(elem: Any, binary: bool, private: bool = True, *, stored_values: bool = False,
+                   deep: bool = False) -> Any:
+    """One pydicom element in the spec's encoding (§4), or None to leave it out. A value with a
+    text form goes through :func:`encode`, the one rule it shares with SimpleITK's strings;
+    binary integers and floats are taken as numbers; binary data as base64; a sequence item by
+    :func:`dataset_tags` - so empty values follow one rule at every depth (§4.3). ``deep``: the
+    top-level exclusions apply inside the items too (the Shared Functional Groups)."""
+    from .dicom_convert import _convert_value
     vr = elem.VR.split(" or ")[0] if elem.VR else None
     if vr == "SQ":
-        return [dataset_tags(item, exclude=False, binary=binary, private=private)
-                for item in (elem.value or [])]
-    value = _convert_value(elem)
-    if value is None and vr not in _NUMERIC_INT | _NUMERIC_FLOAT | _BINARY_VRS | {"AT"}:
-        return [""] if _should_be_array(elem) else ""
-    return value
+        items = [dataset_tags(item, exclude=deep, binary=binary, private=private,
+                              stored_values=stored_values, _deep=deep)
+                 for item in (elem.value or [])]
+        if deep:
+            items = [i for i in items if i]
+            return items or None
+        return items
+    if vr in _BINARY_VRS or vr in _NATIVE_NUMERIC:
+        return _convert_value(elem)
+    return encode(int(elem.tag), _text_of(elem.value, vr))
+
+
+def _raw_text(ds: Any, tag: int) -> str:
+    """An element pydicom cannot convert, as its bytes read as text - so one bad value costs
+    that value's typing, never the rest of the header."""
+    raw = ds.get_item(tag)
+    value = getattr(raw, "value", raw)
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("latin-1", "replace").rstrip("\x00 ")
+    return "" if value is None else str(value)
 
 
 def dataset_tags(ds: Any, *, stored_values: bool = False, binary: bool = True,
-                 exclude: bool = True, private: bool = True) -> dict[str, Any]:
+                 exclude: bool = True, private: bool = True, _deep: bool = False) -> dict[str, Any]:
     """One pydicom dataset's ``tags`` (§4): keywords, hex codes for private tags (their creators
     kept with them, §4.1), sequences recursive, binary values as base64 unless ``binary`` is
     False. Bulk data and group lengths are always left out; ``exclude`` also leaves out what
@@ -301,16 +372,21 @@ def dataset_tags(ds: Any, *, stored_values: bool = False, binary: bool = True,
     keeps it apart (``ds.file_meta``), and it describes the file. ``private=False`` leaves
     every private element out, at every depth (§9)."""
     out: dict[str, Any] = {}
-    for elem in ds:
-        tag = int(elem.tag)
+    for key in list(ds.keys()):
+        tag = int(key)
         if (tag & 0xFFFF) == 0 or _bulk(tag) or (not private and _private(tag)):
             continue
         if exclude and _left_out(tag, stored_values):
             continue
-        vr = elem.VR.split(" or ")[0] if elem.VR else None
-        if not binary and vr in _BINARY_VRS:
-            continue
-        value = _pydicom_value(elem, binary, private)
+        try:
+            elem = ds[key]
+            vr = elem.VR.split(" or ")[0] if elem.VR else None
+            if not binary and vr in _BINARY_VRS:
+                continue
+            value = _pydicom_value(elem, binary, private, stored_values=stored_values,
+                                   deep=_deep or (exclude and tag == SHARED_FUNCTIONAL_GROUPS))
+        except Exception:                     # noqa: BLE001 - pydicom could not convert it
+            value = encode(tag, _raw_text(ds, key))
         if value is not None:
             out[keyword_of(tag)] = value
     return out
@@ -353,6 +429,32 @@ def tags_from_datasets(datasets, *, stored_values: bool = False, binary: bool = 
     if lossy:
         ext["lossy_compressed"] = True
     return series, slices, ext
+
+
+def split_time_and_slice(per_dataset: list[dict[str, Any]], n_t: int, n_z: int
+                         ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """For a series with a time axis (datasets ordered t0z0, t0z1, ..., t1z0, ...): the
+    per-dataset tags :func:`tags_from_datasets` returned, split onto the two axes (§6.1) -
+    ``(per_time, per_slice)``. A tag whose value at every (t, z) depends on z alone is per
+    slice; on t alone, per time point; one that varies with both (every instance's
+    SOPInstanceUID) belongs to no one sample of either axis and is left out - stating time
+    point 0's identifiers on the slice axis, as 0.5.3 did, claimed each slice at every time
+    point was one instance."""
+    missing = object()
+    per_time: list[dict[str, Any]] = [{} for _ in range(n_t)]
+    per_slice: list[dict[str, Any]] = [{} for _ in range(n_z)]
+    for key in sorted({k for d in per_dataset for k in d}):
+        grid = [[per_dataset[t * n_z + z].get(key, missing) for z in range(n_z)]
+                for t in range(n_t)]
+        if all(grid[t][z] == grid[0][z] for t in range(n_t) for z in range(n_z)):
+            for z in range(n_z):
+                if grid[0][z] is not missing:
+                    per_slice[z][key] = grid[0][z]
+        elif all(grid[t][z] == grid[t][0] for t in range(n_t) for z in range(n_z)):
+            for t in range(n_t):
+                if grid[t][0] is not missing:
+                    per_time[t][key] = grid[t][0]
+    return per_time, per_slice
 
 
 def tags_from_files(paths, *, stored_values: bool = False, binary: bool = True,

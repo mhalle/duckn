@@ -94,7 +94,7 @@ def test_to_sitk_strings_inverts_the_series_tags():
     assert dt.to_sitk_strings({"Modality": "CT", "KVP": 120.0, "WindowCenter": [40, 400],
                                "00111001": "vendor", "PatientName": None,
                                "ReferencedImageSequence": [{"ReferencedSOPInstanceUID": "1.2"}]}) == {
-        "0008|0060": "CT", "0018|0060": "120", "0028|1050": "40\\400", "0011|1001": "vendor"}
+        "0008|0060": "CT", "0018|0060": "120", "0028|1050": "40\\400"}   # no private key
 
 
 def _series(folder, n=4):
@@ -343,3 +343,98 @@ def test_duckn_io_imports_in_a_fresh_process():
     r = subprocess.run([sys.executable, "-c", "from duckn import io; print(io.__name__)"],
                        capture_output=True, text=True, timeout=60)
     assert r.returncode == 0 and r.stdout.strip() == "duckn.io", r.stderr[-500:]
+
+
+# -- the 2026-09-26 review round: one encoding for both readers ------------------------------
+
+def test_person_names_follow_the_vm_rule_on_both_paths():
+    from pydicom.dataset import Dataset
+    ds = Dataset()
+    ds.OperatorsName = ["A^B", "C^D"]                   # VM 1-n, two values
+    ds.PerformingPhysicianName = "Smith^A"             # VM 1-n, one value
+    ds.PatientName = "Doe^Jane"                        # VM 1
+    got = dt.dataset_tags(ds)
+    assert got["OperatorsName"] == ["A^B", "C^D"]      # 0.5.3: the repr '[A^B, C^D]'
+    assert got["PerformingPhysicianName"] == ["Smith^A"]
+    assert got["PatientName"] == "Doe^Jane"
+    s, _ = dt.tags_from_sitk([{"0008|1070": "A^B\\C^D", "0008|1050": "Smith^A"}])
+    assert s == {"OperatorsName": ["A^B", "C^D"], "PerformingPhysicianName": ["Smith^A"]}
+
+
+def test_attribute_tags_are_eight_hex_digits_on_both_paths():
+    from pydicom.dataset import Dataset
+    ds = Dataset()
+    ds.add_new(0x00280009, "AT", [0x00181063, 0x00181065])   # Frame Increment Pointer, 1-n
+    assert dt.dataset_tags(ds)["FrameIncrementPointer"] == ["00181063", "00181065"]
+    s, _ = dt.tags_from_sitk([{"0028|0009": "(0018,1063)\\(0018,1065)"}])
+    assert s["FrameIncrementPointer"] == ["00181063", "00181065"]
+
+
+def test_a_vm1_text_with_a_backslash_stays_one_value():
+    from pydicom.dataset import Dataset
+    ds = Dataset()
+    ds.StudyDescription = "a\\b"
+    assert dt.dataset_tags(ds)["StudyDescription"] == "a\\b"
+
+
+def test_empty_and_malformed_numbers():
+    assert dt.encode(0x00181046, "") is None                   # empty multi-valued: absent
+    assert dt.encode(0x00281050, "40\\ ") == [40]              # an empty part is dropped
+    assert dt.encode(0x00180060, "abc ") == "abc"              # malformed: kept, never guessed
+
+
+def test_one_bad_value_costs_only_itself(tmp_path):
+    """A DS pydicom cannot convert made tags_from_files raise, and haversack lost the whole
+    input copy (0.5.3)."""
+    from pydicom.dataelem import RawDataElement
+    from pydicom.dataset import FileDataset, FileMetaDataset
+    from pydicom.tag import Tag
+    from pydicom.uid import ExplicitVRLittleEndian
+    m = FileMetaDataset()
+    m.TransferSyntaxUID = ExplicitVRLittleEndian
+    m.MediaStorageSOPClassUID, m.MediaStorageSOPInstanceUID = CT_SOP, "1.2.3"
+    f = FileDataset(None, {}, file_meta=m, preamble=b"\0" * 128)
+    f.Modality = "CT"
+    f[0x00180060] = RawDataElement(Tag(0x00180060), "DS", 4, b"abc ", 0, False, True)
+    f[0x00281050] = RawDataElement(Tag(0x00281050), "DS", 4, b"40\\ ", 0, False, True)
+    p = tmp_path / "x.dcm"
+    f.save_as(p, enforce_file_format=True)
+    s, _, _ = dt.tags_from_files([p])
+    assert s == {"KVP": "abc", "Modality": "CT", "WindowCenter": [40]}
+
+
+def test_the_shared_functional_groups_state_nothing_the_fields_do():
+    """An Enhanced object carries its geometry and its RESCALE in functional groups: kept as
+    they were, a reader could apply the rescale twice (0.5.3). The per-frame groups (source
+    frame order, per-frame geometry) are left out whole."""
+    from pydicom.dataset import Dataset
+    from pydicom.sequence import Sequence
+
+    def item(**kw):
+        d = Dataset()
+        for k, v in kw.items():
+            setattr(d, k, v)
+        return d
+    shared = item(
+        PixelMeasuresSequence=Sequence([item(PixelSpacing=[1, 1], SliceThickness=2)]),
+        PlaneOrientationSequence=Sequence([item(ImageOrientationPatient=[1, 0, 0, 0, 1, 0])]),
+        PixelValueTransformationSequence=Sequence([item(RescaleIntercept=-1024, RescaleSlope=1,
+                                                         RescaleType="HU")]),
+        FrameVOILUTSequence=Sequence([item(WindowCenter=40, WindowWidth=400)]))
+    shared.add_new(0x00280120, "US", 0)                  # stored units, inside a macro item
+    ds = Dataset()
+    ds.Modality = "CT"
+    ds.SharedFunctionalGroupsSequence = Sequence([shared])
+    ds.PerFrameFunctionalGroupsSequence = Sequence(
+        [item(PlanePositionSequence=Sequence([item(ImagePositionPatient=[0, 0, z])]))
+         for z in (10, 12)])
+    got = dt.dataset_tags(ds)
+    assert "PerFrameFunctionalGroupsSequence" not in got
+    assert got["SharedFunctionalGroupsSequence"] == [
+        {"FrameVOILUTSequence": [{"WindowCenter": [40.0], "WindowWidth": [400.0]}]}]
+    kept = dt.dataset_tags(ds, stored_values=True)["SharedFunctionalGroupsSequence"][0]
+    assert kept["PixelPaddingValue"] == 0 and "PixelValueTransformationSequence" not in kept
+
+
+def test_to_sitk_strings_restores_no_private_element():
+    assert dt.to_sitk_strings({"00291020": "QUJD" * 1000, "Modality": "CT"}) == {"0008|0060": "CT"}

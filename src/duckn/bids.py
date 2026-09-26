@@ -93,6 +93,13 @@ def _get_spacing_and_thickness(meta: DucknMetadata) -> dict[str, Any]:
     return result
 
 
+def _stated(val: Any) -> bool:
+    """Whether a tag says something a BIDS field should carry. ``""`` is an attribute present
+    and EMPTY in the source (dicom-spec §4.3, since duckn 0.5.3), not a value - 0.5.3's sidecars
+    wrote ``"InstitutionName": ""``."""
+    return val is not None and val != "" and val != [""]
+
+
 def duckn_to_bids_sidecar(
     meta: DucknMetadata,
     output_path: str | Path | None = None,
@@ -119,13 +126,13 @@ def duckn_to_bids_sidecar(
     # Direct mappings
     for dicom_key, bids_key in _DIRECT_MAPPINGS.items():
         val = tags.get(dicom_key)
-        if val is not None:
+        if _stated(val):
             sidecar[bids_key] = val
 
     # Time fields: DICOM stores in ms, BIDS wants seconds
     for dicom_key, bids_key in _MS_TO_S_MAPPINGS.items():
         val = tags.get(dicom_key)
-        if val is not None:
+        if _stated(val):
             if isinstance(val, (int, float)):
                 sidecar[bids_key] = val / 1000.0
             else:
@@ -148,7 +155,7 @@ def duckn_to_bids_sidecar(
     # Institution
     for key in ("InstitutionName", "InstitutionalDepartmentName"):
         val = tags.get(key)
-        if val is not None:
+        if _stated(val):
             sidecar[key] = val
 
     # Convert from duckn DWI extension if present
