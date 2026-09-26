@@ -33,7 +33,7 @@ The following DICOM attributes are already captured by Zarr or the duckn convent
 | DICOM attribute | Keyword | Captured by |
 |---|---|---|
 | Rows, Columns | `Rows`, `Columns` | Zarr `shape` |
-| Bits Allocated, Bits Stored, High Bit, Pixel Representation | various | Zarr `data_type` |
+| Bits Allocated, Pixel Representation | `BitsAllocated`, `PixelRepresentation` | Zarr `data_type` |
 | Number of Frames | `NumberOfFrames` | Zarr `shape` |
 | Image Position (Patient) | `ImagePositionPatient` | `space_origin` + `axes[i].samples[j].position` or `.origin` |
 | Image Orientation (Patient) | `ImageOrientationPatient` | `axes[i].space_direction` |
@@ -45,7 +45,7 @@ The following DICOM attributes are already captured by Zarr or the duckn convent
 | Rescale Type, Modality LUT Type | `RescaleType`, `ModalityLUTType` | `sample_units` |
 | Pixel Data | `PixelData` | Zarr array data |
 
-See §9 for the full list of excluded fields.
+See §9 for the full list of excluded fields. `BitsStored` and `HighBit` are not in this table: the dtype does not say them, and they stay in `tags` while the array holds the source's stored values (§5.10).
 
 **The Modality LUT stage maps to `value_transforms`; the VOI LUT stage does not.** DICOM's display pipeline has two lookup stages, and they land in different places because they answer different questions. The Modality LUT — whether expressed as `RescaleSlope`/`RescaleIntercept` or as an explicit `ModalityLUTSequence` — converts stored values into real-world values such as Hounsfield units, which is precisely what the convention's `value_transforms` and `sample_units` describe. The two forms are mutually exclusive in DICOM (PS3.3 C.11.1.1.2); where both appear, the explicit table wins.
 
@@ -106,7 +106,7 @@ The Transfer Syntax UID of the source DICOM file. Useful for understanding the o
 "source_transfer_syntax": "1.2.840.10008.1.2.4.90"
 ```
 
-Omit when unknown or not meaningful. This records how the *source* encoded its bytes; it says nothing about how the Zarr array is encoded now, which the Zarr codec chain describes. The two are independent and neither should be derived from the other.
+Omit when unknown or not meaningful, and when the source files do not all state the same one. This is the one fact of the File Meta Information (group 0002) that describes the data; the group itself describes each *file* and is never written into `tags` (§9). This records how the *source* encoded its bytes; it says nothing about how the Zarr array is encoded now, which the Zarr codec chain describes. The two are independent and neither should be derived from the other.
 
 #### `lossy_compressed`
 
@@ -162,7 +162,7 @@ Tag keys are the standard DICOM keywords from PS3.6 (the Data Dictionary). These
 
 Keywords provide a stable, human-readable, and tool-friendly namespace. They are preferred over hex tag codes (`"00080060"`) for readability. The PS3.6 keyword is the canonical form; do not use the tag name (which may contain spaces) or ad hoc abbreviations.
 
-For private data elements, use the hex tag code as the key (e.g., `"00091001"`), since private tags have no standard keywords.
+For private data elements, use the hex tag code as the key (e.g., `"00091001"`), since private tags have no standard keywords. Private tags are kept by default (§9). A private block's elements mean something only under the private creator that reserved the block, so a writer that keeps any element of a block keeps its creator element with it (e.g., `"00090010": "ACME 1.0"` beside `"00091001"`).
 
 ### 4.2 Values: JSON-Native Encoding
 
@@ -210,6 +210,14 @@ A tag set to `null` means the value existed in the source DICOM data but was del
 
 This convention follows JSON's standard semantics: `null` means "explicitly empty," absent means "not stated."
 
+**An empty value is not a redaction.** DICOM lets an attribute be present with no value (a Type 2 attribute, typically). A converter writes such a value by its type, never as `null`:
+
+- an empty string-valued attribute is `""` (`[""]` where §4.6 makes it an array) — present and empty is a fact about the source, distinct from absent;
+- an empty numeric attribute is left out — there is no JSON number for "no value," and `""` would give a numeric key two types;
+- an empty sequence is `[]`.
+
+The same rules apply at every depth, inside sequence items too.
+
 ### 4.4 Sequences
 
 DICOM Sequence (SQ) attributes are encoded as JSON arrays of objects. Each item in the sequence is a JSON object following the same keyword → value rules.
@@ -228,7 +236,7 @@ Sequences may be nested (a sequence item may contain another sequence attribute)
 
 ### 4.5 Binary Data
 
-Binary DICOM attributes (VRs: OB, OW, OF, OD, OL, OV) are stored as base64-encoded strings. Bulk binary data that is represented by the Zarr array itself (pixel data, overlay data) should be excluded from `tags`, but other binary attributes (VOI and palette color lookup tables, ICC profiles) should be preserved:
+Binary DICOM attributes (VRs: OB, OW, OF, OD, OL, OV, and UN) are stored as base64-encoded strings, at every depth — a VOI LUT's `LUTData` inside `VOILUTSequence` included. Bulk data is excluded from `tags`: Pixel Data in all three forms (`PixelData`, `FloatPixelData`, `DoubleFloatPixelData`) and its offset tables, Overlay Data and Curve Data in every repeating group (60xx,3000 and 50xx,3000), and Waveform Data. Other binary attributes (VOI and palette color lookup tables, ICC profiles, private binary elements) should be preserved:
 
 ```json
 "ICCProfile": "AAAAAA..."
@@ -393,7 +401,9 @@ These are the most commonly anonymized fields. When anonymized, include them wit
 
 **Value-mapping attributes are excluded; pixel-description attributes are not.** The line runs through whether the duckn convention has an authoritative counterpart. `RescaleSlope`/`RescaleIntercept`/`RescaleType` and the Modality LUT attributes do — `value_transforms` and `sample_units` describe the array's value mapping as written — so carrying the DICOM copies is redundant while the array is unchanged and false once a writer materializes or re-encodes it. They are excluded (§9).
 
-`BitsStored`, `HighBit`, `PhotometricInterpretation`, `PlanarConfiguration` and `SamplesPerPixel` have no such counterpart: they record things the Zarr dtype does not say, such as 12 significant bits in a 16-bit container or an inverted display polarity, and a DICOM writer needs them to reconstruct a faithful object. They stay, with the caveat below.
+`BitsStored`, `HighBit`, `PhotometricInterpretation`, `PlanarConfiguration` and `SamplesPerPixel` have no such counterpart: they record things the Zarr dtype does not say, such as 12 significant bits in a 16-bit container or an inverted display polarity, and a DICOM writer needs them to reconstruct a faithful object. They stay, with the caveat and the rule below.
+
+**`BitsStored` and `HighBit` stay only while the array holds the source's stored values.** They describe stored values, so they follow the same test as the rescale attributes: a writer that keeps the stored values (and describes their mapping in `value_transforms`) keeps them; a writer whose array holds the values *after* the Modality LUT stage — rescaled, widened to a larger type, or floating point, as a reader such as SimpleITK hands them over — leaves them out, because "12 bits stored" is no longer true of anything in the array. `BitsAllocated` and `PixelRepresentation` are always excluded: in both cases the Zarr dtype states them.
 
 **Caveat — they describe the source encoding.** A decoder may hand back a different layout than the source stored: JPEG-compressed color is commonly `YBR_FULL_422` in the tag while `pixel_array` returns RGB, and `BitsStored` ceases to describe an array that has been materialized to floating point. Writers should normalize such tags to the decoded array where they can, and readers must treat the convention fields as authoritative for anything the two both appear to describe (§2).
 
@@ -408,6 +418,8 @@ DICOM metadata exists at multiple levels of the information model hierarchy (pat
 Tags that are identical across all instances in the series belong in the top-level `dicom.tags`. Tags that vary per instance belong in per-sample metadata on the slice axis.
 
 The converter compares each tag across all source datasets. If a tag has the same value in every instance, it goes in the series-level `tags`. If it differs, it goes in `samples[i].metadata.dicom` on the slice axis.
+
+Nothing that varies is dropped for being "redundant." In particular the instance-level identifiers — `SOPInstanceUID`, `InstanceNumber`, `SliceLocation` — are kept per slice: they are how a reader maps slice *i* of the array back to the source instance it came from, which is what makes the source (still available from its archive) usable from the array.
 
 Tags that are losslessly captured by convention fields are excluded entirely (see §2 and §9). For example, `ImagePositionPatient` is not stored in `tags` or per-sample metadata because the per-slice spatial position is fully captured by the `samples` array's `position` or `origin` fields on the slice axis.
 
@@ -477,7 +489,7 @@ Common per-instance tags include `InstanceNumber`, `SOPInstanceUID`, `Acquisitio
 ## 7. Consistency Rules
 
 - Tag keys must be valid PS3.6 keywords or, for private tags, uppercase hex tag codes.
-- `null` values represent deliberately redacted data. Absent keys represent data that was not present in the source or is unknown.
+- `null` values represent deliberately redacted data. Absent keys represent data that was not present in the source or is unknown. An attribute present in the source with an empty value is `""` if string-valued and absent if numeric (§4.3), never `null`.
 - Multi-valued attributes (VM > 1 in PS3.6) must be encoded as JSON arrays, even when only one value is present.
 - Single-valued attributes (VM = 1 in PS3.6) must be bare values, not wrapped in arrays.
 - Sequence attributes must be encoded as arrays of objects, even when containing a single item.
@@ -735,13 +747,17 @@ A CT volume that includes coded anatomy using DICOM's standard sequence pattern:
 | Image Position (Patient) | Losslessly captured by `space_origin` and per-sample `position`/`origin` |
 | Image Orientation (Patient) | Losslessly captured by `axes[i].space_direction` |
 | Rows, Columns, Number of Frames | Losslessly captured by Zarr `shape` |
-| Bits Allocated, Bits Stored, High Bit, Pixel Representation | Losslessly captured by Zarr `data_type` |
+| Bits Allocated, Pixel Representation | Losslessly captured by Zarr `data_type` |
+| Bits Stored, High Bit — *only when the array does not hold the source's stored values* | No longer true of the array (§5.10) |
 | Rescale Slope, Rescale Intercept, Rescale Type | Captured by `value_transforms` and `sample_units`, which are authoritative for the array as written |
 | Modality LUT Sequence, LUT Descriptor, LUT Data | Captured by the `lut` value transform |
-| Overlay Data | Separate array if needed |
-| Waveform Data | Out of scope (not imaging) |
-| Private tags (by default) | Include only if specifically needed, using hex keys |
+| Float / Double Float Pixel Data, Extended Offset Table | Bulk data: the Zarr array itself |
+| Overlay Data, Curve Data (60xx,3000 / 50xx,3000) | Bulk data; a separate array if needed |
+| Waveform Data | Bulk data; out of scope (not imaging) |
+| File Meta Information (group 0002) | Describes each file, not the data; its transfer syntax is `source_transfer_syntax` (§3.1) |
 | Group Length tags | Encoding artifact, per PS3.18 |
+
+Private tags are **not** excluded: they are kept under their hex codes, each block with its private creator (§4.1). Earlier drafts excluded them by default, but a converter's output is often the only copy of the header a pipeline keeps, and private elements carry acquisition parameters found nowhere else (diffusion b-values and gradient directions, vendor scale factors). A reader or a serving policy that wants them hidden filters them; a converter does not drop them.
 
 The value-mapping attributes are excluded for a stronger reason than redundancy. A duckn writer may legitimately change the array's encoding — materializing calibrated values, or re-encoding to a different storage type (duckn convention §4.3). The source's `RescaleSlope` then describes an encoding the array no longer uses, while `value_transforms` describes the one it does. Keeping both would require editing the DICOM copy to track the array, at which point it has stopped being a record of the source.
 

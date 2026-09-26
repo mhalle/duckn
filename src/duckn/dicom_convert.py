@@ -85,38 +85,6 @@ class DicomImageInfo:
 # VRs that are binary — encoded as base64 strings in JSON
 _BINARY_VRS = frozenset({"OB", "OW", "OF", "OD", "OL", "OV", "UN"})
 
-# Tags to skip: bulk binary data represented by the Zarr array itself,
-# and geometry fields already captured by convention fields
-# Attributes that describe the source's *encoding* rather than the data.
-# duckn's own fields describe the array authoritatively, and a duckn writer
-# may change the encoding (materialize, re-encode), at which point these
-# would describe an encoding the array no longer uses (dicom-spec §9).
-_SKIP_KEYWORDS = frozenset({
-    "PixelData",
-    "OverlayData",
-    "Rows",
-    "Columns",
-    "NumberOfFrames",
-    "BitsAllocated",
-    "PixelRepresentation",
-    "ImagePositionPatient",
-    "ImageOrientationPatient",
-    # The value mapping. Unlike the pixel-description attributes, which
-    # still describe the array and are used to reconstruct a faithful
-    # DICOM, these have an authoritative duckn counterpart in
-    # value_transforms/sample_units — and a duckn writer may change the
-    # encoding, leaving the DICOM copies describing one the array no
-    # longer uses (dicom-spec §9).
-    "RescaleSlope",
-    "RescaleIntercept",
-    "RescaleType",
-    "ModalityLUTSequence",
-    "ModalityLUTType",
-    "LUTDescriptor",
-    "LUTData",
-})
-
-
 def _should_be_array(elem: Any) -> bool:
     """Check if this element should be a JSON array per §4.6 VM rules.
 
@@ -155,7 +123,8 @@ def _convert_value(elem: Any) -> Any:
     # Sequence → list of dicts (recursive)
     if vr == "SQ":
         if isinstance(val, SqType):
-            return [_dataset_to_tags(item, _skip_geometry=False) for item in val]
+            from .dicom_tags import dataset_tags
+            return [dataset_tags(item, exclude=False, binary=False) for item in val]
         return None
 
     # Person Name
@@ -231,40 +200,11 @@ def _dataset_to_tags(
     _skip_geometry: bool = True,
     _include_binary: bool = False,
 ) -> dict[str, Any]:
-    """Convert a pydicom Dataset to a tags dict per dicom-spec.md §4."""
-    tags: dict[str, Any] = {}
-
-    # Include File Meta Information (group 0002) if present
-    file_meta = getattr(ds, "file_meta", None)
-    if file_meta is not None:
-        for elem in file_meta:
-            if elem.tag.element == 0x0000:
-                continue
-            keyword = elem.keyword
-            if not keyword or keyword == "":
-                keyword = f"{elem.tag.group:04X}{elem.tag.element:04X}"
-            tags[keyword] = _convert_value(elem)
-
-    for elem in ds:
-        # Skip group length tags (xxxx,0000)
-        if elem.tag.element == 0x0000:
-            continue
-        # Skip binary VRs unless opted in
-        if not _include_binary and elem.VR in _BINARY_VRS:
-            continue
-
-        # Determine key: keyword or hex for private/unknown tags
-        keyword = elem.keyword
-        if not keyword or keyword == "":
-            keyword = f"{elem.tag.group:04X}{elem.tag.element:04X}"
-
-        # Skip geometry tags already captured by convention fields
-        if _skip_geometry and keyword in _SKIP_KEYWORDS:
-            continue
-
-        tags[keyword] = _convert_value(elem)
-
-    return tags
+    """A pydicom Dataset's tags per dicom-spec.md §4 - :func:`duckn.dicom_tags.dataset_tags`,
+    the one conversion (2026-09-26). This converter keeps the source's stored values, so the
+    pixel-description tags that describe them stay (§5.10)."""
+    from .dicom_tags import dataset_tags
+    return dataset_tags(ds, stored_values=True, binary=_include_binary, exclude=_skip_geometry)
 
 
 # ---------------------------------------------------------------------------
@@ -1452,10 +1392,10 @@ def _build_samples(
     slice_normal: np.ndarray,
     space_origin: list[float],
     space_direction: list[float],
-    include_tags: bool,
-    include_binary: bool,
+    per_slice_tags: list[dict[str, Any]] | None,
 ) -> list[SampleMetadata] | None:
-    """Build per-sample metadata for the slice axis.
+    """Build per-sample metadata for the slice axis. ``per_slice_tags`` are
+    :func:`duckn.dicom_tags.tags_from_datasets`' per-slice dicts (None: no tags).
 
     Returns None if all slices are uniformly spaced with no per-instance
     tag variation (samples would add no information).
@@ -1507,55 +1447,13 @@ def _build_samples(
             is_uniform = False
             break
 
-    # Split tags: find tags that vary across slices
-    # Exclude tags that are redundant with duckn geometry or array structure
-    _REDUNDANT_PER_SLICE_TAGS = frozenset({
-        "ImagePositionPatient",     # captured by samples[i].origin
-        "SliceLocation",            # derivable from origin
-        "InstanceNumber",           # it's the array index
-        "SOPInstanceUID",           # instance identity, not interpretation
-        "MediaStorageSOPInstanceUID",
-        "InstanceCreationDate",
-        "InstanceCreationTime",
-        "ContentDate",
-        "ContentTime",
-        "SmallestImagePixelValue",  # derivable from data
-        "LargestImagePixelValue",   # derivable from data
-    })
-
-    per_slice_tags: list[dict[str, Any] | None] = [None] * n_slices
-    has_varying_tags = False
-
-    if include_tags and n_slices > 1:
-        # Extract tags from all datasets
-        all_tags = [
-            _dataset_to_tags(ds, _include_binary=include_binary)
-            for ds in datasets
-        ]
-
-        # Find keys that vary (excluding redundant ones)
-        all_keys = set()
-        for t in all_tags:
-            all_keys.update(t.keys())
-
-        varying_keys: set[str] = set()
-        for key in all_keys:
-            if key in _REDUNDANT_PER_SLICE_TAGS:
-                continue
-            values = [t.get(key) for t in all_tags]
-            ref = values[0]
-            for v in values[1:]:
-                if v != ref:
-                    varying_keys.add(key)
-                    break
-
-        if varying_keys:
-            has_varying_tags = True
-
-            per_slice_tags = [
-                {k: t[k] for k in varying_keys if k in t}
-                for t in all_tags
-            ]
+    # Per-slice tags, as dicom_tags split them. Nothing that varies is dropped
+    # (dicom-spec §6.3): SOPInstanceUID and InstanceNumber map a slice back to
+    # the source instance it came from. Until 2026-09-26 this converter left
+    # them out as "redundant", which the spec never said.
+    has_varying_tags = bool(per_slice_tags) and any(per_slice_tags)
+    if not has_varying_tags:
+        per_slice_tags = [None] * n_slices
 
     # If everything is uniform and no per-slice tags, skip samples
     if is_uniform and not has_varying_tags:
@@ -1578,27 +1476,6 @@ def _build_samples(
         samples.append(SampleMetadata(**kwargs))
 
     return samples
-
-
-def _get_varying_tag_keys(datasets: list[Any], include_binary: bool) -> set[str]:
-    """Return tag keys whose values differ across datasets."""
-    if len(datasets) <= 1:
-        return set()
-
-    all_tags = [_dataset_to_tags(ds, _include_binary=include_binary) for ds in datasets]
-    all_keys: set[str] = set()
-    for t in all_tags:
-        all_keys.update(t.keys())
-
-    varying: set[str] = set()
-    for key in all_keys:
-        values = [t.get(key) for t in all_tags]
-        ref = values[0]
-        for v in values[1:]:
-            if v != ref:
-                varying.add(key)
-                break
-    return varying
 
 
 def build_duckn_metadata(
@@ -1672,13 +1549,17 @@ def build_duckn_metadata(
         slice_datasets = datasets
 
     # Build per-sample metadata for the slice axis
+    # Tags, split series / per slice by the one conversion (duckn.dicom_tags).
+    # This converter stores the source's stored values: stored_values=True.
+    series_tags, slice_tags, tag_fields = ({}, None, {})
+    if include_tags:
+        from .dicom_tags import tags_from_datasets
+        series_tags, slice_tags, tag_fields = tags_from_datasets(
+            slice_datasets, stored_values=True, binary=include_binary)
     samples = _build_samples(
         slice_datasets, slice_normal, geometry.space_origin,
-        slice_dir, include_tags, include_binary,
+        slice_dir, slice_tags,
     )
-
-    # Determine which tag keys vary (to exclude from series-level tags)
-    varying_keys = _get_varying_tag_keys(slice_datasets, include_binary) if include_tags else set()
 
     # Spatial axes: [slice, row, col]
     for i, direction in enumerate(geometry.space_directions):
@@ -1737,17 +1618,12 @@ def build_duckn_metadata(
     ext_kwargs: dict[str, Any] = {"version": "1.0"}
 
     if include_tags:
-        series_tags = _dataset_to_tags(ds0, _include_binary=include_binary)
-        # Remove varying keys — they are in per-sample metadata
-        for key in varying_keys:
-            series_tags.pop(key, None)
-
         anon = anonymized
         if anon is None:
             anon = _detect_anonymized(ds0)
 
         ext_kwargs["anonymized"] = anon if anon else None
-        ext_kwargs["source_transfer_syntax"] = _get_transfer_syntax(ds0)
+        ext_kwargs["source_transfer_syntax"] = tag_fields.get("source_transfer_syntax")
         ext_kwargs["tags"] = series_tags if series_tags else None
 
     # Lossiness is recorded even when tags are excluded. The transfer syntax
@@ -1755,7 +1631,7 @@ def build_duckn_metadata(
     # dropped along with the tags. That the pixel values are no longer the
     # acquired ones is a fact about the data itself, and losing it because
     # someone asked for a smaller store would be a hazard, not a saving.
-    if _is_lossy_compressed(ds0):
+    if tag_fields.get("lossy_compressed") or _is_lossy_compressed(ds0):
         ext_kwargs["lossy_compressed"] = True
 
     dumped = DicomExtension(**ext_kwargs).model_dump(exclude_none=True, by_alias=True)
@@ -2288,6 +2164,17 @@ _ZARR_TO_DICOM_SKIP = frozenset({
 })
 
 
+#: Per-slice tags that describe a SOURCE instance - its identity, its place in
+#: the source series, its own creation, its stored-value range - and so are
+#: never written into a new object's per-frame functional groups. They are kept
+#: in the store (dicom-spec §6.3); an export mints its own.
+_PER_FRAME_SKIP = frozenset({
+    "SOPInstanceUID", "InstanceNumber", "SliceLocation", "ImagePositionPatient",
+    "InstanceCreationDate", "InstanceCreationTime", "ContentDate", "ContentTime",
+    "SmallestImagePixelValue", "LargestImagePixelValue",
+})
+
+
 def _restore_tag(ds: Any, keyword: str, value: Any) -> None:
     """Restore a single DICOM tag from stored JSON value."""
     import pydicom
@@ -2671,6 +2558,8 @@ def zarr_to_dicom(
             sample = slice_axis.samples[z_idx]
             if sample.metadata and "dicom" in sample.metadata:
                 for keyword, value in sample.metadata["dicom"].items():
+                    if keyword in _PER_FRAME_SKIP:
+                        continue
                     try:
                         _restore_tag(frame_fg, keyword, value)
                     except Exception:

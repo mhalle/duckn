@@ -155,11 +155,12 @@ class TestTagExtraction:
         tags = _dataset_to_tags(ds)
         assert tags["PatientName"] == "Doe^John"
 
-    def test_person_name_empty_is_none(self):
+    def test_person_name_empty_is_an_empty_string_never_null(self):
+        """null means removed (dicom-spec §4.3); an empty PN was present and empty."""
         ds = Dataset()
         ds.add_new(0x00100010, "PN", "")
         tags = _dataset_to_tags(ds)
-        assert tags["PatientName"] is None
+        assert tags["PatientName"] == ""
 
     def test_sequence_to_list_of_dicts(self):
         item = Dataset()
@@ -1182,8 +1183,9 @@ class TestPerSampleMetadata:
         s2_ext = slice_axis.samples[2].metadata
         assert s2_ext["dicom"]["AcquisitionTime"] == "143025.500"
 
-        # InstanceNumber is excluded as redundant (it's the array index)
-        assert "InstanceNumber" not in s0_ext.get("dicom", {})
+        # Per-slice identifiers are kept (dicom-spec §6.3): they map a slice
+        # back to its source instance.
+        assert [s.metadata["dicom"]["InstanceNumber"] for s in slice_axis.samples] == [1, 2, 3]
 
         # Constant tags (Modality) should be in series-level dicom extension
         dicom_ext = meta.extensions["dicom"]

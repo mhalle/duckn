@@ -184,7 +184,8 @@ def test_datasets_keep_sequences_binary_and_private_tags(tmp_path):
     assert series["StudyDescription"] == "" and "ExposureTime" not in series
     assert not {"OverlayData", "WaveformData", "PixelData"} & (series.keys() | slices[0].keys())
     assert not any(k.startswith("6000") or k.startswith("5400") for k in series)
-    assert ext == {"source_transfer_syntax": "1.2.840.10008.1.2.1", "lossy_compressed": False}
+    # a native transfer syntax says nothing about the values' history: no lossy_compressed
+    assert ext == {"source_transfer_syntax": "1.2.840.10008.1.2.1"}
 
 
 def test_datasets_exclude_what_the_convention_captures_and_the_file_meta(tmp_path):
@@ -233,6 +234,50 @@ def test_datasets_a_tag_some_slices_lack_is_per_slice_and_an_iterable_is_enough(
                       {"EchoTime": 5.0, "InstanceNumber": 2}]
     assert ext == {}
     assert dt.tags_from_datasets([]) == ({}, [], {})
+
+
+def test_bits_stored_only_where_the_array_holds_stored_values(tmp_path):
+    """dicom-spec §5.10: Bits Stored / High Bit describe the source's stored values."""
+    files = sorted(_series(tmp_path / "s").iterdir())
+    kept, _, _ = dt.tags_from_files(files, stored_values=True)
+    assert kept["BitsStored"] == 16 and kept["HighBit"] == 15
+    dropped, _, _ = dt.tags_from_files(files)
+    assert not {"BitsStored", "HighBit"} & dropped.keys()
+    assert not {"BitsAllocated", "PixelRepresentation"} & kept.keys()   # always the dtype's
+    assert kept["PhotometricInterpretation"] == "MONOCHROME2"          # always kept
+
+
+def test_file_meta_is_never_in_tags(tmp_path):
+    series, slices, _ = dt.tags_from_files(sorted(_series(tmp_path / "s").iterdir()))
+    assert not any(k.startswith("0002") or k in ("TransferSyntaxUID", "MediaStorageSOPInstanceUID")
+                   for k in series.keys() | slices[0].keys())
+
+
+def test_binary_inside_a_sequence_is_kept_and_empties_follow_one_rule_at_every_depth():
+    from pydicom.dataset import Dataset
+    from pydicom.sequence import Sequence
+    item = Dataset()
+    item.add_new(0x00283006, "OW", b"\x01\x00\x02\x00")    # LUT Data in a VOI LUT item
+    item.add_new(0x00283003, "LO", "")                        # LUT Explanation, empty
+    item.add_new(0x00283002, "US", None)                      # LUT Descriptor, empty number
+    ds = Dataset()
+    ds.VOILUTSequence = Sequence([item])
+    tags = dt.dataset_tags(ds)
+    assert tags["VOILUTSequence"] == [{"LUTData": "AQACAA==", "LUTExplanation": ""}]
+
+
+def test_to_sitk_strings_leaves_binary_values_out():
+    assert dt.to_sitk_strings({"ICCProfile": "AQIDBA==", "Modality": "CT"}) == {"0008|0060": "CT"}
+
+
+def test_the_two_converters_are_one_conversion(tmp_path):
+    """dicom_convert's tags ARE dicom_tags' (they drifted apart on four rules once)."""
+    import pydicom
+    from duckn.dicom_convert import _dataset_to_tags
+    for f in _rich(tmp_path / "s"):
+        ds = pydicom.dcmread(f)
+        assert _dataset_to_tags(ds, _include_binary=True) == dt.dataset_tags(
+            ds, stored_values=True)
 
 
 def test_duckn_io_imports_in_a_fresh_process():

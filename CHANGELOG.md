@@ -2,14 +2,43 @@
 
 ## Unreleased
 
-### Added
-- `dicom_tags.tags_from_datasets` / `tags_from_files`: DICOM tags from pydicom datasets in the
-  `dicom` extension's encoding, with `tags_from_sitk`'s exclusions and series / per-slice split,
-  keeping what SimpleITK's dictionaries cannot hold - sequences, binary values as base64 (bulk
-  data excepted: pixel, overlay, curve and waveform data), private tags - and returning the
-  extension's `source_transfer_syntax` and `lossy_compressed` as the files state them. Every
-  value both sources can see is encoded identically (a test holds the two to it). Headers are
-  read one at a time, never the pixel data.
+### Changed — specification (dicom-spec)
+The spec contradicted itself in places, and the two converters followed different halves of it.
+Settled (2026-09-26):
+- **Private tags are kept by default** (§9, §4.1), under their hex codes, each block with its
+  private creator: a converter's output is often the only header a pipeline keeps, and private
+  elements carry acquisition parameters found nowhere else. Hiding them is a reader's or a
+  serving policy's job.
+- **`BitsStored` / `HighBit` stay only while the array holds the source's stored values**
+  (§5.10, and the §2 / §9 tables, which excluded them outright while §5.10 kept them). A writer
+  whose array holds rescaled, widened or float values leaves them out. `BitsAllocated` and
+  `PixelRepresentation` are always the dtype's.
+- **Per-slice identifiers are kept** (§6.1): `SOPInstanceUID`, `InstanceNumber`,
+  `SliceLocation` map a slice back to its source instance.
+- **An empty value is not a redaction** (§4.3, §7): empty text is `""`, an empty number is left
+  out, an empty sequence is `[]`, at every depth; `null` stays reserved for removed values.
+- **The file meta group (0002) is never in `tags`** (§9, §3.1); `source_transfer_syntax` carries
+  its one fact about the data, written only when every file states the same one.
+- Bulk data spelled out (§4.5, §9): pixel data in all three forms and its offset tables, overlay
+  and curve data in every repeating group, waveform data. Binary values inside sequences are
+  base64 like any other.
+
+### Changed — implementation
+- **One conversion of a pydicom dataset**: `dicom_tags.dataset_tags`. `dicom_convert` builds its
+  tags through it (`tags_from_datasets`), where it had its own loop, skip list and per-slice
+  filter - which is how the two drifted apart on the rules above. Consequences for
+  `dicom_to_zarr`: empty text is `""` (was `null`), private tags as before, per-slice
+  `SOPInstanceUID` / `InstanceNumber` / content times now kept in `samples[i].metadata.dicom`,
+  `PixelSpacing` / `SliceThickness` / `SpacingBetweenSlices` no longer duplicated into `tags`
+  (§2 excludes them), group 0002 no longer in `tags`. `zarr_to_dicom` does not write a source
+  instance's identity into a new object's per-frame groups.
+- `dicom_tags.tags_from_datasets` / `tags_from_files` (new): the same from pydicom datasets,
+  keeping sequences and binary values, and returning `source_transfer_syntax` and
+  `lossy_compressed` (only ever `true`) as the files state them. Headers are read one at a time,
+  never the pixel data. A test holds it to `tags_from_sitk` on every tag both can see.
+- `tags_from_sitk(..., stored_values=False)`: Bits Stored / High Bit by the same rule.
+- `to_sitk_strings` leaves binary values out, which would otherwise land as base64 in any NRRD
+  header written from the image.
 
 ## 0.5.2 — 2026-09-25
 
