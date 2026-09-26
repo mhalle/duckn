@@ -5,8 +5,7 @@ valid Zarr array that any reader can open, and readers that understand the
 convention additionally get axis semantics, spatial embedding, and value
 interpretation. It works wherever Zarr v3 works; its sweet spot is a modern
 NRRD - NRRD's semantics in a plain Zarr v3 zip file rather than a header
-prepended to the data (see the top-level README, "Where duckn fits"). ZMP is
-deprecated in favor of valiz, which is under development.
+prepended to the data (see the top-level README, "Where duckn fits").
 
 **Start here:** [duckn-spec.md](duckn-spec.md) is the convention. If you
 are writing code against duckn rather than reading the specification,
@@ -44,8 +43,6 @@ that does not recognize an extension ignores it.
 | Document | Purpose |
 |---|---|
 | [implementers-guide.md](implementers-guide.md) | Writing readers and writers: calibration, axis order, geometry, derivation. |
-| [zmp-guide.md](zmp-guide.md) (deprecated) | Building ZMP manifests — Zarr-compatible access to data at rest in other formats. |
-| [performance.md](performance.md) | Benchmarks for virtual DICOM access through ZMP. |
 
 ## Archive
 
@@ -59,3 +56,10 @@ was kept.
 Every document here is marked **Draft**. The convention is at version 1.1;
 extension versions are independent and declared in each extension's own
 `version` field.
+
+## Appendix: deprecated
+
+| Document | Status |
+|---|---|
+| [zmp-guide.md](zmp-guide.md) | ZMP (Zarr Manifest Parquet) builders. Deprecated in favor of valiz, a zip-based successor under development; see the top-level README's appendix. |
+| [performance.md](performance.md) | Benchmarks for virtual DICOM access through ZMP (deprecated with it). |

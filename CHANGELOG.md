@@ -10,9 +10,11 @@ contradicted the array. All fixed here, each pinned by a test that fails on 0.5.
 - **duckn's sweet spot is a modern NRRD in a plain zip file** (README, "Where duckn fits"):
   NRRD's semantics, a standard Zarr v3 zip store as the container instead of a header prepended
   to the data, many kinds of data in one file, complete Zarr v3 compatibility.
-- **ZMP is deprecated** in favor of valiz (a zip-based successor, under development). The ZMP
-  builders stay for now and are not extended; their known limitation (a virtual reference
-  cannot mask or sign-extend Bits Stored < Bits Allocated) is documented, not fixed.
+- **ZMP is deprecated and moved to an appendix** (README, docs index) in favor of valiz (a
+  zip-based successor, under development): a Parquet manifest asks too much of the community's
+  readers, and Parquet readers are not compact. The ZMP builders stay for now and are not
+  extended; their known limitation (a virtual reference cannot mask or sign-extend Bits Stored <
+  Bits Allocated) is documented, not fixed.
 
 ### Fixed - DICOM tags
 - **One encoding for both readers.** A pydicom value with a text form now goes through the same

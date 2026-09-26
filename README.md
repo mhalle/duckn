@@ -34,23 +34,21 @@ it is nothing but attributes in a standard `zarr.json`. Its sweet spot is **a mo
   once for every domain.
 - **A plain zip file as the container.** Where NRRD prepends a text header to the data (or
   keeps a detached pair), a duckn file is a standard Zarr v3 zip store: `zarr.json` plus chunk
-  members, in an ordinary zip any tool can list and any Zarr v3 reader can open. Chunks are
-  stored, not deflated, so a reader can range-read them in place, locally or over HTTP.
-- **Many kinds of data in one file.** Zarr v3 groups and its sharding codec put volumes,
-  segmentations, derived fields and their metadata side by side in one zip, with a large array
-  still a handful of members.
+  members, in an ordinary zip any tool can list and any Zarr v3 reader can open. This is the
+  recommended way to keep data locally: one file to copy, cache or hand to someone, not a
+  directory tree. Chunks are stored, not deflated, so a reader range-reads them in place,
+  from disk or over HTTP.
+- **Sharding keeps the member count manageable.** A zip member per chunk grows with the array
+  and with how finely it is chunked - a finely chunked volume is thousands of members, and every
+  one is a central-directory entry a reader must list. Zarr v3's sharding codec packs many
+  chunks into one member with an index at its end, so a large array stays a handful of members
+  while reads stay chunk-sized. duckn's own converters do not write shards yet; any Zarr v3
+  writer can (zarr-python: `create_array(..., shards=...)`), and duckn metadata is unaffected.
+- **Many kinds of data in one file.** Zarr v3 groups put volumes, segmentations, derived fields
+  and their metadata side by side in one zip.
 - **Complete Zarr v3 compatibility.** Nothing duckn adds needs a duckn reader: a Zarr v3 library
   reads the array; a duckn reader also gets its axes, its place in space and what its values
   mean.
-
-**ZMP is deprecated.** [ZMP](https://github.com/mhalle/zarr-zmp) (Zarr Manifest Parquet), the
-virtual index this library could build over zip archives, DICOM files and DICOMweb servers, is
-being replaced by **valiz**, a similar idea built on zip files, which is still under development.
-The ZMP builders remain for now and are not being extended; a known limitation stays unfixed: a
-virtual reference to a DICOM file's pixel bytes cannot mask unused high bits or sign-extend a
-stored value narrower than its container (Bits Stored < Bits Allocated). New work should write
-duckn metadata into Zarr v3 zip stores. See the [ZMP guide](docs/zmp-guide.md) for the existing
-tools.
 
 ## Design principles
 
@@ -105,14 +103,12 @@ duckn.zarr_to_dicom("ct.zarr", "ct_enhanced.dcm")
 duckn from-nrrd scan.nrrd scan.zarr
 duckn from-nifti brain.nii.gz brain.zarr
 duckn from-dicom dicom_series/ ct.zarr
-duckn from-idc 2d1e2084-4fc9-4399-b748-479a8799788c ct.zmp
-duckn from-zarr-zip data.zarr.zip data.zmp
 duckn to-nrrd scan.zarr scan_out.nrrd
 duckn to-nifti brain.zarr brain_out.nii.gz
 duckn to-dicom ct.zarr ct_enhanced.dcm
 duckn to-bids ct.zarr ct.json
-duckn info scan.zarr                    # also accepts .zmp
-duckn header scan.zarr                  # also accepts .zmp
+duckn info scan.zarr
+duckn header scan.zarr
 duckn roundtrip scan.nrrd
 ```
 
@@ -151,7 +147,7 @@ A duckn store is a standard Zarr V3 array with a `"duckn"` key in its attributes
 }
 ```
 
-duckn metadata can live in any Zarr store — a directory on disk, a `.zarr.zip` archive, or a ZMP manifest. The metadata convention is independent of the storage mechanism.
+duckn metadata can live in any Zarr v3 store — a directory on disk, an object store, or a `.zarr.zip` file. The metadata convention is independent of the storage mechanism.
 
 ## Converters
 
@@ -161,7 +157,6 @@ duckn metadata can live in any Zarr store — a directory on disk, a `.zarr.zip`
 | NIfTI  | `nifti_to_zarr()` | `zarr_to_nifti()` | Possible |
 | DICOM  | `dicom_to_zarr()` | `zarr_to_dicom()` | Streaming mode |
 | DICOM SEG | `dicom_to_zarr()` | — | — |
-| Zarr zip | `zarr_zip_to_zmp()` | — | Virtual or hydrated |
 
 ## Extensions
 
@@ -171,20 +166,6 @@ Domain-specific metadata lives inside `duckn.extensions`. Extensions depend on d
 - **seg** — 3D Slicer segmentation (segments, terminologies, label maps)
 - **nifti** — NIfTI provenance (sform/qform codes, intent, legacy affines)
 - **dicom** — DICOM provenance (tags, transfer syntax, anonymization status)
-
-## ZMP integration (deprecated)
-
-ZMP is deprecated in favor of valiz (under development); see "Where duckn fits" above.
-
-This library includes tools that build [ZMP](https://github.com/mhalle/zarr-zmp) manifests with duckn metadata from various imaging sources. ZMP is a separate project — a general-purpose virtual index for Zarr stores. duckn uses it but does not require it.
-
-When used together, a ZMP manifest can give virtual random access to imaging data on S3, in zip archives, or on DICOMweb servers — with full duckn spatial metadata and provenance, queryable via DuckDB.
-
-See the [ZMP building guide](docs/zmp-guide.md) for details on:
-- Building virtual ZMPs from Zarr zip stores, NIfTI files, DICOM series, and DICOMweb servers
-- Hydrating ZMPs for offline use
-- Composing multiple ZMPs into a single manifest
-- Querying ZMP metadata with DuckDB
 
 ## Documentation
 
@@ -207,7 +188,20 @@ to get wrong, with the bugs that motivated them.
 - [Provenance extension](docs/provenance-extension.md) — general processing history
 - [Space transforms](docs/transform-spec.md) — named coordinate spaces and affine transforms
 - [Units](docs/units-spec.md) — structured unit system
-- [ZMP building guide](docs/zmp-guide.md) — virtual and hydrated manifests (deprecated)
+
+## Appendix: ZMP (deprecated)
+
+[ZMP](https://github.com/mhalle/zarr-zmp) (Zarr Manifest Parquet) is a virtual index that maps a
+Zarr store's chunk paths to byte ranges in other files - zip archives, DICOM files on S3,
+DICOMweb servers - and this library can build ZMPs carrying duckn metadata (`duckn from-idc`,
+`duckn from-zarr-zip`, `zarr_zip_to_zmp()`, and the builders in the [ZMP guide](docs/zmp-guide.md)).
+
+It is deprecated. A Parquet manifest asks too much of the community's readers, and Parquet
+readers are not compact. Its successor, **valiz**, is a similar idea built on zip files and is
+still under development. The ZMP builders remain for now and are not being extended. One known
+limitation stays unfixed: a virtual reference to a DICOM file's pixel bytes cannot mask unused
+high bits or sign-extend a value narrower than its container (Bits Stored < Bits Allocated), so
+such data reads as container words.
 
 ## License
 
