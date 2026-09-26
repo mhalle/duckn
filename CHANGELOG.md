@@ -51,6 +51,17 @@ contradicted the array. All fixed here, each pinned by a test that fails on 0.5.
   groups.
 - **BIDS sidecars** carry no empty strings (`"InstitutionName": ""` since 0.5.3's `""` rule).
 
+### Changed - specification (duckn-spec)
+- **§4.7 Writers and Converters.** Every writer states only what is true of the array and
+  states it so it cannot be misread; a writer that cannot vouch for metadata leaves it out
+  (absent means unknown), and uses an extension's way of stating what it could not vet. A
+  converter keeps a source extension only while the array faithfully re-encodes that source,
+  and makes it true of this array. What a writer optimizes for - compactness and speed,
+  round-trip fidelity, a standard - is its own choice; the convention requires that the result
+  be true and unambiguous under it, and a tool documents its choice.
+- §7.6's example no longer shows SliceThickness / PixelSpacing in `tags` (dicom-spec excludes
+  them), and its note no longer says the extension carries them.
+
 ### Changed - specification (dicom-spec)
 - §4.2: UN in the binary row; malformed and empty numbers; how private values are encoded.
 - §6.1: the time-series rule. §9: the varying-rescale exception, the functional-group rules.

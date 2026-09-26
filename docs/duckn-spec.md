@@ -573,6 +573,14 @@ The conservative rule in §4.5 is what makes that layering work. Dropping inheri
 
 A consequence worth stating: an array carrying no provenance extension records nothing about its own origin. Facts that would qualify its values — that they descend from lossy-compressed data, or from an interpolating resample — are not preserved by the convention itself. That is a real limitation, and the reason to record derivation somewhere rather than nowhere.
 
+### 4.7 Writers and Converters
+
+**Every writer states only what is true of the array it writes, and states it so it cannot be misread.** A reader holding nothing but the file must be able to take each statement at its word: the convention fields describe the array (§4.1–§4.5), and anything an extension carries is either true of the array or explicitly about something else, such as the source an extension describes. A writer that cannot vouch for a piece of metadata leaves it out rather than guessing or passing it through; since absent means unknown (§1), leaving out never claims that the source lacked it. Where an extension defines a way to state what the writer could not vet — dicom-spec's `stored_values`, `anonymized`, `lossy_compressed` — the writer uses it.
+
+**A converter also owes the reader how the array relates to its source.** It keeps a source extension only while the array faithfully re-encodes that source (§4.5), and it makes that extension true of this array: it writes what kind of values the array holds, leaves out what the conversion made untrue (attributes in units the array no longer uses, a second copy of geometry the axes state), and never implies a completeness it does not have.
+
+**What a writer optimizes for is its own choice.** One converter may favor compact storage and fast reads, another fidelity to the source for a round trip, another compliance with a particular standard; a writer may drop metadata it cannot vouch for, materialize values (§4.3), or carry a source's full header where an extension provides for it. None of these is more correct than the others. What the convention requires is not a particular choice but that the result be true and unambiguous under whichever choice was made — and a tool should document the choice it makes, since the file records the result, not the intention. (Recording the intention in the file belongs to provenance, §4.6.) Each source extension states its own default and what a writer may do differently: the `dicom` extension favors usability over round-trip fidelity (dicom-spec §1), the `nifti` extension round-trip fidelity (nifti-spec §1).
+
 ---
 
 ## 5. Consistency Rules
@@ -941,6 +949,7 @@ An anonymized CT scan that preserves acquisition metadata via a `dicom` extensio
           "version": "1.0",
           "schema": "https://example.org/dicom-zarr/v1.0/schema.json",
           "anonymized": true,
+          "stored_values": true,
           "tags": {
             "Modality": "CT",
             "SeriesInstanceUID": "1.2.840.113619.2.55.3.604688119.969.1069843699.84",
@@ -951,8 +960,6 @@ An anonymized CT scan that preserves acquisition metadata via a `dicom` extensio
             "ManufacturerModelName": "LightSpeed16",
             "KVP": 120,
             "XRayTubeCurrent": 200,
-            "SliceThickness": 5.0,
-            "PixelSpacing": [0.703, 0.703],
             "AcquisitionDate": null,
             "PatientName": null,
             "PatientID": null,
@@ -965,7 +972,7 @@ An anonymized CT scan that preserves acquisition metadata via a `dicom` extensio
 }
 ```
 
-The `dicom` extension separates its own metadata (`version`, `schema`, `anonymized`) from DICOM's vocabulary (everything inside `tags`). DICOM keywords use PascalCase as defined in PS3.6. Numeric values are stored as JSON numbers rather than DICOM's string encoding — the goal is usability, not round-trip VR fidelity. Spatial fields like `SliceThickness` and `PixelSpacing` overlap with the `duckn` axes; the extension carries the DICOM-native values for provenance, while the axes are authoritative for processing.
+The `dicom` extension separates its own metadata (`version`, `schema`, `anonymized`) from DICOM's vocabulary (everything inside `tags`). DICOM keywords use PascalCase as defined in PS3.6. Numeric values are stored as JSON numbers rather than DICOM's string encoding — the goal is usability, not round-trip VR fidelity. Attributes the convention fields state — `SliceThickness`, `PixelSpacing`, the rescale — are not in `tags` at all: the axes and `value_transforms` state them, and a second copy could only disagree (dicom-spec §2, §9). `stored_values: true` says this array holds the source's stored values, which is what `value_transforms` then maps (dicom-spec §3.1).
 
 ### 7.7 Minimal
 
