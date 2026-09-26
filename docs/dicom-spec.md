@@ -172,7 +172,7 @@ Tag keys are the standard DICOM keywords from PS3.6 (the Data Dictionary). These
 
 Keywords provide a stable, human-readable, and tool-friendly namespace. They are preferred over hex tag codes (`"00080060"`) for readability. The PS3.6 keyword is the canonical form; do not use the tag name (which may contain spaces) or ad hoc abbreviations.
 
-For private data elements, use the hex tag code as the key (e.g., `"00091001"`), since private tags have no standard keywords. Private tags are kept by default (§9). A private block's elements mean something only under the private creator that reserved the block, so a writer that keeps any element of a block keeps its creator element with it (e.g., `"00090010": "ACME 1.0"` beside `"00091001"`).
+For private data elements, use the hex tag code as the key (e.g., `"00091001"`), since private tags have no standard keywords. Private tags are kept by default, and may be left out whole (§9). A private block's elements mean something only under the private creator that reserved the block, so a writer that keeps any element of a block keeps its creator element with it (e.g., `"00090010": "ACME 1.0"` beside `"00091001"`).
 
 ### 4.2 Values: JSON-Native Encoding
 
@@ -779,7 +779,9 @@ A CT volume that includes coded anatomy using DICOM's standard sequence pattern:
 | File Meta Information (group 0002) | Describes each file, not the data; its transfer syntax is `source_transfer_syntax` (§3.1) |
 | Group Length tags | Encoding artifact, per PS3.18 |
 
-Private tags are **not** excluded: they are kept under their hex codes, each block with its private creator (§4.1). Earlier drafts excluded them by default, but a converter's output is often the only copy of the header a pipeline keeps, and private elements carry acquisition parameters found nowhere else (diffusion b-values and gradient directions, vendor scale factors). A reader or a serving policy that wants them hidden filters them; a converter does not drop them.
+Private tags are **kept by default**, under their hex codes, each block with its private creator (§4.1): a converter's output is often the only copy of the header a pipeline keeps, and private elements carry acquisition parameters found nowhere else (diffusion b-values and gradient directions, vendor scale factors).
+
+A writer **may leave all private elements out** when it cannot vouch for them against the array and the source remains available to anyone who needs them — a cache of data fetched from an archive, for instance. Their meaning is the vendor's, so no writer can check them against what the array now holds (a private scale factor in stored-value units, say, beside rescaled values); leaving them out is the way to guarantee that nothing in `tags` contradicts the array. It is all or nothing: a writer that keeps some private elements keeps each one's block creator (§4.1). As everywhere in `tags`, absence says only "not stated here" (§4.3), never "not in the source."
 
 The value-mapping attributes are excluded for a stronger reason than redundancy. A duckn writer may legitimately change the array's encoding — materializing calibrated values, or re-encoding to a different storage type (duckn convention §4.3). The source's `RescaleSlope` then describes an encoding the array no longer uses, while `value_transforms` describes the one it does. Keeping both would require editing the DICOM copy to track the array, at which point it has stopped being a record of the source.
 

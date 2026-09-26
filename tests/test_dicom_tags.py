@@ -278,6 +278,33 @@ def test_nothing_in_stored_units_is_stated_of_rescaled_values(tmp_path):
     assert not {"PlanarConfiguration", "OverlayRows", "OverlayBitPosition"} & everything
 
 
+def test_a_writer_may_leave_every_private_element_out(tmp_path):
+    import pydicom
+    from pydicom.dataset import Dataset
+    from pydicom.sequence import Sequence
+    files = _rich(tmp_path / "s")
+    for f in files:                                       # a private element inside a sequence too
+        ds = pydicom.dcmread(f)
+        ds.ReferencedImageSequence[0].add_new(0x00091010, "LO", "inside")
+        ds.save_as(f, enforce_file_format=True)
+    s, sl, _ = dt.tags_from_files(files, private=False)
+    def keys(d):
+        for k, v in d.items():
+            yield k
+            if isinstance(v, list):
+                for item in v:
+                    if isinstance(item, dict):
+                        yield from keys(item)
+    every = set(keys(s)) | {k for x in sl for k in keys(x)}
+    import re
+    assert not [k for k in every if re.fullmatch(r"[0-9A-F]{8}", k) and int(k[:4], 16) % 2]
+    assert s["ICCProfile"] == "AQIDBA=="                  # the public binary value stays
+    kept, kept_sl, _ = dt.tags_from_files(files)
+    assert "00091000" in kept and kept_sl[0]["ReferencedImageSequence"][0]["00091010"] == "inside"
+    s2, _ = dt.tags_from_sitk([{"0008|0060": "CT", "0011|1001": "vendor"}], private=False)
+    assert s2 == {"Modality": "CT"}
+
+
 def test_file_meta_is_never_in_tags(tmp_path):
     series, slices, _ = dt.tags_from_files(sorted(_series(tmp_path / "s").iterdir()))
     assert not any(k.startswith("0002") or k in ("TransferSyntaxUID", "MediaStorageSOPInstanceUID")

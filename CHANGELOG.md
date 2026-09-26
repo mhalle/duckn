@@ -7,8 +7,9 @@ The spec contradicted itself in places, and the two converters followed differen
 Settled (2026-09-26):
 - **Private tags are kept by default** (§9, §4.1), under their hex codes, each block with its
   private creator: a converter's output is often the only header a pipeline keeps, and private
-  elements carry acquisition parameters found nowhere else. Hiding them is a reader's or a
-  serving policy's job.
+  elements carry acquisition parameters found nowhere else. A writer **may leave them all out**
+  when it cannot vouch for them against the array and the source stays available (a cache of
+  archive data): `private=False` on every `dicom_tags` entry point, at every depth.
 - **`BitsStored` / `HighBit` stay only while the array holds the source's stored values**
   (§5.10, and the §2 / §9 tables, which excluded them outright while §5.10 kept them). A writer
   whose array holds rescaled, widened or float values leaves them out. `BitsAllocated` and

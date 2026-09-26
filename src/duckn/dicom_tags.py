@@ -21,7 +21,8 @@ The rules are the spec's:
   (§4.5 asks for base64 of the bytes, which the strings no longer are); from pydicom they are
   base64. Bulk data (pixel, overlay, curve and waveform data) is left out either way, and so are
   group lengths and the file meta group 0002, which describes the file, not the data (§9);
-- private tags are kept, under their hex codes, their creator elements with them (§4.1);
+- private tags are kept, under their hex codes, their creator elements with them (§4.1) - or
+  left out whole by a writer that cannot vouch for them (``private=False``, §9);
 - Bits Stored and High Bit describe the source's STORED values: kept only when the caller says
   the array holds them (``stored_values=True``), left out when a reader rescaled or widened
   them (§5.10);
@@ -194,12 +195,17 @@ def _left_out(tag: int, stored_values: bool) -> bool:
             or (not stored_values and tag in STORED_ENCODING))
 
 
-def tags_from_sitk(per_slice: list[dict[str, str]], *, stored_values: bool = False
-                   ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def _private(tag: int) -> bool:
+    return (tag >> 16) % 2 == 1
+
+
+def tags_from_sitk(per_slice: list[dict[str, str]], *, stored_values: bool = False,
+                   private: bool = True) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """``(series_tags, per_slice_tags)`` from SimpleITK's per-slice dictionaries, in the order
     given (the image's slice order). Keys that are not DICOM tags (SimpleITK's own ``ITK_...``),
     excluded tags, binary VRs and group lengths are dropped. ``stored_values``: whether the
-    array holds the source's stored values (§5.10) - SimpleITK rescales where the files say to."""
+    array holds the source's stored values (§5.10) - SimpleITK rescales where the files say to.
+    ``private=False`` leaves every private element out (§9)."""
     if not per_slice:
         return {}, []
     keys: set[str] = set()
@@ -209,7 +215,7 @@ def tags_from_sitk(per_slice: list[dict[str, str]], *, stored_values: bool = Fal
     varying: list[tuple[int, str]] = []
     for key in sorted(keys):
         tag = _tag(key)
-        if tag is None or _left_out(tag, stored_values):
+        if tag is None or _left_out(tag, stored_values) or (not private and _private(tag)):
             continue
         vr, _ = _vr_vm(tag)
         if vr is not None and vr.split(" or ")[0] in _BINARY_VRS:
@@ -268,7 +274,7 @@ def to_sitk_strings(tags: dict[str, Any]) -> dict[str, str]:
     return out
 
 
-def _pydicom_value(elem: Any, binary: bool) -> Any:
+def _pydicom_value(elem: Any, binary: bool, private: bool = True) -> Any:
     """One pydicom element in the spec's encoding (§4), or None to leave it out. Scalars by
     :mod:`duckn.dicom_convert`'s value rules; a sequence item by :func:`dataset_tags`, so empty
     values follow one rule at every depth: an empty number is left out, an empty string is
@@ -277,7 +283,8 @@ def _pydicom_value(elem: Any, binary: bool) -> Any:
     from .dicom_convert import _convert_value, _should_be_array
     vr = elem.VR.split(" or ")[0] if elem.VR else None
     if vr == "SQ":
-        return [dataset_tags(item, exclude=False, binary=binary) for item in (elem.value or [])]
+        return [dataset_tags(item, exclude=False, binary=binary, private=private)
+                for item in (elem.value or [])]
     value = _convert_value(elem)
     if value is None and vr not in _NUMERIC_INT | _NUMERIC_FLOAT | _BINARY_VRS | {"AT"}:
         return [""] if _should_be_array(elem) else ""
@@ -285,30 +292,32 @@ def _pydicom_value(elem: Any, binary: bool) -> Any:
 
 
 def dataset_tags(ds: Any, *, stored_values: bool = False, binary: bool = True,
-                 exclude: bool = True) -> dict[str, Any]:
+                 exclude: bool = True, private: bool = True) -> dict[str, Any]:
     """One pydicom dataset's ``tags`` (§4): keywords, hex codes for private tags (their creators
     kept with them, §4.1), sequences recursive, binary values as base64 unless ``binary`` is
     False. Bulk data and group lengths are always left out; ``exclude`` also leaves out what
     §2 and §9 exclude at the top level - a sequence item is converted with it off, since what an
     item holds describes the item, not the array. The file meta group is never read: pydicom
-    keeps it apart (``ds.file_meta``), and it describes the file."""
+    keeps it apart (``ds.file_meta``), and it describes the file. ``private=False`` leaves
+    every private element out, at every depth (§9)."""
     out: dict[str, Any] = {}
     for elem in ds:
         tag = int(elem.tag)
-        if (tag & 0xFFFF) == 0 or _bulk(tag):
+        if (tag & 0xFFFF) == 0 or _bulk(tag) or (not private and _private(tag)):
             continue
         if exclude and _left_out(tag, stored_values):
             continue
         vr = elem.VR.split(" or ")[0] if elem.VR else None
         if not binary and vr in _BINARY_VRS:
             continue
-        value = _pydicom_value(elem, binary)
+        value = _pydicom_value(elem, binary, private)
         if value is not None:
             out[keyword_of(tag)] = value
     return out
 
 
-def tags_from_datasets(datasets, *, stored_values: bool = False, binary: bool = True
+def tags_from_datasets(datasets, *, stored_values: bool = False, binary: bool = True,
+                       private: bool = True
                        ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
     """``(series_tags, per_slice_tags, extension_fields)`` from pydicom datasets in the image's
     slice order - an iterable, each converted as it comes, so a caller can read one header at a
@@ -324,7 +333,7 @@ def tags_from_datasets(datasets, *, stored_values: bool = False, binary: bool = 
     syntaxes: set = set()
     lossy = False
     for ds in datasets:
-        per.append(dataset_tags(ds, stored_values=stored_values, binary=binary))
+        per.append(dataset_tags(ds, stored_values=stored_values, binary=binary, private=private))
         syntaxes.add(_get_transfer_syntax(ds))
         lossy = lossy or _is_lossy_compressed(ds) is True
     if not per:
@@ -346,7 +355,8 @@ def tags_from_datasets(datasets, *, stored_values: bool = False, binary: bool = 
     return series, slices, ext
 
 
-def tags_from_files(paths, *, stored_values: bool = False, binary: bool = True
+def tags_from_files(paths, *, stored_values: bool = False, binary: bool = True,
+                    private: bool = True
                     ) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
     """:func:`tags_from_datasets` of DICOM files, in the order given, reading each header
     (never the pixel data) and letting it go before the next; ``force`` reads a file without
@@ -357,4 +367,5 @@ def tags_from_files(paths, *, stored_values: bool = False, binary: bool = True
     def headers():
         for p in paths:
             yield pydicom.dcmread(str(p), stop_before_pixels=True, force=True)
-    return tags_from_datasets(headers(), stored_values=stored_values, binary=binary)
+    return tags_from_datasets(headers(), stored_values=stored_values, binary=binary,
+                              private=private)
