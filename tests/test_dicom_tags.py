@@ -148,6 +148,93 @@ def test_a_series_simpleitk_read(tmp_path):
     assert per_slice[0][dt.RESCALE_TYPE].strip() == "HU"
 
 
+def _rich(folder, n=4):
+    """The fixture series, plus what SimpleITK's dictionaries cannot hold: a sequence, a binary
+    value, a private binary value, an empty value, overlay data and waveform data."""
+    import pydicom
+    from pydicom.dataset import Dataset
+    from pydicom.sequence import Sequence
+    _series(folder, n)
+    for i, f in enumerate(sorted(folder.iterdir())):
+        ds = pydicom.dcmread(f)
+        item = Dataset()
+        item.ReferencedSOPClassUID, item.ReferencedSOPInstanceUID = CT_SOP, f"1.2.3.{i}"
+        item.ReferencedFrameNumber = ""                    # empty inside a sequence: left out
+        ds.ReferencedImageSequence = Sequence([item])
+        ds.add_new(0x00282000, "OB", b"\x01\x02\x03\x04")  # ICC Profile: binary, kept
+        ds.add_new(0x00091010, "OB", bytes([i, 7]))         # private, binary, varies
+        ds.add_new(0x00091000, "LO", "ACME 1.0")             # its creator
+        ds.StudyDescription = ""                             # empty text: ""
+        ds.add_new(0x00181150, "IS", None)                   # empty number: left out, never null
+        ds.add_new(0x60003000, "OW", b"\x00" * 6)             # overlay data: bulk
+        ds.add_new(0x54001004, "US", 16)                     # (GDCM reads waveform data only
+        ds.add_new(0x54001010, "OW", b"\x00" * 4)             #  with its bits): bulk
+        ds.save_as(f, enforce_file_format=True)
+    return sorted(folder.iterdir())
+
+
+def test_datasets_keep_sequences_binary_and_private_tags(tmp_path):
+    files = _rich(tmp_path / "s")
+    series, slices, ext = dt.tags_from_files(files)
+    assert series["ICCProfile"] == "AQIDBA=="
+    assert series["00091000"] == "ACME 1.0"
+    assert [s["00091010"] for s in slices] == ["AAc=", "AQc=", "Agc=", "Awc="]
+    assert [s["ReferencedImageSequence"] for s in slices][2] == [
+        {"ReferencedSOPClassUID": CT_SOP, "ReferencedSOPInstanceUID": "1.2.3.2"}]
+    assert series["StudyDescription"] == "" and "ExposureTime" not in series
+    assert not {"OverlayData", "WaveformData", "PixelData"} & (series.keys() | slices[0].keys())
+    assert not any(k.startswith("6000") or k.startswith("5400") for k in series)
+    assert ext == {"source_transfer_syntax": "1.2.840.10008.1.2.1", "lossy_compressed": False}
+
+
+def test_datasets_exclude_what_the_convention_captures_and_the_file_meta(tmp_path):
+    series, slices, _ = dt.tags_from_files(_rich(tmp_path / "s"))
+    everything = series.keys() | {k for s in slices for k in s}
+    assert not {"PixelSpacing", "SliceThickness", "RescaleSlope", "RescaleIntercept",
+                "RescaleType", "ImagePositionPatient", "ImageOrientationPatient", "Rows",
+                "Columns", "BitsAllocated"} & everything
+    assert not {"TransferSyntaxUID", "MediaStorageSOPInstanceUID"} & everything
+
+
+def test_datasets_agree_with_simpleitk_on_every_tag_both_see(tmp_path):
+    """The two sources must encode one value one way: a copy made through either reads the same."""
+    sitk = pytest.importorskip("SimpleITK")
+    files = _rich(tmp_path / "s")
+    reader = sitk.ImageSeriesReader()
+    reader.SetFileNames([str(f) for f in files])
+    reader.MetaDataDictionaryArrayUpdateOn()
+    reader.LoadPrivateTagsOn()
+    reader.Execute()
+    per_slice = [{k: reader.GetMetaData(i, k) for k in reader.GetMetaDataKeys(i)}
+                 for i in range(len(files))]
+    s_series, s_slices = dt.tags_from_sitk(per_slice)
+    p_series, p_slices, _ = dt.tags_from_files(files)
+    for k, v in s_series.items():
+        assert p_series[k] == v, k
+    for s, p in zip(s_slices, p_slices):
+        for k, v in s.items():
+            assert p[k] == v, k
+    assert len(p_series) > len(s_series)                   # and says more
+
+
+def test_datasets_a_tag_some_slices_lack_is_per_slice_and_an_iterable_is_enough():
+    from pydicom.dataset import Dataset
+
+    def gen():
+        for i in range(3):
+            ds = Dataset()
+            ds.Modality, ds.InstanceNumber = "MR", i
+            if i != 1:
+                ds.EchoTime = 5.0
+            yield ds
+    series, slices, ext = dt.tags_from_datasets(gen())
+    assert series == {"Modality": "MR"}
+    assert slices == [{"EchoTime": 5.0, "InstanceNumber": 0}, {"InstanceNumber": 1},
+                      {"EchoTime": 5.0, "InstanceNumber": 2}]
+    assert ext == {}
+    assert dt.tags_from_datasets([]) == ({}, [], {})
+
+
 def test_duckn_io_imports_in_a_fresh_process():
     # `from duckn import io` recursed without end: __getattr__("io") ran `from . import io`
     r = subprocess.run([sys.executable, "-c", "from duckn import io; print(io.__name__)"],

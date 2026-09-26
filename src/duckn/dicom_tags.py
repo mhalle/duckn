@@ -36,6 +36,12 @@ Unlike the pydicom converter's per-slice split, nothing that varies is dropped: 
 onto a SimpleITK image as a single-file read would show them. It is not a byte-exact round trip:
 ``"120.000 "`` comes back ``"120"``, which §4.2 accepts.
 
+:func:`tags_from_datasets` (and :func:`tags_from_files`, which reads the headers itself) is the
+same conversion from pydicom datasets, for a caller that wants what SimpleITK's dictionaries
+cannot hold: sequences, binary values (base64, §4.5) and private tags as the files carry them.
+Same exclusions, same split, same encoding of every value SimpleITK can also report; it also
+returns the extension's own fields (§3.1) the files state.
+
 Written in haversack (2026-09-25) for its input copy, a decoded duckn form of each cached input,
 and moved here so that the spec's rules live beside the spec.
 """
@@ -49,6 +55,9 @@ __all__ = [
     "SLICE_THICKNESS",
     "encode",
     "keyword_of",
+    "BULK",
+    "tags_from_datasets",
+    "tags_from_files",
     "tags_from_sitk",
     "to_sitk_strings",
 ]
@@ -76,6 +85,16 @@ RESCALE_TYPE = "0028|1054"
 _NUMERIC_INT = frozenset({"IS", "US", "SS", "UL", "SL", "UV", "SV"})
 _NUMERIC_FLOAT = frozenset({"DS", "FL", "FD"})
 _BINARY_VRS = frozenset({"OB", "OW", "OF", "OD", "OL", "OV", "UN"})
+#: Bulk data the array itself (or no image at all) represents, left out of ``tags`` even where
+#: binary values are kept (§4.5): the pixel data in all three of its forms and its offset tables;
+#: overlay and curve data in every repeating group (60xx,3000 / 50xx,3000); waveform data.
+BULK = frozenset({0x7FE00010, 0x7FE00008, 0x7FE00009, 0x7FE00001, 0x7FE00002, 0x54001010})
+
+
+def _bulk(tag: int) -> bool:
+    group, element = tag >> 16, tag & 0xFFFF
+    return (tag in BULK or (0x6000 <= group <= 0x60FF and element == 0x3000)
+            or (0x5000 <= group <= 0x50FF and element == 0x3000))
 
 
 def _tag(key: str) -> int | None:
@@ -205,3 +224,86 @@ def to_sitk_strings(tags: dict[str, Any]) -> dict[str, str]:
             continue
         out[f"{tag >> 16:04x}|{tag & 0xFFFF:04x}"] = _text(value)
     return out
+
+
+def _pydicom_value(elem: Any) -> Any:
+    """One pydicom element in the spec's encoding: :mod:`duckn.dicom_convert`'s own conversion
+    (sequences recursive, binary as base64). Empty values as :func:`encode` has them: an empty
+    number is left out (at every depth - ``null`` is reserved for a value deliberately removed,
+    §4.3), an empty string is ``""`` (``[""]`` where the VM makes it an array) - an attribute
+    present and empty says something an absent one does not."""
+    from .dicom_convert import _convert_value, _should_be_array
+
+    def strip(v):
+        if isinstance(v, dict):
+            return {k: sv for k, x in v.items() if (sv := strip(x)) is not None}
+        if isinstance(v, list):
+            return [strip(x) for x in v]
+        return v
+    value = strip(_convert_value(elem))
+    vr = elem.VR.split(" or ")[0] if elem.VR else None
+    if value is None and vr not in _NUMERIC_INT | _NUMERIC_FLOAT | _BINARY_VRS | {"SQ", "AT"}:
+        return [""] if _should_be_array(elem) else ""
+    return value
+
+
+def _one_dataset(ds: Any) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for elem in ds:                          # the data set only: group 0002 describes the file
+        tag = int(elem.tag)
+        if tag in EXCLUDED or (tag & 0xFFFF) == 0 or _bulk(tag):
+            continue
+        value = _pydicom_value(elem)
+        if value is not None:
+            out[keyword_of(tag)] = value
+    return out
+
+
+def tags_from_datasets(datasets) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    """``(series_tags, per_slice_tags, extension_fields)`` from pydicom datasets in the image's
+    slice order - an iterable, each converted as it comes, so a caller can read one header at a
+    time. The split and the exclusions are :func:`tags_from_sitk`'s; unlike it, sequences,
+    binary values (base64, bulk data excepted) and private tags are kept. ``extension_fields``
+    holds what §3.1 asks of the files: ``source_transfer_syntax`` when every file states the
+    same one, and ``lossy_compressed`` when any file says yes, or every file says no."""
+    from .dicom_convert import _get_transfer_syntax, _is_lossy_compressed
+    per: list[dict[str, Any]] = []
+    syntaxes: set = set()
+    lossy: list = []
+    for ds in datasets:
+        per.append(_one_dataset(ds))
+        syntaxes.add(_get_transfer_syntax(ds))
+        lossy.append(_is_lossy_compressed(ds))
+    if not per:
+        return {}, [], {}
+    keys = sorted({k for d in per for k in d})
+    series = {}
+    varying = []
+    for k in keys:
+        first = per[0].get(k)
+        if first is not None and all(d.get(k) == first for d in per):
+            series[k] = first
+        else:
+            varying.append(k)
+    slices = [{k: d[k] for k in varying if k in d} for d in per]
+    ext: dict[str, Any] = {}
+    if len(syntaxes) == 1 and None not in syntaxes:
+        ext["source_transfer_syntax"] = next(iter(syntaxes))
+    if any(v is True for v in lossy):
+        ext["lossy_compressed"] = True
+    elif lossy and all(v is False for v in lossy):
+        ext["lossy_compressed"] = False
+    return series, slices, ext
+
+
+def tags_from_files(paths) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    """:func:`tags_from_datasets` of DICOM files, in the order given, reading each header
+    (never the pixel data) and letting it go before the next; ``force`` reads a file without
+    the Part 10 preamble, which real archives hold."""
+    _dictionary()
+    import pydicom
+
+    def headers():
+        for p in paths:
+            yield pydicom.dcmread(str(p), stop_before_pixels=True, force=True)
+    return tags_from_datasets(headers())

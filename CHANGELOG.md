@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `dicom_tags.tags_from_datasets` / `tags_from_files`: DICOM tags from pydicom datasets in the
+  `dicom` extension's encoding, with `tags_from_sitk`'s exclusions and series / per-slice split,
+  keeping what SimpleITK's dictionaries cannot hold - sequences, binary values as base64 (bulk
+  data excepted: pixel, overlay, curve and waveform data), private tags - and returning the
+  extension's `source_transfer_syntax` and `lossy_compressed` as the files state them. Every
+  value both sources can see is encoded identically (a test holds the two to it). Headers are
+  read one at a time, never the pixel data.
+
 ## 0.5.2 — 2026-09-25
 
 ### Changed — specification
