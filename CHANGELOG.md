@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.2 — 2026-09-27
+
+- **dicom-spec §5's groups by name** (`patient`, `study`, `series`, `equipment`, `ct`, `mr`,
+  `pet`, `frame-of-reference`, `sop-common`, `image-quality`; the spec's headings now carry
+  them) and three helpers in `duckn.dicom_tags`: `MODULES`, `keywords_named` (group names and
+  PS3.6 keywords to keys; an unknown name is a ValueError, never an empty selection), `select`
+  and `withhold` (§4.3's redaction: every present value named becomes `null`, at any depth, and
+  the caller learns whether anything was). A test reads the spec's tables and holds `MODULES`
+  equal to them. For a reader that serves a file's tags - haversack's `dicom.json` is the first.
+  The convention is unchanged.
+
 ## 0.6.1 — 2026-09-27
 
 Four converter defects in how 1.x files state where samples lie and what a dimension is. None
