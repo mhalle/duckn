@@ -1,8 +1,9 @@
 # NIfTI Provenance Extension for duckn
 
 **Extension name:** `nifti`
-**Version:** 1.0
-**Status:** Draft
+**Version:** 1.1
+**Status:** Draft. 1.1 (2026-09-26): `sform_code` and `qform_code` are stated when 0, and
+`xyzt_units` keeps a time unit no axis can carry (§4.2).
 
 ---
 
@@ -25,13 +26,13 @@ The following table shows which NIfTI header fields are already captured by Zarr
 | `dim[0..7]` | Zarr `shape` | Dimension count and sizes |
 | `datatype`, `bitpix` | Zarr `data_type` | Element type |
 | `pixdim[1..3]` (spatial) | `axes[i].space_direction` magnitude | Voxel spacing |
-| `pixdim[4]` (temporal) | Time axis `space_direction` or `unit` | Temporal spacing |
+| `pixdim[4]` (temporal) | Time axis `samples[k].position` = k × `pixdim[4]`, in the axis `unit` | The interval between volumes (TR). Not `thickness`, which is the extent each sample measures (duckn-spec §3.2); a time axis has no `space_direction` to hold it. A single volume has no interval to state. |
 | `sform44` | `space_origin` + `axes[i].space_direction` | Primary affine decomposition (see §3) |
-| `sform_code` | `space` | Coordinate space identity |
+| `sform_code` | `space` | Coordinate space identity; the code itself is in `tags` (§4.2) |
 | `qform44` | `space_origin` + `axes[i].space_direction` | Reconstructed from specification fields; only `qform_code` preserved in extension |
 | `scl_slope`, `scl_inter` | `value_transforms` `linear` | Value rescaling |
-| `xyzt_units` (spatial bits) | `axes[i].unit` on spatial axes | e.g., `"mm"` |
-| `xyzt_units` (temporal bits) | `axes[t].unit` on time axis | e.g., `"s"`, `"ms"` |
+| `xyzt_units` (spatial bits) | `axes[i].unit` on spatial axes | e.g., `"mm"`; code 0 (unknown) leaves the unit out |
+| `xyzt_units` (temporal bits) | `axes[t].unit` on time axis | e.g., `"s"`, `"ms"`, `"Hz"`, `"ppm"`, `"rad/s"`; on a file with no time axis, `tags.xyzt_units` (§4.2) |
 | `vox_offset` | — | File layout artifact; no semantic content |
 | `sizeof_hdr`, `magic` | — | Format identification; no semantic content |
 | `regular` (NIfTI-2) | — | Always `'r'`; no information |
@@ -56,6 +57,13 @@ The `sform_code` maps to the specification's `space` field:
 | 2 (NIFTI_XFORM_ALIGNED_ANAT) | `"right-anterior-superior"` |
 | 3 (NIFTI_XFORM_TALAIRACH) | `"right-anterior-superior"` |
 | 4 (NIFTI_XFORM_MNI_152) | `"right-anterior-superior"` |
+
+When both `sform_code` and `qform_code` are 0, the file states no transform: NIfTI-1's "method 1"
+(x = `pixdim[1]` × i, and so on) is kept for Analyze 7.5 compatibility and places the grid in no
+patient space. The converter writes no `space`, but `space_dimension` 3, `space_origin` [0, 0, 0]
+and `space_direction` = `pixdim` along each axis: method 1's own statement. It never states the
+fall-back affine a reader such as nibabel builds (a flipped x and a centered origin), which the
+file does not contain.
 
 All NIfTI sform coordinate systems are RAS-oriented (the NIfTI-1 spec defines the sform output as left-right / posterior-anterior / inferior-superior with the positive direction being right, anterior, superior). Codes 2–4 differ in what the space *means* (alignment target, atlas), not in the axis directions. The specification's `"right-anterior-superior"` captures the geometric orientation; this extension's `sform_code` field (§4.2) preserves the specific interpretation when round-trip fidelity is needed.
 
@@ -119,13 +127,13 @@ The `tags` object contains NIfTI header fields. All fields within `tags` are opt
 
 #### `sform_code`
 
-The original `sform_code` integer from the NIfTI header. Preserves the distinction between scanner-based, aligned, Talairach, and MNI coordinates that the specification's `space` field collapses.
+The original `sform_code` integer from the NIfTI header, 0 included. Preserves the distinction between scanner-based, aligned, Talairach, and MNI coordinates that the specification's `space` field collapses, and states when the file had no sform at all.
 
 ```json
 "sform_code": 2
 ```
 
-Omit when the sform was not present (`sform_code` = 0) or when the code is already fully captured by the `space` field (i.e., `sform_code` = 1 mapping to `"scanner-xyz"`). In practice, include it whenever the source file had `sform_code` ≥ 2 to distinguish aligned, Talairach, and MNI.
+A converter writes it whenever it read the header: `0` means the file had no sform, and **absent means unknown** (the duckn rule, duckn-spec §3). Before 1.1 this field was omitted both for `sform_code` = 0 and for `sform_code` = 1, so a reader of an older store cannot tell those apart from each other or from unknown; it derives the code from `space` (`"scanner-xyz"` gives 1, another anatomical space 2) and, with no `space`, uses 0.
 
 #### `qform_code`
 
@@ -137,7 +145,15 @@ The original `qform_code` integer from the NIfTI header. Preserved so that a con
 
 On write-back, the qform *matrix* is reconstructed from the specification's `space_origin` and `axes[i].space_direction` fields — the same source as the sform. Only the code may differ: for example, `sform_code=4` (MNI) with `qform_code=1` (scanner) is a common pattern from dcm2niix.
 
-Omit when the qform was not present (`qform_code` = 0) or when it equals the `sform_code` (the common case). When omitted, a converter should set the qform code equal to the sform code.
+A converter writes it whenever it read the header, `0` for a file with no qform. When it is absent (unknown, or a store written before 1.1, which omitted it for 0 and wrote it otherwise), a converter sets the qform code equal to the sform code. A code of 0 on either transform is written back as 0, with no matrix: a qform-only file does not gain an sform on export, nor the reverse.
+
+#### `xyzt_units`
+
+Since 1.1. The header's `xyzt_units` byte, written **only** when its temporal bits state a unit and the array has no time axis to carry it (a 3D file that states seconds). Every other unit is on its axis's `unit`. On export the temporal bits come from here when the store has no time axis; the spatial bits always come from the axes.
+
+```json
+"xyzt_units": 10
+```
 
 #### `dim_info`
 
@@ -339,11 +355,11 @@ A converter writing back to NIfTI should reconstruct both affines from specifica
 | `regular` (NIfTI-2) | Always `'r'` |
 | `dim[0..7]` | Zarr `shape` |
 | `datatype`, `bitpix` | Zarr `data_type` |
-| `pixdim[1..7]` | Spatial: recoverable from `space_direction` magnitudes. Temporal: specification axis metadata. |
+| `pixdim[1..7]` | Spatial: recoverable from `space_direction` magnitudes. `pixdim[4]`: the time axis's sample positions (§2). |
 | `sform44` | Decomposed into specification fields (§3) |
 | `qform44` (when = sform) | Redundant |
 | `scl_slope`, `scl_inter` | Convention `value_transforms` |
-| `xyzt_units` | Convention per-axis `unit` |
+| `xyzt_units` | Convention per-axis `unit`, except a time unit with no time axis (§4.2) |
 | `glmin`, `glmax` | Analyze 7.5 legacy; unused in NIfTI |
 | `data_type` (10-char string) | Analyze 7.5 legacy; unused in NIfTI |
 | `db_name` | Analyze 7.5 legacy; unused in NIfTI |
@@ -354,7 +370,7 @@ A converter writing back to NIfTI should reconstruct both affines from specifica
 
 ## 6. Consistency Rules
 
-- When `qform_code` is present, it must be > 0.
+- `sform_code` and `qform_code`, when present, are NIfTI transform codes (0-4); 0 means the file had no such transform.
 - When `dim_info` is present, dimension indices must be in the range 0–3 and, if non-zero, must refer to valid spatial dimensions in the array.
 - When `slice_timing` is present, `start` and `end` must be valid indices along the slice dimension identified by `dim_info.slice_dim`. If `dim_info.slice_dim` is unknown (0 or absent), `slice_timing` is still permitted but its axis association is ambiguous.
 - `intent.code` and the specification-level `intent` field should be consistent when both are present. The extension preserves the NIfTI code exactly; the specification provides a coarser label.

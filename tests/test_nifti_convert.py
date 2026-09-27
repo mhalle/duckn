@@ -509,7 +509,10 @@ class TestFourD:
         assert len(meta.axes) == 4
         assert meta.axes[3].kind == "time"
         assert meta.axes[3].unit == "s"
-        assert meta.axes[3].thickness == 2.0
+        # pixdim[4] is the interval between volumes, stated by their positions; it is not the
+        # extent each one measures (thickness), which 0.5.4 wrote it as
+        assert meta.axes[3].thickness is None
+        assert [sm.position for sm in meta.axes[3].samples] == [2.0 * k for k in range(10)]
 
         # dimension names
         dim_names = arr.metadata.dimension_names

@@ -805,6 +805,7 @@ class NiftiTags(BaseModel):
 
     sform_code: int | None = None
     qform_code: int | None = None
+    xyzt_units: int | None = None
     dim_info: NiftiDimInfo | None = None
     intent: NiftiIntent | None = None
     slice_timing: NiftiSliceTiming | None = None

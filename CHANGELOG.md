@@ -34,6 +34,24 @@ pinned by a test that fails on 0.5.4 (`tests/test_review_055.py`).
   wrote the first alone), a codec other than raw or gzip (0.5.4 wrote zstd bytes as `raw`), or
   `value_transforms` (NRRD cannot state them; `zarr_to_nrrd` writes the calibrated values).
 
+### Fixed - NIfTI (`nifti` extension 1.1)
+- **A file with no transform (`sform_code` = `qform_code` = 0) was given one.** nibabel's
+  fall-back affine - a flipped x and a centered origin, neither in the file - was stored as
+  `right-anterior-superior` and exported as `sform_code` 2. The file's own statement is NIfTI's
+  method 1, which places the grid in no patient space: it is stored as `space_dimension` 3 with
+  `space_origin` 0 and `space_direction` = pixdim, and exported with both codes 0.
+- **Both codes are stated, 0 included** (nifti-spec §4.2), where "absent" had meant both "the
+  file had none" and "unknown". A qform-only file no longer gains an sform on export, nor an
+  sform-only file a qform.
+- **Units the file does not state are not invented.** `xyzt_units` 0 (unknown) became `"mm"` on
+  every axis; the unit is left out now, and an export of axes with no unit writes 0. A 3D file
+  that states a time unit keeps it (`tags.xyzt_units`), and `Hz`, `ppm`, `rad/s` time codes map
+  to the time axis's unit. `xyzt_units` round-trips exactly.
+- **`pixdim[4]` is the interval between volumes**, stated as the time axis's
+  `samples[k].position`; 0.5.4 wrote it as `thickness`, the extent each sample measures
+  (duckn-spec §3.2). nifti-spec §2 had mapped it to "space_direction or unit", neither of which
+  a time axis can hold. An export still reads `thickness` from a store written before.
+
 ### Fixed - DICOM
 - **The streaming converter wrote no chunk into a `.zarr.zip`** with its default
   `compressor="none"` (the same `bytes`-for-`Buffer` call), leaving a zip whose voxels read as

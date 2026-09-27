@@ -113,6 +113,9 @@ _NIFTI_TEMPORAL_UNITS: dict[int, str] = {
     8: "s",
     16: "ms",
     24: "us",
+    32: "Hz",
+    40: "ppm",
+    48: "rad/s",
 }
 
 # Reverse mappings for writing
@@ -246,8 +249,17 @@ def nifti_to_zarr(
         affine = img.get_qform()
         active_code = qform_code
     else:
-        affine = img.affine
+        # sform_code = qform_code = 0: NIfTI's "method 1", which states only x = pixdim[1] * i
+        # and so on - no orientation and no origin in any patient space (NIfTI-1 keeps it for
+        # Analyze 7.5 compatibility and nothing else). nibabel's fall-back affine
+        # invents both (a flipped x and a centered origin), and 0.5.4 stored it as RAS. The
+        # honest statement is an unnamed space (`space_dimension`) with method 1's axes.
+        affine = np.eye(4)
+        for i in range(min(3, ndim)):
+            affine[i, i] = pixdims[i] if pixdims[i] > 0 else 1.0
         active_code = 0
+    # a 2D NIfTI has two spatial axes; the affine is always 3-dimensional
+    n_spatial = min(3, ndim)
 
     # space_origin = translation column
     space_origin = affine[:3, 3].tolist()
@@ -264,35 +276,40 @@ def nifti_to_zarr(
             direction[i] = 1.0
         space_directions.append((direction * pixdims[i]).tolist())
 
-    # Map code → space name
-    space = _SFORM_CODE_TO_SPACE.get(active_code, SpaceName.RIGHT_ANTERIOR_SUPERIOR)
+    # Map code → space name (none for code 0: see above)
+    space = _SFORM_CODE_TO_SPACE.get(active_code) if active_code else None
 
     # --- Units from xyzt_units ---
+    # Code 0 is NIFTI_UNITS_UNKNOWN: the unit is left out (absent means unknown), where 0.5.4
+    # stated "mm" on every axis.
     xyzt_units = int(hdr["xyzt_units"])
     spatial_unit_code = xyzt_units & 0x07
     temporal_unit_code = xyzt_units & 0x38
-    spatial_unit = _NIFTI_SPATIAL_UNITS.get(spatial_unit_code, "mm")
+    spatial_unit = _NIFTI_SPATIAL_UNITS.get(spatial_unit_code)
     temporal_unit = _NIFTI_TEMPORAL_UNITS.get(temporal_unit_code)
 
     # --- Build axes ---
     axes: list[AxisMetadata] = []
-    for i in range(min(3, ndim)):
-        axes.append(AxisMetadata(
-            kind=AxisKind.SPACE,
-            centering=Centering.CELL,
-            space_direction=space_directions[i],
-            unit=spatial_unit,
-        ))
+    for i in range(n_spatial):
+        ax_kwargs: dict[str, Any] = {
+            "kind": AxisKind.SPACE, "centering": Centering.CELL,
+            "space_direction": space_directions[i][:3],
+        }
+        if spatial_unit:
+            ax_kwargs["unit"] = spatial_unit
+        axes.append(AxisMetadata(**ax_kwargs))
 
     # Time axis for 4D+
     if ndim >= 4:
         time_kwargs: dict[str, Any] = {"kind": AxisKind.TIME}
         if temporal_unit:
             time_kwargs["unit"] = temporal_unit
-        # pixdim[4] as thickness for time axis
+        # pixdim[4] is the sampling interval (TR), which is what `samples[i].position` states
+        # on a time axis (duckn-spec §3.2). 0.5.4 wrote it as `thickness` - the extent each
+        # sample measures, which is not the interval between samples.
         pixdim4 = float(hdr["pixdim"][4])
-        if pixdim4 > 0:
-            time_kwargs["thickness"] = pixdim4
+        if pixdim4 > 0 and shape[3] >= 2:
+            time_kwargs["samples"] = [{"position": k * pixdim4} for k in range(shape[3])]
         axes.append(AxisMetadata(**time_kwargs))
 
     # Extra axes beyond 4D (rare)
@@ -323,13 +340,16 @@ def nifti_to_zarr(
     # --- NIfTI extension tags ---
     tags_kwargs: dict[str, Any] = {}
 
-    # sform_code ≥ 2 → preserve in tags
-    if sform_code >= 2:
-        tags_kwargs["sform_code"] = sform_code
+    # Both codes, always, 0 included (nifti-spec §4.2): 0.5.4 wrote neither when it was 0,
+    # so "absent" meant both "the file had none" and "unknown", and an export gave a qform-only
+    # file an sform (and the reverse).
+    tags_kwargs["sform_code"] = sform_code
+    tags_kwargs["qform_code"] = qform_code
 
-    # qform_code: preserve when non-zero
-    if qform_code > 0:
-        tags_kwargs["qform_code"] = qform_code
+    # A time unit with no time axis to carry it (a 3D file that states one) is kept as the
+    # header's value; every other unit is on its axis.
+    if temporal_unit_code and ndim < 4:
+        tags_kwargs["xyzt_units"] = xyzt_units
 
     # Legacy matrices: store original 4x4 affines for provenance
     legacy_tags_kwargs: dict[str, Any] = {}
@@ -415,7 +435,7 @@ def nifti_to_zarr(
 
     # Build extension
     nifti_ext_kwargs: dict[str, Any] = {
-        "version": "1.0",
+        "version": "1.1",   # 1.1: codes stated when 0, `xyzt_units` (nifti-spec §4.2)
         "nifti_version": nifti_version,
     }
     if tags_kwargs:
@@ -432,6 +452,7 @@ def nifti_to_zarr(
     meta = DucknMetadata(
         version="1.0",
         space=space,
+        space_dimension=None if space is not None else 3,
         space_origin=space_origin,
         value_transforms=value_transforms,
         intent=convention_intent,
@@ -470,6 +491,21 @@ def nifti_to_zarr(
 # ---------------------------------------------------------------------------
 # Zarr → NIfTI
 # ---------------------------------------------------------------------------
+
+
+def _uniform_interval(axis: AxisMetadata) -> float | None:
+    """The one step between the axis's sample positions, or None when they state none."""
+    samples = axis.samples or []
+    positions = [sm.position for sm in samples]
+    if len(positions) < 2 or any(p is None for p in positions):
+        return None
+    step = positions[1] - positions[0]
+    if step <= 0:
+        return None
+    for k, p in enumerate(positions):
+        if not np.isclose(p - positions[0], k * step, rtol=1e-9, atol=1e-12):
+            return None
+    return float(step)
 
 
 def zarr_to_nifti(
@@ -558,7 +594,9 @@ def zarr_to_nifti(
     # --- Determine codes ---
     # After the reframe, anatomical spaces are RAS+ → code 2 (aligned_anat);
     # scanner spaces keep code 1.
-    sform_code = 2  # default: aligned_anat
+    # A store with no named space states no patient orientation, so it gets code 0 unless its
+    # nifti tags say otherwise (0.5.4 wrote 2, aligned_anat, over any geometry).
+    sform_code = 2 if meta.space else 0
     if tags and tags.sform_code is not None:
         sform_code = tags.sform_code
     elif meta.space:
@@ -577,8 +615,20 @@ def zarr_to_nifti(
         use_nifti2 = True
 
     ImageClass = nib.Nifti2Image if use_nifti2 else nib.Nifti1Image
-    img = ImageClass(data, affine)
-    hdr = img.header
+    no_codes = sform_code == 0 and qform_code_out == 0
+    if no_codes:
+        # Neither transform: the file states only pixdim (method 1). An image built with an
+        # affine has nibabel rewrite both codes on save (to aligned_anat), so it is built
+        # without one and pixdim set from the axes.
+        img = ImageClass(data, None)
+        hdr = img.header
+        zooms = list(hdr.get_zooms())
+        for i in range(min(3, ndim)):
+            zooms[i] = float(np.linalg.norm(affine[:3, i]))
+        hdr.set_zooms(zooms)
+    else:
+        img = ImageClass(data, affine)
+        hdr = img.header
 
     # --- Set sform and qform ---
     legacy_tags = (
@@ -587,7 +637,10 @@ def zarr_to_nifti(
         else None
     )
 
-    if restore_transforms and legacy_tags:
+    if no_codes:
+        hdr.set_sform(None, code=0)
+        hdr.set_qform(None, code=0)
+    elif restore_transforms and legacy_tags:
         # Restore original matrices verbatim from legacy extension.
         # We must also update pixdim to match the sform, because nibabel's
         # save() rewrites sform from pixdim + the image affine otherwise.
@@ -631,6 +684,13 @@ def zarr_to_nifti(
                 qform_affine = np.array(legacy_tags.qform, dtype=np.float64)
 
         hdr.set_qform(qform_affine, code=qform_code_out)
+    if not no_codes:
+        # a code of 0 is "this transform is absent": its matrix is not written (0.5.4 wrote
+        # one with a code, so a qform-only file came back with an sform and the reverse)
+        if sform_code == 0:
+            hdr.set_sform(None, code=0)
+        if qform_code_out == 0:
+            hdr.set_qform(None, code=0)
 
     # --- Restore the single linear transform → scl_slope/scl_inter ---
     # Only set when the whole chain was that one transform; any other chain
@@ -640,7 +700,10 @@ def zarr_to_nifti(
         hdr["scl_inter"] = scl_transform.parameters.get("intercept", 0.0)
 
     # --- Restore xyzt_units ---
-    spatial_unit_code = 2  # default mm
+    # From the axes; an axis with no unit states none, so the code is 0 (unknown) - 0.5.4
+    # wrote mm for a unit nobody stated. A time unit kept in the tags because the store has
+    # no time axis to carry it (a 3D file that stated one) goes back as it came.
+    spatial_unit_code = 0
     temporal_unit_code = 0
     if meta.axes:
         for ax in meta.axes[:3]:
@@ -652,12 +715,19 @@ def zarr_to_nifti(
             if ax.kind == AxisKind.TIME and isinstance(ax.unit, str):
                 temporal_unit_code = _UNIT_TO_TEMPORAL_CODE.get(ax.unit, 0)
                 break
+    has_time_axis = bool(meta.axes) and any(ax.kind == AxisKind.TIME for ax in meta.axes[3:])
+    if tags and tags.xyzt_units is not None and not has_time_axis:
+        temporal_unit_code = int(tags.xyzt_units) & 0x38
     hdr["xyzt_units"] = spatial_unit_code | temporal_unit_code
 
-    # --- Restore time axis pixdim ---
+    # --- Restore time axis pixdim (the sampling interval) ---
     if ndim >= 4 and meta.axes and len(meta.axes) >= 4:
         time_ax = meta.axes[3]
-        if time_ax.thickness is not None:
+        interval = _uniform_interval(time_ax)
+        if interval is not None:
+            hdr["pixdim"][4] = interval
+        elif time_ax.thickness is not None and not time_ax.samples:
+            # stores written by 0.5.4 and earlier put pixdim[4] here
             hdr["pixdim"][4] = time_ax.thickness
 
     # --- Restore NIfTI tags ---

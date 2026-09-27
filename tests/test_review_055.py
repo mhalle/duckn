@@ -321,3 +321,101 @@ class TestZeroCopyExtension:
                                        "parameters": {"slope": 1, "intercept": -1024}}]}})
         with pytest.raises(ValueError, match="value_transforms"):
             zarr_to_nrrd_zerocopy(z, tmp_path / "x.nrrd")
+
+
+# ---------------------------------------------------------------------------
+# 4, 8. NIfTI: codes 0, unknown units, a time unit on a 3D file, pixdim[4]
+# ---------------------------------------------------------------------------
+
+nib = pytest.importorskip("nibabel")
+
+
+def _nifti(tmp_path, data, *, sform_code, qform_code, xyzt_units, pixdim4=None, name="a.nii"):
+    """A NIfTI-1 file whose codes and units are set in its bytes (NIfTI-1 header offsets), so
+    that nibabel's own save-time choices are not in the expectation."""
+    import struct
+    aff = np.diag([2.0, 3.0, 4.0, 1.0])
+    aff[:3, 3] = [10.0, 20.0, 30.0]
+    img = nib.Nifti1Image(data, aff)
+    if pixdim4 is not None:
+        img.header["pixdim"][4] = pixdim4
+    p = tmp_path / name
+    nib.save(img, p)
+    b = bytearray(p.read_bytes())
+    b[123] = xyzt_units
+    b[252:254] = struct.pack("<h", qform_code)
+    b[254:256] = struct.pack("<h", sform_code)
+    p.write_bytes(bytes(b))
+    return p
+
+
+def _nifti_roundtrip(tmp_path, p):
+    from duckn.nifti_convert import nifti_to_zarr, zarr_to_nifti
+    z = tmp_path / "a.zarr"
+    out = tmp_path / "rt.nii"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        nifti_to_zarr(p, z)
+        zarr_to_nifti(z, out)
+    with open(out, "rb") as fh:
+        return _meta(z), nib.Nifti1Header.from_fileobj(fh)
+
+
+class TestNiftiCodes:
+    def test_no_codes_states_no_patient_space(self, tmp_path):
+        p = _nifti(tmp_path, np.zeros((4, 5, 6), np.int16), sform_code=0, qform_code=0,
+                   xyzt_units=2)
+        m, h = _nifti_roundtrip(tmp_path, p)
+        # NIfTI method 1: x = pixdim[1] * i, ...: no orientation, no origin, no named space
+        assert m.space is None and m.space_dimension == 3
+        assert m.space_origin == [0.0, 0.0, 0.0]
+        assert [ax.space_direction for ax in m.axes] == [[2, 0, 0], [0, 3, 0], [0, 0, 4]]
+        assert (m.extensions["nifti"]["tags"]["sform_code"],
+                m.extensions["nifti"]["tags"]["qform_code"]) == (0, 0)
+        assert (int(h["sform_code"]), int(h["qform_code"])) == (0, 0)
+        np.testing.assert_allclose(h["pixdim"][1:4], [2, 3, 4])
+
+    def test_a_qform_only_file_gains_no_sform(self, tmp_path):
+        p = _nifti(tmp_path, np.zeros((4, 5, 6), np.int16), sform_code=0, qform_code=1,
+                   xyzt_units=2)
+        _, h = _nifti_roundtrip(tmp_path, p)
+        assert (int(h["sform_code"]), int(h["qform_code"])) == (0, 1)
+
+    def test_an_sform_only_file_gains_no_qform(self, tmp_path):
+        p = _nifti(tmp_path, np.zeros((4, 5, 6), np.int16), sform_code=1, qform_code=0,
+                   xyzt_units=2)
+        _, h = _nifti_roundtrip(tmp_path, p)
+        assert (int(h["sform_code"]), int(h["qform_code"])) == (1, 0)
+
+
+class TestNiftiUnits:
+    def test_unknown_units_are_not_millimeters(self, tmp_path):
+        p = _nifti(tmp_path, np.zeros((4, 5, 6), np.int16), sform_code=2, qform_code=0,
+                   xyzt_units=0)
+        m, h = _nifti_roundtrip(tmp_path, p)
+        assert [ax.unit for ax in m.axes] == [None, None, None]
+        assert int(h["xyzt_units"]) == 0
+
+    def test_a_3d_file_keeps_its_time_unit(self, tmp_path):
+        p = _nifti(tmp_path, np.zeros((4, 5, 6), np.int16), sform_code=2, qform_code=0,
+                   xyzt_units=2 | 8)
+        _, h = _nifti_roundtrip(tmp_path, p)
+        assert int(h["xyzt_units"]) == 2 | 8
+
+    def test_hertz_on_a_time_axis(self, tmp_path):
+        p = _nifti(tmp_path, np.zeros((4, 5, 6, 2), np.int16), sform_code=2, qform_code=0,
+                   xyzt_units=2 | 32)
+        m, h = _nifti_roundtrip(tmp_path, p)
+        assert m.axes[3].unit == "Hz"
+        assert int(h["xyzt_units"]) == 2 | 32
+
+
+class TestNiftiTimeInterval:
+    def test_pixdim4_is_the_interval_not_a_thickness(self, tmp_path):
+        p = _nifti(tmp_path, np.zeros((4, 5, 6, 3), np.int16), sform_code=2, qform_code=0,
+                   xyzt_units=2 | 16, pixdim4=2000.0)
+        m, h = _nifti_roundtrip(tmp_path, p)
+        t = m.axes[3]
+        assert t.thickness is None  # §3.2: thickness is the extent measured
+        assert [sm.position for sm in t.samples] == [0.0, 2000.0, 4000.0]
+        assert float(h["pixdim"][4]) == 2000.0
