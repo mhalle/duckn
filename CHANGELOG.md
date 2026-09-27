@@ -23,11 +23,12 @@
   `display-p3-linear`, `a98-rgb`, `prophoto-rgb`, `rec2020`; `xyz-d50`, `xyz-d65`) - the
   vocabulary the seg extension's colors use. Components are 0-1: an unsigned array read through
   `value_transforms: []` spans its type's full range, a float array holds them, anything else
-  states a mapping. RGBA alpha is straight, not premultiplied. Absent: unknown. An ICC-profiled
-  space has no value yet (out-of-line data, §8). DICOM Color Space (SRGB, ADOBERGB, ROMMRGB,
-  DISPLAYP3; PS3.3 C.11.15) becomes the axis's space on import when the stored values are the
-  components, and is written back on export, where the axis wins over carried tags and a carried
-  ICC Profile describing another space is dropped. `cast` keeps a color space only while the
+  states a mapping. RGBA alpha is straight, not premultiplied. Absent: unknown. **No ICC
+  profiles for stored colors** (the owner's decision): an axis states a named space or nothing,
+  never a profile; a profile the source carried stays in the `dicom` tags as provenance. DICOM Color
+  Space (SRGB, ADOBERGB, ROMMRGB, DISPLAYP3; PS3.3 C.11.15) becomes the axis's space on import
+  when the stored values are the components, and is written back on export, where the axis wins
+  over carried tags. `cast` keeps a color space only while the
   colors are unchanged; an interpolating `resample` of uint8 color states slope 1/255.
 - **The simple case is written, not implied.** Materializing (the SimpleITK, nibabel and VTK
   adapters, `resample`, a plain `cast`) writes `value_transforms: []`, not an absent field, which

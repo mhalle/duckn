@@ -523,7 +523,7 @@ No other kind takes a `color_space`. The spelling is the lowercase keyword shown
 
 **Alpha.** In an `"RGBA-color"` axis, alpha is the fourth component on the same 0–1 scale and is not premultiplied: the color components are the color as it is, not the color times its coverage.
 
-**Absent means unknown.** A color axis without `color_space` states nothing about what its components mean. A viewer may still display such data as sRGB, the common case, but must not report it as sRGB. A space characterized by an ICC profile rather than a named space (as whole-slide scanners do) has no value here yet: a writer converts to a named space, or states nothing and keeps the profile as provenance (see §8 on out-of-line data).
+**Absent means unknown.** A color axis without `color_space` states nothing about what its components mean. A viewer may still display such data as sRGB, the common case, but must not report it as sRGB. **No ICC profiles for stored colors.** A color axis states its colors only by a named space, never by an ICC profile, and this is not a gap to be filled later. A source characterized by a profile (as whole-slide scanners are) is either converted to a named space by its writer or states no `color_space`. A profile the source carried may still appear in a source-format extension as provenance about the source (the `dicom` extension's `tags`); it says nothing about the array.
 
 #### `extensions`
 
