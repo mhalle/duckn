@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.4 — 2026-09-26
 
 An adversarial review of 0.5.3 (2026-09-26) found the two DICOM readers still encoding values
 two ways, a malformed value able to crash a conversion, and places where the stored metadata
