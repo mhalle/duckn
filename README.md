@@ -166,6 +166,7 @@ Domain-specific metadata lives inside `duckn.extensions`. Extensions depend on d
 - **seg** — 3D Slicer segmentation (segments, terminologies, label maps)
 - **nifti** — NIfTI provenance (sform/qform codes, intent, legacy affines)
 - **dicom** — DICOM provenance (tags, transfer syntax, anonymization status)
+- **nrrd** — NRRD fields the convention does not model (`spacings` of a file with no `space`, `old min`/`old max`, `content`)
 
 ## Documentation
 

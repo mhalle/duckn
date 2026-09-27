@@ -208,7 +208,11 @@ sample spacing. Anisotropic and oblique volumes are the normal case.
 
 `measurement_frame` maps vector and tensor *component values* into world
 space. It is not a coordinate space, and not a valid target in
-`space_transforms`.
+`space_transforms`. It is stored by rows (`world = measurement_frame @ v`);
+NRRD writes the same matrix as column vectors, so a NRRD converter
+transposes in both directions. Test it with an asymmetric frame: a
+symmetric one, or a round trip, hides a missing transpose (duckn 0.5.4
+stored every NRRD frame transposed).
 
 Reversing axis order reverses which `space_direction` belongs to which
 dimension. It does not change the vectors themselves.

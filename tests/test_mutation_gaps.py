@@ -1,5 +1,8 @@
 """Tests that close gaps a mutation run of 0.5.4 found (2026-09-26): each kills a mutant the
-suite let through."""
+suite let through. They pass on 0.5.4 - they guard behavior that was right and untested.
+
+D27 checked: the streaming converter judges the byte copy over EVERY header's Bits Stored, not
+the first's (``fills`` in ``dicom_to_zarr_streaming``); the test pins it."""
 import sys, types, warnings
 from unittest import mock
 
@@ -89,10 +92,11 @@ def test_the_streaming_converter_asks_every_slice_whether_its_bits_fill(tmp_path
         else:
             ds.BitsStored, ds.HighBit, ds.PixelRepresentation = 12, 11, 1
             ds.PixelData = np.array([0x0FFF, 0x0800, 5, 0x07FF] * 16, np.uint16).tobytes()
-    warnings.simplefilter("ignore")
-    _series(tmp_path, later_signed12)
-    s = tmp_path / "s.zarr"
-    dicom_to_zarr_streaming(tmp_path / "dicom", s)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _series(tmp_path, later_signed12)
+        s = tmp_path / "s.zarr"
+        dicom_to_zarr_streaming(tmp_path / "dicom", s)
     got = np.asarray(zarr.open_array(zarr.storage.LocalStore(str(s)), mode="r")[1]).ravel()[:4]
     assert list(got) == [-1, -2048, 5, 2047]
 

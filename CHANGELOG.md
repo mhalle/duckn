@@ -76,6 +76,16 @@ pinned by a test that fails on 0.5.4 (`tests/test_review_055.py`).
   Transformation. (Re-reading such a file still gives uncalibrated values, reported: the
   per-frame mappings are not yet carried into `samples[i].metadata` on import.)
 
+### Tests
+- **`tests/test_mutation_gaps.py`**: 11 tests that kill mutants a mutation run of 0.5.4 let
+  live (attribute tags upper-cased and a short one kept as it came, malformed numeric parts,
+  a value pydicom refuses under strict validation kept as text, a top-level Pixel Value
+  Transformation left out, `split_time_and_slice` leaving a missing tag missing, a varying
+  rescale keeping each slice's Rescale Type, the streaming byte copy asking every slice whether
+  its bits fill, DICOMweb writing no binary value, BIDS dropping `[""]`, the nibabel adapter
+  stating the convention version). They pass on 0.5.4: they guard behavior that was right and
+  untested.
+
 ### Fixed - adapters and `io.write`
 - **`from_sitk` / `from_nifti` with `metadata=` no longer carry a source's format extensions
   onto a derived array** (duckn-spec §4.5, §4.7). A shrunk float image kept `dicom`'s
