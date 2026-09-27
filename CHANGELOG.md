@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-09-27
+
+Writes and reads convention 1.2; reads 1.0 and 1.1 files as before. The convention version (in
+each file's `duckn.version`) and this library's release number are separate things - see the
+README's "Versions".
 
 ### Convention 1.2 (duckn-spec) - the owner's decisions of 2026-09-26
 - **An absent `value_transforms` means "not stated"** (§3.1, §4.2, §4.7), as "absent means
@@ -79,6 +83,10 @@ pinned by a test that fails on 0.5.4 (`tests/test_review_055.py`).
   `value_transforms` (NRRD cannot state them; `zarr_to_nrrd` writes the calibrated values).
 
 ### Fixed - NIfTI (`nifti` extension 1.1)
+- **Every sform/qform code imports as RAS.** NIfTI defines its world as RAS+ for every code; the
+  code says which RAS frame, and `tags.sform_code`/`qform_code` keep it. Code 1 (scanner
+  anatomical) became `scanner-xyz`, a frame with no directions, and code 5 (TEMPLATE_OTHER,
+  added to NIfTI in 2019) had no mapping at all: both lost their orientation on import.
 - **A file with no transform (`sform_code` = `qform_code` = 0) was given one.** nibabel's
   fall-back affine - a flipped x and a centered origin, neither in the file - was stored as
   `right-anterior-superior` and exported as `sform_code` 2. The file's own statement is NIfTI's
