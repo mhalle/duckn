@@ -20,7 +20,7 @@ from .models import (
 from .diagnostics import About, Diagnostic
 from .dwi_nrrd import parse_dwi_keyvalues, serialize_dwi_extension
 from .seg_nrrd import parse_seg_keyvalues, serialize_seg_extension
-from .zarr_io import _is_zip_path, open_store
+from .zarr_io import _is_zip_path, open_store, set_raw, staged_output
 
 
 # NRRD spec fields (`: ` delimiter).  Anything else is a key/value pair (`:=`).
@@ -56,6 +56,39 @@ _NRRD_TYPE_MAP: dict[str, str] = {
     "float": "float32",
     "double": "float64",
 }
+
+#: The `nrrd` extension (docs/nrrd-extension.md): NRRD fields the convention does not model,
+#: kept so that NRRD -> Zarr -> NRRD loses nothing. Through 0.5.4 the converter listed these as
+#: fields and then dropped them - `spacings` and `axis mins`/`axis maxs` of a NRRD with no
+#: `space` were its only geometry, and they vanished without a word.
+NRRD_EXTENSION_VERSION = "0.1"
+
+#: top-level NRRD field -> key in extensions.nrrd (numbers, except content)
+_NRRD_EXT_TOP: dict[str, str] = {
+    "content": "content",
+    "min": "min", "max": "max",
+    "old min": "old_min", "oldmin": "old_min",
+    "old max": "old_max", "oldmax": "old_max",
+}
+#: per-axis NRRD field -> key in axes[i].extensions.nrrd
+_NRRD_EXT_AXIS: dict[str, str] = {
+    "spacings": "spacing",
+    "axis mins": "axis_min", "axismins": "axis_min",
+    "axis maxs": "axis_max", "axismaxs": "axis_max",
+}
+#: NRRD fields the convention models directly
+_NRRD_MODELED: frozenset[str] = frozenset({
+    "space dimension", "space", "space directions", "space origin", "space units",
+    "kinds", "centerings", "thicknesses", "labels", "units", "measurement frame",
+    "sample units",
+})
+#: NRRD fields that describe the file, not the array: Zarr's own metadata replaces them
+#: (duckn-spec §6), so dropping them loses nothing.
+_NRRD_STORAGE_FIELDS: frozenset[str] = frozenset({
+    "type", "dimension", "sizes", "endian", "encoding", "data file", "datafile",
+    "lineskip", "line skip", "byteskip", "byte skip",
+})
+
 
 # numpy dtype -> default NRRD type string
 _DTYPE_TO_NRRD_TYPE: dict[str, str] = {
@@ -269,9 +302,16 @@ def _header_to_metadata(
             if u and u != "???":
                 ax_kwargs["unit"] = u
 
-        if not is_spatial and space_dirs is None and units is not None and i < len(units):
-            # No space directions at all — use per-axis units for everything
-            pass  # already handled above
+        axis_nrrd: dict[str, float] = {}
+        for field, key in _NRRD_EXT_AXIS.items():
+            vals = header.get(field)
+            if vals is None:
+                continue
+            vals = list(reversed(vals)) if reverse else list(vals)
+            if i < len(vals) and vals[i] is not None and not math.isnan(float(vals[i])):
+                axis_nrrd[key] = float(vals[i])
+        if axis_nrrd:
+            ax_kwargs["extensions"] = {"nrrd": axis_nrrd}
 
         axes.append(AxisMetadata(**ax_kwargs))
 
@@ -286,11 +326,35 @@ def _header_to_metadata(
         meta_kwargs["space_origin"] = _clean_float_list(space_origin_raw)
 
     if mf_raw is not None:
-        meta_kwargs["measurement_frame"] = [_clean_float_list(row) for row in mf_raw]
+        # pynrrd hands the header's vectors back as the ROWS of its array, and each NRRD vector is
+        # a COLUMN of the frame (teem's format: "the vectors are the columns of the matrix"); duckn
+        # stores the matrix by rows (duckn-spec §3.1). Copying pynrrd's rows across stored the
+        # transpose, invisible to a round trip and to any symmetric frame, through 0.5.4.
+        meta_kwargs["measurement_frame"] = _transpose_matrix(
+            [_clean_float_list(row) for row in mf_raw])
 
     sample_units_raw = header.get("sample units")
     if sample_units_raw:
         meta_kwargs["sample_units"] = sample_units_raw
+
+    # --- NRRD fields the convention does not model: the `nrrd` extension ---
+    extensions: dict[str, Any] = {}
+    top_nrrd: dict[str, Any] = {}
+    for field, key in _NRRD_EXT_TOP.items():
+        if field in header and header[field] is not None:
+            top_nrrd[key] = str(header[field]) if key == "content" else float(header[field])
+    if top_nrrd or any(ax.extensions and "nrrd" in ax.extensions for ax in axes):
+        extensions["nrrd"] = {"version": NRRD_EXTENSION_VERSION, **top_nrrd}
+    unkept = sorted(
+        k for k in header
+        if k in _NRRD_SPEC_FIELDS and k not in _NRRD_STORAGE_FIELDS
+        and k not in _NRRD_EXT_TOP and k not in _NRRD_EXT_AXIS and k not in _NRRD_MODELED
+    )
+    if unkept and diagnostics is not None:
+        diagnostics.append(Diagnostic(
+            "nrrd-field-dropped", "warning", About.extension(),
+            f"NRRD field(s) {unkept} have no place in duckn and were not kept",
+        ))
 
     # --- Preserve NRRD key/value pairs (`:=` lines) ---
     keyvalues: dict[str, str] = {}
@@ -298,7 +362,6 @@ def _header_to_metadata(
         if k not in _NRRD_SPEC_FIELDS:
             keyvalues[k] = str(v)
     if keyvalues:
-        extensions: dict[str, Any] = {}
         seg_ext, remaining = parse_seg_keyvalues(keyvalues, diagnostics=diagnostics)
         if seg_ext is not None:
             extensions["seg"] = seg_ext.model_dump(exclude_none=True)
@@ -317,8 +380,8 @@ def _header_to_metadata(
 
         if remaining:
             extensions["keyvalues"] = {"version": KEYVALUES_VERSION, "entries": remaining}
-        if extensions:
-            meta_kwargs["extensions"] = extensions
+    if extensions:
+        meta_kwargs["extensions"] = extensions
 
     meta = DucknMetadata(**meta_kwargs)
 
@@ -402,7 +465,8 @@ def _metadata_to_header(
 
     # --- measurement frame ---
     if meta.measurement_frame is not None:
-        header["measurement frame"] = np.array(meta.measurement_frame)
+        # duckn's rows back to NRRD's column vectors (see _header_to_metadata)
+        header["measurement frame"] = np.array(_transpose_matrix(meta.measurement_frame))
 
     # --- Per-axis fields ---
     axes = meta.axes or []
@@ -461,6 +525,34 @@ def _metadata_to_header(
             if any(spatial_units):
                 header["space units"] = spatial_units
 
+        # per-axis units of the axes that are not spatial (a time axis's "s"): NRRD's `units`.
+        # Through 0.5.4 only `space units` was written, so these were lost on export. An axis
+        # with a space direction takes its unit from `space units` and gets "" here (teem
+        # refuses a unit on an axis that has a space direction).
+        def _unit_text(u: Any) -> str:
+            if u is None:
+                return ""
+            return u if isinstance(u, str) else getattr(u, "symbol", None) or ""
+
+        units_out = [
+            "" if (ax.space_direction is not None and space_dim is not None)
+            else _unit_text(ax.unit)
+            for ax in nrrd_axes
+        ]
+        if any(units_out):
+            header["units"] = units_out
+
+        # the `nrrd` extension's per-axis fields (spacings, axis mins, axis maxs)
+        for field, key in (("spacings", "spacing"), ("axis mins", "axis_min"),
+                           ("axis maxs", "axis_max")):
+            vals = [
+                float((ax.extensions or {}).get("nrrd", {}).get(key, np.nan))
+                if isinstance((ax.extensions or {}).get("nrrd"), dict) else np.nan
+                for ax in nrrd_axes
+            ]
+            if any(not math.isnan(v) for v in vals):
+                header[field] = vals
+
     # --- labels from dimension_names ---
     if dim_names is not None:
         if reverse:
@@ -476,6 +568,15 @@ def _metadata_to_header(
             header["sample units"] = meta.sample_units
         else:
             header["sample units"] = meta.sample_units.symbol  # type: ignore[union-attr]
+
+    # --- the `nrrd` extension's top-level fields ---
+    nrrd_ext = (meta.extensions or {}).get("nrrd")
+    if isinstance(nrrd_ext, dict):
+        for field, key in (("content", "content"), ("min", "min"), ("max", "max"),
+                           ("old min", "old_min"), ("old max", "old_max")):
+            if nrrd_ext.get(key) is not None:
+                header[field] = (str(nrrd_ext[key]) if key == "content"
+                                 else float(nrrd_ext[key]))
 
     # --- Restore NRRD key/value pairs ---
     if meta.extensions:
@@ -540,9 +641,9 @@ def _format_nrrd_field(key: str, value: Any) -> str:
     elif isinstance(value, list):
         if key in ("kinds", "centerings"):
             return " ".join(str(v) for v in value)
-        elif key in ("space units", "labels"):
+        elif key in ("space units", "labels", "units"):
             return " ".join(f'"{v}"' for v in value)
-        elif key == "thicknesses":
+        elif key in ("thicknesses", "spacings", "axis mins", "axis maxs"):
             parts = []
             for t in value:
                 if isinstance(t, float) and math.isnan(t):
@@ -552,6 +653,8 @@ def _format_nrrd_field(key: str, value: Any) -> str:
             return " ".join(parts)
         else:
             return " ".join(str(v) for v in value)
+    elif isinstance(value, float):
+        return _fmt_float(value)
     return str(value)
 
 
@@ -560,6 +663,8 @@ _NRRD_FIELD_ORDER: list[str] = [
     "space", "space dimension", "space origin", "space directions",
     "kinds", "centerings", "space units", "labels",
     "thicknesses", "measurement frame", "sample units",
+    "units", "spacings", "axis mins", "axis maxs",
+    "content", "min", "max", "old min", "old max",
 ]
 
 
@@ -841,58 +946,76 @@ def nrrd_to_zarr_zerocopy(
     diagnostics: list[Diagnostic] = []
     meta, dimension_names = _header_to_metadata(header, ndim, diagnostics=diagnostics)
 
-    # Serialize metadata and add legacy info for round-trip
-    duckn_dict = meta.model_dump(exclude_none=True)
-    if "extensions" not in duckn_dict:
-        duckn_dict["extensions"] = {}
-    duckn_dict["extensions"]["legacy"] = {
-        "nrrd_type": header["type"],
-        "encoding": encoding,
-    }
+    # Through 0.5.4 this path also wrote `extensions.legacy = {nrrd_type, encoding}`: an
+    # extension with no version (duckn-spec §3.1 requires one) under a name nobody owns, and a
+    # statement about the chunk's bytes that the array's own codecs already make. The export
+    # reads the encoding from the codecs now, so nothing is written for it.
+    attrs = duckn_attrs(meta)
 
-    attrs: dict[str, Any] = {"duckn": duckn_dict}
-
-    # Remove existing store if overwriting
     is_zip = _is_zip_path(zarr_path)
-    if zarr_path.exists() and overwrite:
-        if is_zip:
-            os.remove(zarr_path)
-        else:
-            shutil.rmtree(zarr_path)
-
-    # Create Zarr array (metadata only, no data written)
-    with open_store(zarr_path, mode="w") as store:
-        zarr.create_array(
-            store,
-            shape=shape,
-            dtype=dtype,
-            chunks=shape,  # single chunk = full array
-            serializer=serializer,
-            compressors=compressors,
-            dimension_names=dimension_names,
-            attributes=attrs,
-            fill_value=0,
-        )
-
-        if is_zip:
-            # Write chunk via store API (ZipStore has no filesystem paths)
+    with staged_output(zarr_path, overwrite=overwrite) as tmp_path:
+        with open_store(tmp_path, mode="w") as store:
+            # Create Zarr array (metadata only, no data written)
+            zarr.create_array(
+                store,
+                shape=shape,
+                dtype=dtype,
+                chunks=shape,  # single chunk = full array
+                serializer=serializer,
+                compressors=compressors,
+                dimension_names=dimension_names,
+                attributes=attrs,
+                fill_value=0,
+            )
             chunk_key = "c/" + "/".join("0" for _ in range(ndim))
-            from zarr.core.sync import sync
-
-            sync(store.set(chunk_key, raw_blob))
-        else:
-            # Write raw blob directly as the single chunk file
-            chunk_path = zarr_path / "c"
-            for _ in range(ndim):
-                chunk_path = chunk_path / "0"
-            chunk_path.parent.mkdir(parents=True, exist_ok=True)
-            chunk_path.write_bytes(raw_blob)
+            if is_zip:
+                # ZipStore has no filesystem paths: the chunk goes through the store API
+                set_raw(store, chunk_key, raw_blob)
+            else:
+                chunk_path = tmp_path.joinpath(*chunk_key.split("/"))
+                chunk_path.parent.mkdir(parents=True, exist_ok=True)
+                chunk_path.write_bytes(raw_blob)
     return diagnostics
 
 
 # ---------------------------------------------------------------------------
 # Zero-copy: duckn Zarr -> NRRD
 # ---------------------------------------------------------------------------
+
+
+def _nrrd_encoding_of(arr: Any) -> str:
+    """The NRRD encoding a zero-copy export may write this array's chunk under, or raise.
+
+    Zero-copy writes one chunk's bytes as the NRRD data, so the array must be one chunk, encoded
+    little-endian by ``bytes`` with no filter, and compressed by nothing (``raw``) or gzip.
+    """
+    from zarr.codecs import BytesCodec, GzipCodec
+
+    if tuple(arr.chunks) != tuple(arr.shape):
+        raise ValueError(
+            f"Zero-copy export needs a single chunk; this array has chunks {arr.chunks} over "
+            f"shape {arr.shape}. Use zarr_to_nrrd() instead."
+        )
+    if arr.filters:
+        raise ValueError("Zero-copy export cannot write filtered chunks. Use zarr_to_nrrd().")
+    serializer = arr.serializer
+    if not isinstance(serializer, BytesCodec) or (
+        arr.dtype.itemsize > 1 and str(getattr(serializer.endian, "value", serializer.endian))
+        != "little"
+    ):
+        raise ValueError(
+            f"Zero-copy export needs little-endian bytes, not {serializer!r}. "
+            f"Use zarr_to_nrrd() instead."
+        )
+    compressors = tuple(arr.compressors or ())
+    if not compressors:
+        return "raw"
+    if len(compressors) == 1 and isinstance(compressors[0], GzipCodec):
+        return "gzip"
+    raise ValueError(
+        f"Zero-copy export can write raw or gzip chunks, not {compressors!r}. "
+        f"Use zarr_to_nrrd() instead."
+    )
 
 
 def zarr_to_nrrd_zerocopy(
@@ -904,9 +1027,10 @@ def zarr_to_nrrd_zerocopy(
     """Convert a duckn Zarr v3 store to an NRRD file using zero-copy.
 
     Copies the chunk data blob directly into the NRRD file without
-    decompression or recompression.  Requires the store to have been
-    created by ``nrrd_to_zarr_zerocopy`` (single chunk, ``legacy``
-    metadata present).
+    decompression or recompression.  Requires one chunk encoded as raw
+    or gzip little-endian bytes - what ``nrrd_to_zarr_zerocopy`` writes -
+    and no ``value_transforms`` (NRRD cannot state them, and the bytes
+    cannot be materialized without decoding them: use ``zarr_to_nrrd``).
     """
     zarr_path = Path(zarr_path)
     nrrd_path = Path(nrrd_path)
@@ -920,20 +1044,25 @@ def zarr_to_nrrd_zerocopy(
         arr = zarr.open_array(store, mode="r")
         duckn_attrs = arr.attrs.get("duckn", {})
         meta = DucknMetadata(**duckn_attrs)
+        if meta.value_transforms:
+            # the stored values would be written with nothing saying what they encode
+            raise ValueError(
+                "Zero-copy export cannot write an array with value_transforms: NRRD has no "
+                "field for them. Use zarr_to_nrrd(), which writes the calibrated values."
+            )
 
-        # Get legacy info
-        legacy: dict[str, Any] = {}
-        if meta.extensions:
-            legacy = meta.extensions.get("legacy", {})
+        # the metadata's own refusals (a segmentation that must be materialized) come first
+        diagnostics: list[Diagnostic] = []
+        header = _metadata_to_header(
+            meta, dim_names=arr.metadata.dimension_names, diagnostics=diagnostics)
 
-        # Determine encoding and NRRD type
-        encoding = legacy.get("encoding", "raw")
-        nrrd_type = legacy.get("nrrd_type")
+        # The chunk's bytes go into the file as they are, so the file's encoding is what the
+        # array's codecs say - not what a metadata field claims (0.5.4 read `legacy.encoding`
+        # and wrote a zstd chunk, or the first of many chunks, under it).
+        encoding = _nrrd_encoding_of(arr)
+        nrrd_type = _DTYPE_TO_NRRD_TYPE.get(str(arr.dtype))
         if nrrd_type is None:
-            dtype_str = str(arr.dtype)
-            nrrd_type = _DTYPE_TO_NRRD_TYPE.get(dtype_str)
-            if nrrd_type is None:
-                raise ValueError(f"Cannot map dtype {dtype_str} to NRRD type")
+            raise ValueError(f"Cannot map dtype {arr.dtype} to NRRD type")
 
         # Shape is in slowest-first order; reverse to NRRD sizes
         shape = arr.shape
@@ -941,8 +1070,8 @@ def zarr_to_nrrd_zerocopy(
         sizes = list(reversed(shape))
 
         # Read chunk as raw bytes
+        chunk_key = arr.metadata.encode_chunk_key((0,) * ndim)
         if is_zip:
-            chunk_key = "c/" + "/".join("0" for _ in range(ndim))
             from zarr.core.buffer import default_buffer_prototype
             from zarr.core.sync import sync
 
@@ -951,18 +1080,10 @@ def zarr_to_nrrd_zerocopy(
                 raise FileNotFoundError(f"Chunk key not found in zip: {chunk_key}")
             raw_blob = buf.to_bytes()
         else:
-            chunk_path = zarr_path / "c"
-            for _ in range(ndim):
-                chunk_path = chunk_path / "0"
+            chunk_path = zarr_path.joinpath(*chunk_key.split("/"))
             if not chunk_path.exists():
                 raise FileNotFoundError(f"Chunk file not found: {chunk_path}")
             raw_blob = chunk_path.read_bytes()
-
-        # Build NRRD header (reverse from slowest-first back to NRRD order)
-        dim_names = arr.metadata.dimension_names
-
-    diagnostics: list[Diagnostic] = []
-    header = _metadata_to_header(meta, dim_names=dim_names, diagnostics=diagnostics)
 
     # Write NRRD file: header + raw data blob
     with open(nrrd_path, "wb") as fh:

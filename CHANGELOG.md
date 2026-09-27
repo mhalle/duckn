@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+A review of 0.5.4 (2026-09-26) reproduced converters that wrote what the source did not say or
+dropped what it did, and two byte-copy writers that could not write a zip at all. Each fix is
+pinned by a test that fails on 0.5.4 (`tests/test_review_055.py`).
+
+### Fixed - NRRD
+- **The measurement frame was stored transposed.** pynrrd returns the header's vectors as the
+  rows of its array, and each NRRD vector is a *column* of the frame; duckn stores the matrix
+  by rows (duckn-spec §3.1). Import and export both copied pynrrd's rows straight across, so a
+  round trip hid it and so did every symmetric frame. **A store converted from a NRRD with an
+  asymmetric measurement frame by 0.5.4 or earlier holds the transpose** of the true frame:
+  transpose it, or convert again. Diffusion gradients read through such a frame were rotated
+  the wrong way.
+- **Zero-copy into a `.zarr.zip` wrote no chunk** (`nrrd_to_zarr_zerocopy`, and `duckn
+  from-nrrd --zerocopy` to a zip or a ZMP): zarr 3's `ZipStore.set` takes a `Buffer`, not
+  `bytes`, so the call raised after `zarr.json` was written - leaving a well-formed archive that
+  read as zeros everywhere. Written through the store's buffer type now (`zarr_io.set_raw`), and
+  under a temporary name moved into place only on success (`zarr_io.staged_output`): a failed
+  conversion leaves no store behind, and a failed overwrite leaves the old one.
+- **Fields the convention does not model are kept, not dropped.** `spacings`, `axis mins` and
+  `axis maxs` - the only geometry of a NRRD with no `space` - and `old min`, `old max`,
+  `content`, `min`, `max` were listed as fields and then thrown away. They go into a new `nrrd`
+  extension (docs/nrrd-extension.md, version 0.1) and back out on export. No value mapping is
+  inferred from `old min`/`old max`. A field with no place at all (`number`) is reported
+  (`nrrd-field-dropped`).
+- **Per-axis `units` are exported.** Only `space units` were written, so a time axis's `s`
+  was lost on the way out.
+- **The zero-copy writer's `legacy` extension is gone.** It had no `version` (§3.1 requires
+  one) and no owner, and it restated what the array's codecs say. A zero-copy export now takes
+  the encoding from the codecs and refuses what it cannot copy as it is: several chunks (0.5.4
+  wrote the first alone), a codec other than raw or gzip (0.5.4 wrote zstd bytes as `raw`), or
+  `value_transforms` (NRRD cannot state them; `zarr_to_nrrd` writes the calibrated values).
+
+### Fixed - DICOM
+- **The streaming converter wrote no chunk into a `.zarr.zip`** with its default
+  `compressor="none"` (the same `bytes`-for-`Buffer` call), leaving a zip whose voxels read as
+  zeros beside a complete `dicom` extension. Fixed as above, staged the same way; a padded
+  odd-length Pixel Data is cut to the frame, and a short one refused.
+
 ## 0.5.4 — 2026-09-26
 
 An adversarial review of 0.5.3 (2026-09-26) found the two DICOM readers still encoding values

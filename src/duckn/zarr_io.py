@@ -19,6 +19,56 @@ def _is_zip_path(path: str | Path) -> bool:
     return str(path).endswith(".zarr.zip")
 
 
+def set_raw(store: Any, key: str, data: bytes) -> None:
+    """Write already-encoded bytes under ``key`` in a Zarr store.
+
+    zarr 3's store API takes a ``Buffer``, not ``bytes``. ``LocalStore`` happened to accept
+    bytes; ``ZipStore`` does not, so every byte-copy writer that reached a ``.zarr.zip`` through
+    ``store.set`` raised after writing ``zarr.json`` - leaving an archive that reads as the fill
+    value everywhere (the zero-copy NRRD and the streaming DICOM converters, through 0.5.4).
+    """
+    from zarr.core.buffer import default_buffer_prototype
+    from zarr.core.sync import sync
+
+    sync(store.set(key, default_buffer_prototype().buffer.from_bytes(data)))
+
+
+@contextmanager
+def staged_output(path: str | Path, *, overwrite: bool = False):
+    """Yield a temporary path beside ``path``; move it into place only when the block succeeds.
+
+    A converter writes array metadata before its chunks, so one that fails midway leaves a
+    well-formed store whose missing chunks read as the fill value - a volume of zeros that
+    looks converted. Writing under a temporary name and moving it on success means a failed
+    conversion leaves nothing at ``path`` (and an existing ``path`` untouched). The temporary
+    name keeps ``path``'s suffixes, so it opens as the same kind of store.
+    """
+    import shutil
+    import uuid
+
+    path = Path(path)
+    if path.exists() and not overwrite:
+        raise FileExistsError(f"{path} already exists (use --overwrite)")
+    suffix = ".zarr.zip" if _is_zip_path(path) else "".join(path.suffixes)
+    base = path.name[: len(path.name) - len(suffix)] if suffix else path.name
+    tmp = path.parent / f".{base}.partial-{uuid.uuid4().hex[:12]}{suffix}"
+
+    def _remove(p: Path) -> None:
+        if p.is_dir() and not p.is_symlink():
+            shutil.rmtree(p)
+        elif p.exists() or p.is_symlink():
+            p.unlink()
+
+    try:
+        yield tmp
+    except BaseException:
+        _remove(tmp)
+        raise
+    if path.exists():
+        _remove(path)
+    os.replace(tmp, path)
+
+
 @contextmanager
 def open_store(path: str | Path, *, mode: str = "r", overwrite: bool = False):
     """Context manager that yields a Zarr store for *path*.

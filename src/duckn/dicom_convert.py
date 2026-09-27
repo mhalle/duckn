@@ -2104,17 +2104,13 @@ def dicom_to_zarr_streaming(
                 for h in headers)
     use_raw_copy = is_uncompressed and compressor == "none" and fills
 
-    # Phase 2: create Zarr store and write chunks
-    is_zip = _is_zip_path(output_p)
-    if output_p.exists() and overwrite:
-        if is_zip:
-            import os
-            os.remove(output_p)
-        else:
-            import shutil
-            shutil.rmtree(output_p)
+    # Phase 2: create Zarr store and write chunks - under a temporary name, moved into place only
+    # once every chunk is written, so a failure leaves no store of fill values behind.
+    from .zarr_io import set_raw, staged_output
 
-    with open_store(output_p, mode="w") as store:
+    is_zip = _is_zip_path(output_p)
+    with staged_output(output_p, overwrite=overwrite) as tmp_p, \
+            open_store(tmp_p, mode="w") as store:
         # Create array metadata (no data)
         zarr.create_array(
             store,
@@ -2127,24 +2123,30 @@ def dicom_to_zarr_streaming(
             fill_value=0,
         )
 
+        def _put(k: int, raw_bytes: bytes) -> None:
+            chunk_key = f"c/{k}/0/0"
+            if is_zip:
+                set_raw(store, chunk_key, raw_bytes)
+            else:
+                chunk_path = tmp_p / "c" / str(k) / "0" / "0"
+                chunk_path.parent.mkdir(parents=True, exist_ok=True)
+                chunk_path.write_bytes(raw_bytes)
+
         # Write each slice as a chunk
         for k, file_path in enumerate(paths):
-            chunk_key = f"c/{k}/0/0"
-
             if use_raw_copy:
                 # Direct byte copy — no numpy, no decompression
                 offset, length, _ = get_pixel_data_range(file_path)
                 with open(file_path, "rb") as fh:
                     fh.seek(offset)
                     raw_bytes = fh.read(length)
-
-                if is_zip:
-                    from zarr.core.sync import sync
-                    sync(store.set(chunk_key, raw_bytes))
-                else:
-                    chunk_path = output_p / "c" / str(k) / "0" / "0"
-                    chunk_path.parent.mkdir(parents=True, exist_ok=True)
-                    chunk_path.write_bytes(raw_bytes)
+                # Pixel Data of odd length is padded to even (PS3.5 7.1.1); the chunk is exactly
+                # the frame, and a short one is a file that does not hold what it declares.
+                expected = rows * cols * geometry.dtype.itemsize
+                if len(raw_bytes) < expected:
+                    raise ValueError(f"{file_path}: Pixel Data holds {len(raw_bytes)} bytes, "
+                                     f"a {rows}x{cols} {geometry.dtype} frame needs {expected}")
+                _put(k, raw_bytes[:expected])
             else:
                 # Decompress via pydicom, then write through Zarr
                 import pydicom
@@ -2152,14 +2154,7 @@ def dicom_to_zarr_streaming(
                 slice_data = ds.pixel_array.astype(geometry.dtype)
 
                 if compressor == "none":
-                    raw_bytes = slice_data.tobytes()
-                    if is_zip:
-                        from zarr.core.sync import sync
-                        sync(store.set(chunk_key, raw_bytes))
-                    else:
-                        chunk_path = output_p / "c" / str(k) / "0" / "0"
-                        chunk_path.parent.mkdir(parents=True, exist_ok=True)
-                        chunk_path.write_bytes(raw_bytes)
+                    _put(k, slice_data.astype(slice_data.dtype.newbyteorder("<")).tobytes())
                 else:
                     # Let Zarr handle compression via the array API
                     arr = zarr.open_array(store, mode="r+")
