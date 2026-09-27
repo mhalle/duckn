@@ -1083,6 +1083,53 @@ def _load_seg(
 # ---------------------------------------------------------------------------
 
 
+_RESCALE_KEYWORDS = ("RescaleIntercept", "RescaleSlope", "RescaleType")
+
+
+def _pvt_item(group: Any) -> Any:
+    seq = getattr(group, "PixelValueTransformationSequence", None)
+    return seq[0] if seq is not None and len(seq) > 0 else None
+
+
+def _hoist_enhanced_rescale(ds: Any) -> None:
+    """Read an Enhanced object's rescale from where PS3.3 puts it.
+
+    Enhanced CT, MR and PET state Rescale Intercept/Slope/Type in the Pixel Value
+    Transformation functional group (C.7.6.16.2.9), shared or per frame, not at the top level;
+    the reader looked only at the top level, so a scanner's Enhanced CT came in uncalibrated.
+    A shared mapping, or one every frame states alike, is copied to the top level of this
+    in-memory dataset, where the value-mapping code reads it (the attributes are excluded from
+    ``tags`` there, as everywhere). A mapping that varies by frame cannot be one value
+    transform: it is left where it is, reported, and the array holds stored values.
+    """
+    if any(k in ds for k in ("RescaleSlope", "RescaleIntercept")):
+        return
+    shared = getattr(ds, "SharedFunctionalGroupsSequence", None)
+    item = _pvt_item(shared[0]) if shared else None
+    if item is None:
+        per_frame = getattr(ds, "PerFrameFunctionalGroupsSequence", None) or []
+        items = [_pvt_item(fg) for fg in per_frame]
+        if not items or any(i is None for i in items):
+            return
+        states = {tuple(str(getattr(i, k, "")) for k in _RESCALE_KEYWORDS) for i in items}
+        if len(states) > 1:
+            warnings.warn(
+                "the Pixel Value Transformation varies by frame; it cannot be represented as "
+                "a single value transform, so the array holds uncalibrated stored values",
+                stacklevel=3,
+            )
+            return
+        item = items[0]
+    for k in _RESCALE_KEYWORDS:
+        if k in item:
+            setattr(ds, k, getattr(item, k))
+
+
+def _first(value: Any) -> Any:
+    """A single-valued attribute kept as a one-element list reads as its value."""
+    return value[0] if isinstance(value, list) and value else value
+
+
 def _load_multiframe(
     file_path: Path,
 ) -> tuple[np.ndarray, DicomImageInfo, list[Any]]:
@@ -1109,6 +1156,8 @@ def _load_multiframe(
         raise ValueError(
             f"Unsupported PhotometricInterpretation={photometric!r}"
         )
+
+    _hoist_enhanced_rescale(ds)
 
     n_frames = int(getattr(ds, "NumberOfFrames", 1))
     if n_frames <= 1 and hasattr(ds, "ImagePositionPatient"):
@@ -2104,17 +2153,13 @@ def dicom_to_zarr_streaming(
                 for h in headers)
     use_raw_copy = is_uncompressed and compressor == "none" and fills
 
-    # Phase 2: create Zarr store and write chunks
-    is_zip = _is_zip_path(output_p)
-    if output_p.exists() and overwrite:
-        if is_zip:
-            import os
-            os.remove(output_p)
-        else:
-            import shutil
-            shutil.rmtree(output_p)
+    # Phase 2: create Zarr store and write chunks - under a temporary name, moved into place only
+    # once every chunk is written, so a failure leaves no store of fill values behind.
+    from .zarr_io import set_raw, staged_output
 
-    with open_store(output_p, mode="w") as store:
+    is_zip = _is_zip_path(output_p)
+    with staged_output(output_p, overwrite=overwrite) as tmp_p, \
+            open_store(tmp_p, mode="w") as store:
         # Create array metadata (no data)
         zarr.create_array(
             store,
@@ -2127,24 +2172,30 @@ def dicom_to_zarr_streaming(
             fill_value=0,
         )
 
+        def _put(k: int, raw_bytes: bytes) -> None:
+            chunk_key = f"c/{k}/0/0"
+            if is_zip:
+                set_raw(store, chunk_key, raw_bytes)
+            else:
+                chunk_path = tmp_p / "c" / str(k) / "0" / "0"
+                chunk_path.parent.mkdir(parents=True, exist_ok=True)
+                chunk_path.write_bytes(raw_bytes)
+
         # Write each slice as a chunk
         for k, file_path in enumerate(paths):
-            chunk_key = f"c/{k}/0/0"
-
             if use_raw_copy:
                 # Direct byte copy — no numpy, no decompression
                 offset, length, _ = get_pixel_data_range(file_path)
                 with open(file_path, "rb") as fh:
                     fh.seek(offset)
                     raw_bytes = fh.read(length)
-
-                if is_zip:
-                    from zarr.core.sync import sync
-                    sync(store.set(chunk_key, raw_bytes))
-                else:
-                    chunk_path = output_p / "c" / str(k) / "0" / "0"
-                    chunk_path.parent.mkdir(parents=True, exist_ok=True)
-                    chunk_path.write_bytes(raw_bytes)
+                # Pixel Data of odd length is padded to even (PS3.5 7.1.1); the chunk is exactly
+                # the frame, and a short one is a file that does not hold what it declares.
+                expected = rows * cols * geometry.dtype.itemsize
+                if len(raw_bytes) < expected:
+                    raise ValueError(f"{file_path}: Pixel Data holds {len(raw_bytes)} bytes, "
+                                     f"a {rows}x{cols} {geometry.dtype} frame needs {expected}")
+                _put(k, raw_bytes[:expected])
             else:
                 # Decompress via pydicom, then write through Zarr
                 import pydicom
@@ -2152,14 +2203,7 @@ def dicom_to_zarr_streaming(
                 slice_data = ds.pixel_array.astype(geometry.dtype)
 
                 if compressor == "none":
-                    raw_bytes = slice_data.tobytes()
-                    if is_zip:
-                        from zarr.core.sync import sync
-                        sync(store.set(chunk_key, raw_bytes))
-                    else:
-                        chunk_path = output_p / "c" / str(k) / "0" / "0"
-                        chunk_path.parent.mkdir(parents=True, exist_ok=True)
-                        chunk_path.write_bytes(raw_bytes)
+                    _put(k, slice_data.astype(slice_data.dtype.newbyteorder("<")).tobytes())
                 else:
                     # Let Zarr handle compression via the array API
                     arr = zarr.open_array(store, mode="r+")
@@ -2213,7 +2257,8 @@ _PER_FRAME_SKIP = frozenset({
     "InstanceCreationDate", "InstanceCreationTime", "ContentDate", "ContentTime",
     "SmallestImagePixelValue", "LargestImagePixelValue",
     # a per-slice rescale kept because it varied (no value transform could state it) is not a
-    # per-frame attribute; the export's mapping comes from value_transforms alone
+    # top-level attribute of a frame: an Enhanced export writes it as that frame's Pixel Value
+    # Transformation functional group instead
     "RescaleSlope", "RescaleIntercept", "RescaleType",
 })
 
@@ -2571,6 +2616,20 @@ def zarr_to_dicom(
     measures_item.SpacingBetweenSlices = slice_spacing
     shared_fg.PixelMeasuresSequence = Sequence([measures_item])
 
+    # The value mapping of an Enhanced CT/MR/PET object belongs in the Pixel Value
+    # Transformation functional group (PS3.3 C.7.6.16.2.9; mandatory in Enhanced CT and PET),
+    # not at the top level, where 0.5.4 wrote it. Secondary Capture keeps it at the top level.
+    enhanced = sop_class_uid in _ENHANCED_SOP_CLASSES.values()
+    if enhanced and ("RescaleSlope" in ds or "RescaleIntercept" in ds):
+        pvt = Dataset()
+        pvt.RescaleIntercept = ds.RescaleIntercept if "RescaleIntercept" in ds else 0
+        pvt.RescaleSlope = ds.RescaleSlope if "RescaleSlope" in ds else 1
+        pvt.RescaleType = ds.RescaleType if "RescaleType" in ds else "US"
+        shared_fg.PixelValueTransformationSequence = Sequence([pvt])
+        for keyword in _RESCALE_KEYWORDS:
+            if keyword in ds:
+                delattr(ds, keyword)
+
     ds.SharedFunctionalGroupsSequence = Sequence([shared_fg])
 
     # Per-Frame Functional Groups
@@ -2606,13 +2665,25 @@ def zarr_to_dicom(
         if slice_axis.samples and z_idx < len(slice_axis.samples):
             sample = slice_axis.samples[z_idx]
             if sample.metadata and "dicom" in sample.metadata:
-                for keyword, value in sample.metadata["dicom"].items():
+                slice_tags = sample.metadata["dicom"]
+                for keyword, value in slice_tags.items():
                     if keyword in _PER_FRAME_SKIP:
                         continue
                     try:
                         _restore_tag(frame_fg, keyword, value)
                     except Exception:
                         continue
+                # A rescale that varied by slice has no value_transforms to state it; each
+                # slice's own mapping is its only statement (dicom-spec §9), and an Enhanced
+                # object has a per-frame place for it. 0.5.4 wrote none, so the export's
+                # stored values carried no calibration at all.
+                if enhanced and not modality_lut_tags and (
+                        "RescaleSlope" in slice_tags or "RescaleIntercept" in slice_tags):
+                    pvt = Dataset()
+                    pvt.RescaleIntercept = _first(slice_tags.get("RescaleIntercept", 0))
+                    pvt.RescaleSlope = _first(slice_tags.get("RescaleSlope", 1))
+                    pvt.RescaleType = str(_first(slice_tags.get("RescaleType", "US")))
+                    frame_fg.PixelValueTransformationSequence = Sequence([pvt])
 
         # Temporal position for 4D
         if is_4d and time_axis:

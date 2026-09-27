@@ -104,6 +104,8 @@ def from_nifti(
     img: Any,
     metadata: DucknMetadata | None = None,
     space: str = "world",
+    *,
+    derived: bool | None = None,
 ) -> Volume:
     """Convert a nibabel Nifti1Image to a duckn Volume.
 
@@ -111,8 +113,14 @@ def from_nifti(
     ----------
     img : nib.Nifti1Image
     metadata : optional DucknMetadata to preserve. If None, creates
-           minimal metadata in RAS space.
+           minimal metadata in RAS space: up to three spatial axes, a
+           ``time`` axis for NIfTI's fourth dimension and a plain axis for
+           each one beyond it (all first, in C order).
     space : coordinate space the NIfTI image is in
+    derived : whether the image is derived from the source ``metadata``
+           describes (duckn-spec §4.5); a derived array keeps none of the
+           source's format extensions. ``None`` judges it, as ``from_sitk``
+           does (see ``adapters.carry_metadata``).
 
     Returns
     -------
@@ -120,9 +128,14 @@ def from_nifti(
     """
     import nibabel as nib
 
+    from .adapters import carry_metadata
+    from .models import AxisKind, AxisMetadata, Centering
+
     data_nifti = np.asarray(img.dataobj)
     affine = img.affine
-    ndim = 3
+    # NIfTI's first three dimensions are spatial; 0.5.4 assumed exactly three, so a 4D image
+    # had four data axes and three axes of metadata
+    n_spatial = min(3, data_nifti.ndim)
 
     # Reverse NIfTI i,j,k (fastest-first) → duckn C-order (slowest-first)
     data = data_nifti.transpose()
@@ -136,20 +149,23 @@ def from_nifti(
         new_meta.value_transforms = None
         flip = _get_ras_flip(metadata)
     else:
-        from .models import AxisKind, AxisMetadata, Centering
         flip = np.array([1, 1, 1], dtype=float)  # RAS
+        extra = [
+            AxisMetadata(kind=AxisKind.TIME) if d == 3 else AxisMetadata()
+            for d in range(data_nifti.ndim - 1, n_spatial - 1, -1)
+        ]
         new_meta = DucknMetadata(
             version="1.0",   # the convention's own rule: always present (duckn-spec §3.1)
             space=SpaceName.RIGHT_ANTERIOR_SUPERIOR,
             space_origin=[0.0, 0.0, 0.0],
-            axes=[
+            axes=extra + [
                 AxisMetadata(
                     kind=AxisKind.SPACE,
                     centering=Centering.CELL,
                     space_direction=[0.0, 0.0, 0.0],
                     unit="mm",
                 )
-                for _ in range(ndim)
+                for _ in range(n_spatial)
             ],
         )
 
@@ -161,22 +177,23 @@ def from_nifti(
     # Undo RAS flip
     origin = origin_ras / flip
 
-    # Reverse column order back to duckn C-order and undo flip
-    D_duckn = np.zeros((3, 3))
+    # Reverse the spatial columns back to duckn C-order and undo flip
+    D_duckn = np.zeros((3, n_spatial))
     for i in range(3):
-        for j in range(3):
-            D_duckn[i][j] = D_ras[i][2 - j] / flip[i]
-
-    new_meta.space_origin = origin.tolist()
+        for j in range(n_spatial):
+            D_duckn[i][j] = D_ras[i][n_spatial - 1 - j] / flip[i]
 
     # space_origin = position of first sample (no centering offset)
     new_meta.space_origin = origin.tolist()
 
-    spatial_idx = 0
-    for ax in new_meta.axes:
-        if ax.space_direction is not None or metadata is None:
-            ax.space_direction = D_duckn[:, spatial_idx].tolist()
-            ax.samples = None
-            spatial_idx += 1
+    if metadata is None:
+        spatial = new_meta.axes[len(new_meta.axes) - n_spatial:]
+    else:
+        spatial = [ax for ax in new_meta.axes if ax.space_direction is not None][:n_spatial]
+    for spatial_idx, ax in enumerate(spatial):
+        ax.space_direction = D_duckn[:, spatial_idx].tolist()
+        ax.samples = None
 
+    if metadata is not None:
+        new_meta = carry_metadata(metadata, new_meta, data, derived)
     return Volume(raw=data, metadata=new_meta)

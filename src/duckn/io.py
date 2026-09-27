@@ -183,6 +183,13 @@ def write(
             raise ValueError("format= required when writing to file-like object")
         fmt = format
 
+    # Metadata that does not fit its array (§5: an axis per dimension, sample counts, a kind's
+    # required size) is refused before anything is written; 0.5.4 wrote a 4D NIfTI's three
+    # axes beside its four dimensions.
+    from .models import validate_against_shape
+
+    validate_against_shape(vol.metadata, vol.raw.shape)
+
     if fmt == "zarr":
         _write_zarr(vol, dest, chunks=chunks, compressor=compressor,
                     level=level, overwrite=overwrite)

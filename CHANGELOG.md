@@ -26,6 +26,112 @@
   layout of §9, which rank-field stores already wrote. Every 0.9 file is a 0.10 file; an array's
   block is still written as 0.9, a group's as 0.10.
 
+A review of 0.5.4 (2026-09-26) reproduced converters that wrote what the source did not say or
+dropped what it did, and two byte-copy writers that could not write a zip at all. Each fix is
+pinned by a test that fails on 0.5.4 (`tests/test_review_055.py`).
+
+### Fixed - NRRD
+- **The measurement frame was stored transposed.** pynrrd returns the header's vectors as the
+  rows of its array, and each NRRD vector is a *column* of the frame; duckn stores the matrix
+  by rows (duckn-spec §3.1). Import and export both copied pynrrd's rows straight across, so a
+  round trip hid it and so did every symmetric frame. **A store converted from a NRRD with an
+  asymmetric measurement frame by 0.5.4 or earlier holds the transpose** of the true frame:
+  transpose it, or convert again. Diffusion gradients read through such a frame were rotated
+  the wrong way.
+- **Zero-copy into a `.zarr.zip` wrote no chunk** (`nrrd_to_zarr_zerocopy`, and `duckn
+  from-nrrd --zerocopy` to a zip or a ZMP): zarr 3's `ZipStore.set` takes a `Buffer`, not
+  `bytes`, so the call raised after `zarr.json` was written - leaving a well-formed archive that
+  read as zeros everywhere. Written through the store's buffer type now (`zarr_io.set_raw`), and
+  under a temporary name moved into place only on success (`zarr_io.staged_output`): a failed
+  conversion leaves no store behind, and a failed overwrite leaves the old one.
+- **Fields the convention does not model are kept, not dropped.** `spacings`, `axis mins` and
+  `axis maxs` - the only geometry of a NRRD with no `space` - and `old min`, `old max`,
+  `content`, `min`, `max` were listed as fields and then thrown away. They go into a new `nrrd`
+  extension (docs/nrrd-extension.md, version 0.1) and back out on export. No value mapping is
+  inferred from `old min`/`old max`. A field with no place at all (`number`) is reported
+  (`nrrd-field-dropped`).
+- **Per-axis `units` are exported.** Only `space units` were written, so a time axis's `s`
+  was lost on the way out.
+- **The zero-copy writer's `legacy` extension is gone.** It had no `version` (§3.1 requires
+  one) and no owner, and it restated what the array's codecs say. A zero-copy export now takes
+  the encoding from the codecs and refuses what it cannot copy as it is: several chunks (0.5.4
+  wrote the first alone), a codec other than raw or gzip (0.5.4 wrote zstd bytes as `raw`), or
+  `value_transforms` (NRRD cannot state them; `zarr_to_nrrd` writes the calibrated values).
+
+### Fixed - NIfTI (`nifti` extension 1.1)
+- **A file with no transform (`sform_code` = `qform_code` = 0) was given one.** nibabel's
+  fall-back affine - a flipped x and a centered origin, neither in the file - was stored as
+  `right-anterior-superior` and exported as `sform_code` 2. The file's own statement is NIfTI's
+  method 1, which places the grid in no patient space: it is stored as `space_dimension` 3 with
+  `space_origin` 0 and `space_direction` = pixdim, and exported with both codes 0.
+- **Both codes are stated, 0 included** (nifti-spec §4.2), where "absent" had meant both "the
+  file had none" and "unknown". A qform-only file no longer gains an sform on export, nor an
+  sform-only file a qform.
+- **Units the file does not state are not invented.** `xyzt_units` 0 (unknown) became `"mm"` on
+  every axis; the unit is left out now, and an export of axes with no unit writes 0. A 3D file
+  that states a time unit keeps it (`tags.xyzt_units`), and `Hz`, `ppm`, `rad/s` time codes map
+  to the time axis's unit. `xyzt_units` round-trips exactly.
+- **`pixdim[4]` is the interval between volumes**, stated as the time axis's
+  `samples[k].position`; 0.5.4 wrote it as `thickness`, the extent each sample measures
+  (duckn-spec §3.2). nifti-spec §2 had mapped it to "space_direction or unit", neither of which
+  a time axis can hold. An export still reads `thickness` from a store written before.
+
+### Fixed - values and tags
+- **A `lut` over `uint64` stored values** cast them to `int64` first, so a value at or above
+  2**63 wrapped negative and read the table's first entry instead of clamping to its last. The
+  clamp is taken in the stored type now, and a table placed above `int64` works.
+- **The palette is stored-value metadata** (dicom-spec §5.10): the Red/Green/Blue/Alpha (and
+  Large) Palette Color LUT Descriptors state the first *stored* value they map, and the palette
+  tables (plain and segmented) and its UID are indexed by stored values. They joined
+  `dicom_tags.STORED_ENCODING`, so a copy of rescaled values no longer carries them.
+
+### Fixed - Enhanced DICOM rescale
+- **`zarr_to_dicom` wrote an Enhanced CT/MR/PET's rescale at the top level**, which those IODs
+  do not contain: PS3.3 puts it in the Pixel Value Transformation functional group
+  (C.7.6.16.2.9), mandatory in Enhanced CT and PET. It is written in the shared functional
+  groups now. GDCM reads either place; a strict validator does not.
+- **The reader looked only at the top level**, so an Enhanced object stating its rescale where
+  the standard puts it came in uncalibrated. A shared Pixel Value Transformation, or per-frame
+  ones that all agree, is read as the value transform; per-frame ones that differ are reported
+  and the stored values kept.
+- **An export of a store whose rescale varied by slice carried no calibration at all**: the
+  per-slice `RescaleSlope`/`Intercept` were kept in `samples[i].metadata.dicom` (0.5.4) and
+  then skipped by the export. An Enhanced export writes each as that frame's Pixel Value
+  Transformation. (Re-reading such a file still gives uncalibrated values, reported: the
+  per-frame mappings are not yet carried into `samples[i].metadata` on import.)
+
+### Tests
+- **`tests/test_mutation_gaps.py`**: 11 tests that kill mutants a mutation run of 0.5.4 let
+  live (attribute tags upper-cased and a short one kept as it came, malformed numeric parts,
+  a value pydicom refuses under strict validation kept as text, a top-level Pixel Value
+  Transformation left out, `split_time_and_slice` leaving a missing tag missing, a varying
+  rescale keeping each slice's Rescale Type, the streaming byte copy asking every slice whether
+  its bits fill, DICOMweb writing no binary value, BIDS dropping `[""]`, the nibabel adapter
+  stating the convention version). They pass on 0.5.4: they guard behavior that was right and
+  untested.
+
+### Fixed - adapters and `io.write`
+- **`from_sitk` / `from_nifti` with `metadata=` no longer carry a source's format extensions
+  onto a derived array** (duckn-spec §4.5, §4.7). A shrunk float image kept `dicom`'s
+  `stored_values: true` and `BitsStored`. The adapters cannot see what was done to the image,
+  so they judge: the array is derived when the metadata had `value_transforms` (the image holds
+  calibrated values), when the grid moved, when the axis count differs, or when the pixel type
+  contradicts the `dicom` extension's; then `dicom`, `nifti`, `fits`, `nrrd`, `keyvalues` (and
+  the same keys per axis and per sample) are dropped. `derived=True/False` says so outright.
+- **Adapters build an axis per dimension.** `from_nifti` assumed three: a 4D image had four
+  data axes and three axes of metadata (a `time` axis and plain axes for NIfTI's dimensions
+  beyond three now come first, in C order). `from_sitk` gives a vector image a trailing `list`
+  axis, and a 2D image an unnamed 2D space (it raised building a 3D LPS space from two
+  components).
+- **`io.write` validates metadata against the array** (`validate_against_shape`, duckn-spec
+  §5) before writing anything.
+
+### Fixed - DICOM
+- **The streaming converter wrote no chunk into a `.zarr.zip`** with its default
+  `compressor="none"` (the same `bytes`-for-`Buffer` call), leaving a zip whose voxels read as
+  zeros beside a complete `dicom` extension. Fixed as above, staged the same way; a padded
+  odd-length Pixel Data is cut to the frame, and a short one refused.
+
 ## 0.5.4 — 2026-09-26
 
 An adversarial review of 0.5.3 (2026-09-26) found the two DICOM readers still encoding values

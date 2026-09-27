@@ -423,6 +423,8 @@ These are the most commonly anonymized fields. When anonymized, include them wit
 | `SmallestImagePixelValue`, `LargestImagePixelValue`, `SmallestPixelValueInSeries`, `LargestPixelValueInSeries`, `SmallestImagePixelValueInPlane`, `LargestImagePixelValueInPlane` | Ranges of stored values |
 | `PixelPaddingValue`, `PixelPaddingRangeLimit` | Stored values marking padding |
 | `RealWorldValueMappingSequence` | Maps *from* stored values |
+| `RedPaletteColorLookupTableDescriptor`, `Green...`, `Blue...`, `AlphaPaletteColorLookupTableDescriptor`, the `LargeRed/Green/Blue...` descriptors | The second value is the first *stored* value the palette maps |
+| `Red/Green/Blue/AlphaPaletteColorLookupTableData`, `SegmentedRed/Green/Blue/AlphaPaletteColorLookupTableData`, `PaletteColorLookupTableUID` | The palette is indexed by stored values; the UID names that mapping |
 
 The padding value is the case that makes this a rule rather than tidiness: CT scanners commonly state `PixelPaddingValue` −2000 with a rescale intercept of −1024, so in an array of Hounsfield units the padding is −3024, and a reader masking −2000 would mask nothing.
 
@@ -779,6 +781,8 @@ A CT volume that includes coded anatomy using DICOM's standard sequence pattern:
 | Per-frame Functional Groups Sequence, whole | Per-frame geometry the axes state, in the source's frame order (below) |
 
 **Where DICOM states the rescale and the geometry elsewhere.** A rescale that *varies* across instances cannot be one `value_transforms` entry; the array then holds uncalibrated stored values, `sample_units` is not written, and each slice's `RescaleSlope`, `RescaleIntercept` and `RescaleType` stay in its `samples[i].metadata.dicom` — the only statement of its mapping. An Enhanced object's `PerFrameFunctionalGroupsSequence` is left out whole: it restates per-frame geometry the axes state, in the source's frame order, and its other per-frame values would belong in `samples[i].metadata`, which this version does not map. Its `SharedFunctionalGroupsSequence` is kept with the rules of this section applied at every depth — `PixelMeasuresSequence`'s spacing, `PlaneOrientationSequence`'s orientation and the whole `PixelValueTransformationSequence` (the object's rescale) go, and a macro left with nothing is dropped — so a reader cannot apply the rescale a second time.
+
+**Writing an Enhanced object back.** A writer states the value mapping where the IOD puts it: for Enhanced CT, MR and PET, the Pixel Value Transformation functional group (PS3.3 C.7.6.16.2.9) — shared when `value_transforms` holds one linear mapping, per frame when the rescale varied and each slice's `samples[i].metadata.dicom` holds its own — never top-level `RescaleSlope`/`RescaleIntercept`, which those IODs do not contain. A reader reads it from there too: a shared group, or per-frame groups that all agree, is the one `value_transforms` entry; per-frame groups that differ leave the array's stored values uncalibrated and are reported (the per-frame mappings are not yet carried into `samples[i].metadata`).
 
 Private tags are **kept by default**, under their hex codes, each block with its private creator (§4.1): a converter's output is often the only copy of the header a pipeline keeps, and private elements carry acquisition parameters found nowhere else (diffusion b-values and gradient directions, vendor scale factors).
 

@@ -33,6 +33,7 @@ that does not recognize an extension ignores it.
 | `presentation` (early draft, parked) | [presentation-extension.md](presentation-extension.md) | Recommended grayscale presentation carried by imaging formats: display windows and inversion. Survives derivation while the quantity does. Not implemented. |
 | `dicom` | [dicom-spec.md](dicom-spec.md) | DICOM provenance — describes the *source object*, never the array it is attached to. |
 | `nifti` | [nifti-spec.md](nifti-spec.md) | NIfTI header provenance. |
+| `nrrd` | [nrrd-extension.md](nrrd-extension.md) | NRRD fields the convention does not model (`spacings` and `axis mins` of a file with no `space`, `old min`/`old max`, `content`), kept for a lossless round trip (version 0.1). |
 | `dwmri` | [dwi-extension.md](dwi-extension.md) | Diffusion-weighted MRI: gradients, b-values, B-matrices. |
 | `fits` | [fits-extension.md](fits-extension.md) | FITS header provenance (astronomy). |
 | `microscopy` | [microscopy-extension.md](microscopy-extension.md) | Microscopy acquisition metadata. |

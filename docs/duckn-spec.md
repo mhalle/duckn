@@ -668,14 +668,14 @@ The following NRRD fields are **not** part of this convention, with rationale:
 | `data file` | The Zarr store is the data |
 | `line skip`, `byte skip` | Artifacts of wrapping foreign file formats |
 | `number` | Vestigial in NRRD itself |
-| `spacings` | Redundant: recoverable from the magnitude of each axis's `space_direction` |
-| `axis mins`, `axis maxs` | Derivable from `space_origin`, per-axis `space_direction`, `shape`, and `centering` |
+| `spacings` | Redundant: recoverable from the magnitude of each axis's `space_direction`. On an axis with none (a NRRD with no `space`) nothing else states it: the `nrrd` extension keeps it ([nrrd-extension](nrrd-extension.md)) |
+| `axis mins`, `axis maxs` | Derivable from `space_origin`, per-axis `space_direction`, `shape`, and `centering`; kept by the `nrrd` extension where they are not |
 | `labels` | Zarr's `dimension_names` serves this role |
 | `units` (per-axis, as parallel array) | Replaced by `unit` within each axis object |
 | `space units` (as parallel array) | Replaced by `unit` within each axis object |
-| `min`, `max` | Unreliable cached extremes; not the format's job |
-| `old min`, `old max` | Replaced by `value_transforms` |
-| `content` | If needed, use a regular Zarr attribute; no special status |
+| `min`, `max` | Unreliable cached extremes; not the format's job. A NRRD import keeps them in the `nrrd` extension |
+| `old min`, `old max` | Replaced by `value_transforms`, which a converter does not infer from them; a NRRD import keeps them in the `nrrd` extension |
+| `content` | No special status; a NRRD import keeps it in the `nrrd` extension |
 
 ---
 

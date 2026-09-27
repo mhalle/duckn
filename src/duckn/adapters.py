@@ -32,6 +32,89 @@ _TO_TARGET_FLIP: dict[str, dict[str, list[float]]] = {
 }
 
 
+#: Extensions that describe the SOURCE file an array was converted from (format provenance).
+#: They are true of a faithful re-encoding of that file and of nothing derived from it
+#: (duckn-spec §4.5, §4.7; keyvalues-extension §3.2).
+SOURCE_FORMAT_EXTENSIONS: frozenset[str] = frozenset({
+    "dicom", "nifti", "fits", "nrrd", "keyvalues", "legacy",
+})
+
+
+def _pixel_type_disagrees(meta: DucknMetadata, dtype: np.dtype) -> bool:
+    """True when the dicom extension states a pixel type the array does not have."""
+    tags = ((meta.extensions or {}).get("dicom") or {}).get("tags") or {}
+    bits, rep = tags.get("BitsAllocated"), tags.get("PixelRepresentation")
+    if dtype.kind == "f":
+        return bits is not None or rep is not None
+    try:
+        if bits is not None and int(bits) != dtype.itemsize * 8:
+            return True
+        if rep is not None and int(rep) != (1 if dtype.kind == "i" else 0):
+            return True
+    except (TypeError, ValueError):
+        return True
+    return False
+
+
+def _geometry_differs(src: DucknMetadata, new: DucknMetadata) -> bool:
+    if (src.space_origin is None) != (new.space_origin is None):
+        return True
+    if src.space_origin is not None and not np.allclose(
+            src.space_origin, new.space_origin, rtol=1e-6, atol=1e-6):
+        return True
+    for a, b in zip(src.axes or [], new.axes or []):
+        if (a.space_direction is None) != (b.space_direction is None):
+            return True
+        if a.space_direction is not None and not np.allclose(
+                a.space_direction, b.space_direction, rtol=1e-6, atol=1e-6):
+            return True
+    return False
+
+
+def carry_metadata(
+    src: DucknMetadata,
+    new: DucknMetadata,
+    data: np.ndarray,
+    derived: bool | None,
+) -> DucknMetadata:
+    """Drop ``new``'s source-format extensions when the array is derived from ``src``'s source.
+
+    An adapter handed ``metadata=`` cannot see what was done to the image in between, so it
+    judges from what it can see (``derived=None``): the array is derived when ``src`` had
+    ``value_transforms`` (the incoming values are calibrated, not the source's stored values),
+    when its grid moved (origin or any axis direction or spacing), when its number of axes
+    differs, or when it contradicts the pixel type the dicom extension states. ``derived=True``
+    or ``False`` says so outright. 0.5.4 always carried them, so a shrunk float image kept
+    ``dicom.stored_values: true`` and ``BitsStored``.
+    """
+    if derived is None:
+        derived = bool(
+            src.value_transforms
+            or len(src.axes or []) != data.ndim
+            or _geometry_differs(src, new)
+            or _pixel_type_disagrees(src, data.dtype)
+        )
+    if not derived:
+        return new
+    if new.extensions:
+        kept = {k: v for k, v in new.extensions.items() if k not in SOURCE_FORMAT_EXTENSIONS}
+        new.extensions = kept or None
+    for ax in new.axes or []:
+        if ax.extensions:
+            kept = {k: v for k, v in ax.extensions.items() if k not in SOURCE_FORMAT_EXTENSIONS}
+            ax.extensions = kept or None
+        if ax.samples:
+            # per-sample metadata carried from the source (a slice's DICOM tags) goes with it;
+            # positions and origins are geometry and stay
+            ax.samples = [
+                sm.model_copy(update={"metadata": {
+                    k: v for k, v in sm.metadata.items() if k not in SOURCE_FORMAT_EXTENSIONS
+                } or None}) if sm.metadata else sm
+                for sm in ax.samples
+            ]
+    return new
+
+
 def _get_target_flip(meta: DucknMetadata, convention: str = "lps") -> np.ndarray:
     """Get the sign flip vector to convert from the volume's space to *convention*."""
     if convention not in _TO_TARGET_FLIP:
