@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 
+import warnings
 from enum import StrEnum
 from typing import Annotated, Any, Union
 
@@ -947,7 +948,25 @@ def duckn_attrs(meta: DucknMetadata) -> dict[str, Any]:
     """
     dumped = meta.model_dump(exclude_none=True)
     DucknMetadata.model_validate(dumped)
+    if meta.sample_units is not None and not meta.values_stated():
+        # The one convention-1.2 case a writer most likely did not mean: units
+        # named for a quantity whose mapping from the stored values is left
+        # unstated. Legal (a writer that cannot vouch for a calibration omits
+        # it, duckn-spec §3.1) but usually a forgotten `[]`.
+        warnings.warn(
+            f"convention {meta.version} metadata names sample_units "
+            f"{meta.sample_units!r} but states no value_transforms: from 1.2 an absent "
+            "value_transforms means the mapping is NOT STATED. Write "
+            "value_transforms=[] if the stored values are the quantity.",
+            UnstatedCalibrationWarning,
+            stacklevel=2,
+        )
     return {"duckn": dumped}
+
+
+class UnstatedCalibrationWarning(UserWarning):
+    """A convention-1.2 array names `sample_units` but states no `value_transforms`
+    (duckn-spec §3.1): legal, and usually a writer that meant `[]`."""
 
 
 class DucknGroupMetadata(BaseModel):

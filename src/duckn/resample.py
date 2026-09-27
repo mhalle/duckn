@@ -315,9 +315,11 @@ def resample(
 
     # The values written are now the calibrated ones, so the transforms that
     # produced them must not be carried forward (spec §4.3): keeping them
-    # would apply the chain a second time on the next read.
+    # would apply the chain a second time on the next read. `[]` states that the
+    # values written are the quantity; an absent field would say "not stated"
+    # in a convention-1.2 file (§3.1).
     if materialize:
-        new_meta.value_transforms = None
+        new_meta.value_transforms = []
 
     # A resampled array is derived with respect to whatever its source
     # format described, so format-specific provenance does not survive

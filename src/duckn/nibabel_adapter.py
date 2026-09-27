@@ -145,8 +145,10 @@ def from_nifti(
         # The incoming array holds calibrated values — `to_*` writes
         # `vol.data`, and these formats have no notion of a duckn value
         # transform. Carrying the transforms forward would apply them a
-        # second time on the next read (duckn-spec §4.3, materialize).
-        new_meta.value_transforms = None
+        # second time on the next read (duckn-spec §4.3, materialize). `[]`,
+        # not an absent field: from convention 1.2 absence means "not
+        # stated", and these values ARE the quantity (§3.1).
+        new_meta.value_transforms = []
         flip = _get_ras_flip(metadata)
     else:
         flip = np.array([1, 1, 1], dtype=float)  # RAS

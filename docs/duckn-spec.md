@@ -1,7 +1,7 @@
 # duckn: Axis-Rich Array Metadata Convention for Zarr V3
 
 **Status:** Draft proposal
-**Version:** 1.1
+**Version:** 1.2
 
 ---
 
@@ -90,6 +90,8 @@ A major version increment indicates breaking changes — a reader for version 1.
 Version 1.2 adds the `axis_linear` transform, group-level metadata (§3.3), and one change of meaning that stays read-compatible: an absent `value_transforms` means the value mapping is **not stated**, where in 1.0 and 1.1 it meant identity (see `value_transforms`). A 1.0 or 1.1 reader of a 1.2 file presents the stored values as they are, which is all a reader of an unstated mapping can do; nothing it computes changes. A writer declares the lowest version that covers what it wrote, and at least 1.2 whenever it relies on 1.2's meaning of absence.
 
 This field should always be present.
+
+**Three version numbers, three meanings.** This field is the version of the *convention* - the file format - and it is the only version a reader acts on. Each extension carries its own `version` inside its block, versioned independently (a major version of `0` marks it unstable, §3.1 `extensions`). Software that implements the convention, including the reference library, has its own release numbers, which say nothing about a file: a library release states which convention versions it writes and reads. A file never records which software wrote it here; that is provenance (§4.6).
 
 #### `space`
 
@@ -579,12 +581,12 @@ Writing is choosing an encoding for a known quantity. Three policies are well de
 | Policy | Stored values | `value_transforms` | Applicable when |
 |---|---|---|---|
 | **Preserve** | the original stored values | carried forward unchanged | the quantity is unmodified |
-| **Materialize** | the calibrated values | **dropped** | the quantity has been modified, or a self-describing array is wanted |
+| **Materialize** | the calibrated values | **replaced by `[]`** (identity) | the quantity has been modified, or a self-describing array is wanted |
 | **Re-encode** | newly quantized values | newly derived to match | the quantity is unmodified and a specific storage type is wanted |
 
 **Preserve** is the recommended default. It is the only policy that is reversible: a preserved array can be materialized later, but the original stored values cannot be recovered from a materialized one. It is also the most compact and retains the exact values the instrument produced.
 
-**Materialize** must drop `value_transforms` entirely. Writing calibrated values while retaining the transforms that produced them is the central hazard of this section: on the next read the chain is applied a second time, silently, and the result is plausible enough to go unnoticed. `sample_units` is unaffected and must be kept — the quantity did not change, only its encoding.
+**Materialize** must replace `value_transforms` with the empty list `[]`, the stated identity. Writing calibrated values while retaining the transforms that produced them is the central hazard of this section: on the next read the chain is applied a second time, silently, and the result is plausible enough to go unnoticed. Omitting the field is not the same as `[]` from version 1.2: absence says the mapping is not stated (§3.1), which would discard the one thing a materialized array knows - that its values are the quantity. (In a file declaring 1.0 or 1.1, omitting it said identity; `[]` says the same in every version.) `sample_units` is unaffected and must be kept — the quantity did not change, only its encoding.
 
 **Re-encode** must derive transforms that satisfy the invariant in §4.1 for the new storage type, and is available only for transform families that can be inverted. It is a deliberate act and should never be applied implicitly.
 
@@ -703,9 +705,10 @@ A 256×256×128 16-bit MRI volume in RAS space, 1mm × 1mm × 2mm voxels:
   "fill_value": 0,
   "attributes": {
     "duckn": {
-      "version": "1.0",
+      "version": "1.2",
       "space": "right-anterior-superior",
       "space_origin": [-127.5, -127.5, 0.0],
+      "value_transforms": [],
       "axes": [
         {
           "kind": "space",
@@ -730,6 +733,8 @@ A 256×256×128 16-bit MRI volume in RAS space, 1mm × 1mm × 2mm voxels:
   }
 }
 ```
+
+`"value_transforms": []` states that the stored values are the values: nothing to apply. It is the common case, and from version 1.2 it is written rather than implied - an absent `value_transforms` would say the mapping is not stated (§3.1).
 
 ### 7.2 CT Volume with Value Transform
 
@@ -1042,7 +1047,7 @@ A Zarr array with only a kind annotation and nothing else:
 ```json
 "attributes": {
   "duckn": {
-    "version": "1.0",
+    "version": "1.2",
     "axes": [
       { "kind": "space" }
     ]
@@ -1050,7 +1055,7 @@ A Zarr array with only a kind annotation and nothing else:
 }
 ```
 
-This is a valid use of the convention. It says "these are spatial axes" and nothing more.
+This is a valid use of the convention. It says "these are spatial axes" and nothing more - including nothing about what the stored values mean, since a 1.2 file without `value_transforms` does not state its mapping (§3.1).
 
 ---
 
@@ -1064,7 +1069,7 @@ This is a valid use of the convention. It says "these are spatial axes" and noth
 
 - **Out-of-line secondary data is a known gap.** Several features want bulk data that is awkward inside `attributes`: a large `lut` table, a palette that gives meaning to index-valued voxels, a shared vocabulary referenced by many segments, a mask or confidence map accompanying a volume. Zarr already provides the substrate — a group holding sibling arrays — but this convention defines no way to reference one, so each case currently either inlines the data or is out of scope. A single reference mechanism would serve all of them and should be designed once, deliberately, rather than invented separately per feature. The tradeoff to weigh is self-containment: today an array plus its attributes is genuinely everything, and references buy scalability at the cost of that property. Note that §4.5 already answers the lifecycle question — a palette survives a resample because it maps values, while a mask does not because it is tied to the grid.
 
-- **Extensibility of `value_transforms`:** `linear` and `lut` are defined. New transform types should be defined in future versions of this convention, and a file must declare the version that introduced every transform it uses. A reader that encounters an unknown transform name should treat the value interpretation as unknown, but must still provide access to the raw stored data.
+- **Extensibility of `value_transforms`:** `linear`, `lut` and `axis_linear` are defined. New transform types should be defined in future versions of this convention, and a file must declare the version that introduced every transform it uses. A reader that encounters an unknown transform name should treat the value interpretation as unknown, but must still provide access to the raw stored data.
 
 - **Why `lut` is a value transform and window/level is not.** Both are lookup-shaped, and DICOM applies them in the same display pipeline, so the split can look arbitrary. It is not: a Modality LUT maps stored values to *real-world* values, which is exactly what `value_transforms` is defined to do and what `sample_units` then describes. A VOI LUT (window/level) maps real values to *display* intensities — it answers "how should this be shown", not "what is this". Admitting it here would make `sample_units` a lie for everything downstream. Display mappings belong in application-specific attributes, per the no-display-hints rule above.
 

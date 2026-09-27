@@ -1,7 +1,7 @@
 # Implementer's Guide
 
 **Status:** Draft
-**Applies to:** duckn convention 1.1
+**Applies to:** duckn convention 1.2
 
 This guide is for people writing code against duckn — readers, writers,
 converters. It does not define anything; [duckn-spec.md](duckn-spec.md) and
@@ -56,6 +56,16 @@ applied in a single pass. That optimization must be gated on the names you
 actually recognize, not on "is it a `lut`" — otherwise a future transform
 type silently takes the affine path and is dropped.
 
+### Tell a stated identity from an unstated mapping
+
+`[]` and an absent `value_transforms` give the same numbers and mean
+different things. `[]` says the stored values are the quantity; absence, in
+a file declaring 1.2 or later, says nobody stated how they relate to one (in
+1.0 and 1.1 files it still means identity). The numbers a reader returns are
+the same either way; what changes is whether it may call them calibrated.
+`DucknMetadata.values_stated()` applies the version rule, so a caller asking
+"are these in `sample_units`?" gets an honest answer.
+
 ---
 
 ## 2. Writing values
@@ -66,7 +76,7 @@ defined (§4.3), and the choice is forced by what the destination can carry.
 | Policy | Write | `value_transforms` | Use when |
 |---|---|---|---|
 | Preserve | stored values | carried forward | the quantity is unmodified and the format can carry the transform |
-| Materialize | calibrated values | **dropped** | the quantity changed, or the format cannot carry a transform |
+| Materialize | calibrated values | **replaced by `[]`** | the quantity changed, or the format cannot carry a transform |
 | Re-encode | requantized values | newly derived | you want a specific storage type; affine transforms only |
 
 **Prefer preserve.** It is the only reversible policy — you can materialize
@@ -84,10 +94,28 @@ looks plausible.
 write(vol.data, vol.metadata)          # metadata still says intercept=-1024
 
 # Right
-meta = vol.metadata.model_copy(update={"value_transforms": None})
+meta = vol.metadata.model_copy(update={"value_transforms": []})
 write(vol.data, meta)                  # sample_units is unchanged; the
                                        # quantity did not change, only its encoding
 ```
+
+`[]`, not `None`. From convention 1.2 an absent `value_transforms` means the
+mapping is *not stated*; clearing it to `None` in a 1.2 file would throw away
+the one thing a materialized array knows. `[]` means identity in every
+version, so it is never wrong here.
+
+### State the simple case
+
+Most arrays need no mapping at all: the stored values are the quantity. Say
+so with `"value_transforms": []`. Leave the field out only when you cannot
+vouch for any mapping (a source that gave a value range you could not turn
+into one, an encoding you do not describe) and declare at least `1.2` so the
+absence reads as "not stated" (duckn-spec §3.1, §4.7).
+
+`duckn_attrs()` warns (`UnstatedCalibrationWarning`) when a 1.2 array names
+`sample_units` but states no `value_transforms`: units for a quantity whose
+relation to the stored values is left open is legal, and nearly always a
+forgotten `[]`.
 
 This is why an interface that takes an array and metadata as unrelated
 arguments is a poor one: it permits the mismatch. Prefer passing something
@@ -236,6 +264,8 @@ is authoritative — the tag describes the source object.
 Cheap, metadata-only, and worth running before you write:
 
 - `len(axes) == len(shape)`, and any `kind` with a required size matches
+- a 1.2 array that names `sample_units` states its `value_transforms`
+  (`[]` when the values are the quantity); `duckn_attrs()` warns otherwise
 - a `lut` is first in its chain and has a non-empty table
 - for segmentations: `validate_seg_extension()` — it returns diagnostics
   and does not raise, so call `raise_on()` before writing. Give it the

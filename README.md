@@ -134,9 +134,10 @@ A duckn store is a standard Zarr V3 array with a `"duckn"` key in its attributes
   "data_type": "int16",
   "attributes": {
     "duckn": {
-      "version": "1.0",
+      "version": "1.2",
       "space": "left-posterior-superior",
       "space_origin": [0.0, 0.0, 0.0],
+      "value_transforms": [],
       "axes": [
         { "kind": "space", "centering": "cell", "space_direction": [0, 0, 3.0], "unit": "mm" },
         { "kind": "space", "centering": "cell", "space_direction": [0, 0.5, 0], "unit": "mm" },
@@ -147,7 +148,29 @@ A duckn store is a standard Zarr V3 array with a `"duckn"` key in its attributes
 }
 ```
 
+`"value_transforms": []` says the stored values are the values. The common case is written
+out, not implied: from convention 1.2 an absent `value_transforms` means the mapping is not
+stated. The [core profile](docs/core-profile.md) is the one-page version of what a plain volume
+needs.
+
 duckn metadata can live in any Zarr v3 store — a directory on disk, an object store, or a `.zarr.zip` file. The metadata convention is independent of the storage mechanism.
+
+## Versions
+
+Three numbers, each about a different thing:
+
+- **The convention** - the file format - is versioned in every file's `duckn.version`
+  (currently **1.2**). It is the only version a reader acts on. Minor versions only add:
+  a reader of 1.0 reads a 1.2 file safely, and every change of meaning is spelled out
+  (duckn-spec §3.1 `version`).
+- **Each extension** (`seg`, `dicom`, `nifti`, `nrrd`, ...) carries its own `version` in its
+  block, independent of the convention. A `0.x` extension is unstable.
+- **This library** has its own release numbers (0.x: its Python API may still change).
+  A release says which convention versions it writes and reads; this one writes 1.2 where
+  a file needs it and reads 1.0 through 1.2.
+
+The "early stage" note above is about the project as a whole. The convention's version is a
+promise to files: a file written today keeps the meaning its version gives it.
 
 ## Converters
 
@@ -173,6 +196,7 @@ Domain-specific metadata lives inside `duckn.extensions`. Extensions depend on d
 [docs/README.md](docs/README.md) indexes everything below and distinguishes
 the current specifications from the archived design records.
 
+Writing a plain volume? The [core profile](docs/core-profile.md) is one page.
 Writing a reader or writer? Start with the
 [implementer's guide](docs/implementers-guide.md) — the rules that are easy
 to get wrong, with the bugs that motivated them.
@@ -181,7 +205,7 @@ to get wrong, with the bugs that motivated them.
 
 - [duckn convention](docs/duckn-spec.md) — core metadata convention
 - [DWI extension](docs/dwi-extension.md) — diffusion-weighted MRI
-- [Segmentation extension](docs/segmentation-ext-spec.md) — segments, label values, roles, colors (0.9)
+- [Segmentation extension](docs/segmentation-ext-spec.md) — segments, label values, roles, colors (0.9; 0.10 adds the group form)
 - [NIfTI extension](docs/nifti-spec.md) — NIfTI provenance
 - [DICOM extension](docs/dicom-spec.md) — DICOM provenance
 - [FITS extension](docs/fits-extension.md) — astronomy FITS provenance (first pass at a non-medical imaging domain)

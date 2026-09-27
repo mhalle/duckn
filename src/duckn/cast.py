@@ -87,9 +87,12 @@ def cast(
     new_meta.extensions = _seg_after_cast(
         new_meta.extensions, vol.raw.dtype, result.dtype, rescaled=normalize
     )
-    # Calibrated values are baked into the result — clear value_transforms
-    # so vol.data on the result doesn't double-apply.
-    new_meta.value_transforms = None
+    # Calibrated values are baked into the result — replace value_transforms
+    # so vol.data on the result doesn't double-apply. A plain cast keeps the
+    # quantity, so it is stated as the identity (`[]`); a normalized result
+    # is no longer any stated quantity, so nothing is claimed (absent: "not
+    # stated" from convention 1.2, duckn-spec §3.1).
+    new_meta.value_transforms = None if normalize else []
     # A fill value is a stored value: it survives a plain cast that can hold it,
     # and means nothing after the values were rescaled.
     fill = None if normalize else vol.fill_value

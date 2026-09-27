@@ -47,7 +47,7 @@ class TestAdapterRoundTripPreservesQuantity:
         vol = _ct_volume()
         rt = from_sitk(to_sitk(vol), metadata=vol.metadata)
         np.testing.assert_allclose(rt.data, vol.data)
-        assert rt.metadata.value_transforms is None
+        assert rt.metadata.value_transforms == []  # stated identity, not "not stated"
         # the quantity is unchanged, so its name must survive
         assert rt.metadata.sample_units == "HU"
 
@@ -58,7 +58,7 @@ class TestAdapterRoundTripPreservesQuantity:
         vol = _ct_volume()
         rt = from_nifti(to_nifti(vol), metadata=vol.metadata)
         np.testing.assert_allclose(rt.data, vol.data)
-        assert rt.metadata.value_transforms is None
+        assert rt.metadata.value_transforms == []  # stated identity, not "not stated"
 
     def test_vtk_round_trip(self):
         pytest.importorskip("vtk")
@@ -67,7 +67,7 @@ class TestAdapterRoundTripPreservesQuantity:
         vol = _ct_volume()
         rt = from_vtk(to_vtk(vol), metadata=vol.metadata)
         np.testing.assert_allclose(rt.data, vol.data)
-        assert rt.metadata.value_transforms is None
+        assert rt.metadata.value_transforms == []  # stated identity, not "not stated"
 
     def test_error_would_have_been_exactly_the_intercept(self):
         """Regression guard: the old bug shifted CT values by 1024 HU."""

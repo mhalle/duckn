@@ -178,3 +178,61 @@ def test_an_nrrd_with_old_min_and_max_does_not_claim_its_values_are_the_quantity
                {"space": "left-posterior-superior", "space directions": np.eye(3)})
     nrrd_to_zarr(str(plain), str(tmp_path / "p.zarr"))
     assert read_duckn_metadata(str(tmp_path / "p.zarr")).values_stated() is True
+
+
+# --- The simple case stays explicit (2026-09-26): writers state identity with `[]`, and the
+# write path warns on the one combination that is almost always a forgotten `[]`.
+
+def _ct(version, transforms, units="HU"):
+    return DucknMetadata(version=version, axes=[{"kind": "domain"}] * 3,
+                         value_transforms=transforms, sample_units=units)
+
+
+def test_units_with_an_unstated_mapping_warn_at_write():
+    from duckn.models import UnstatedCalibrationWarning, duckn_attrs
+    with pytest.warns(UnstatedCalibrationWarning, match="value_transforms=\\[\\]"):
+        attrs = duckn_attrs(_ct("1.2", None))
+    assert "value_transforms" not in attrs["duckn"]       # a warning, never a rewrite
+
+
+@pytest.mark.parametrize("meta", [
+    _ct("1.2", []),                                       # stated identity
+    _ct("1.2", [{"name": "linear", "parameters": {"slope": 1.0, "intercept": -1024.0}}]),
+    _ct("1.2", None, units=None),                         # nothing claimed at all
+    _ct("1.1", None),                                     # old meaning: identity
+])
+def test_no_warning_when_the_file_says_what_it_means(meta):
+    import warnings
+    from duckn.models import duckn_attrs
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        attrs = duckn_attrs(meta)
+    if meta.value_transforms == []:
+        assert attrs["duckn"]["value_transforms"] == []   # `[]` survives exclude_none
+
+
+def _vol(version, transforms):
+    return Volume(raw=np.arange(8, dtype=np.uint16).reshape(2, 2, 2),
+                  metadata=DucknMetadata(
+                      version=version, sample_units="HU", value_transforms=transforms,
+                      axes=[{"kind": "space", "centering": "cell", "unit": "mm",
+                             "space_direction": [1.0 if i == a else 0.0 for i in range(3)]}
+                            for a in (2, 1, 0)],
+                      space="left-posterior-superior", space_origin=[0.0, 0.0, 0.0]))
+
+
+def test_materializing_a_1_2_array_states_identity_rather_than_nothing():
+    """Materialized values ARE the quantity; in a 1.2 file an absent field would say the
+    mapping is unknown and lose that (the adapters, resample and cast share the rule)."""
+    pytest.importorskip("scipy")
+    from duckn.cast import cast
+    from duckn.resample import resample
+    lin = [{"name": "linear", "parameters": {"slope": 2.0, "intercept": -1.0}}]
+    lut = [{"name": "lut", "parameters": {"values": [float(v) for v in range(8)]}}]
+    out = resample(_vol("1.2", lut), factor=[1.0, 1.0, 2.0], order=1)   # a lut materializes
+    assert out.metadata.value_transforms == [] and out.metadata.values_stated()
+    plain = cast(_vol("1.2", lin), "float32")
+    assert plain.metadata.value_transforms == [] and plain.metadata.values_stated()
+    normalized = cast(_vol("1.2", lin), "uint8", normalize=True)
+    assert normalized.metadata.value_transforms is None   # no longer any stated quantity
+    assert not normalized.metadata.values_stated()

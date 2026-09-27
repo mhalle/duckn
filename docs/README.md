@@ -17,6 +17,7 @@ easy to get wrong.
 | Document | What it defines |
 |---|---|
 | [duckn-spec.md](duckn-spec.md) | The convention: top-level and per-axis fields, value interpretation, consistency rules. Authoritative for the set of top-level keys. |
+| [core-profile.md](core-profile.md) | One page: the fields a plain oriented volume needs, and the reader rules that go with them. Defines nothing new. |
 | [units-spec.md](units-spec.md) | Structured unit objects and the `unit_systems` registry (convention 1.1+). |
 | [transform-spec.md](transform-spec.md) | The `space_transforms` field: relating an array's space to templates, atlases, other acquisitions (convention 1.1). |
 
@@ -27,7 +28,7 @@ that does not recognize an extension ignores it.
 
 | Extension | Document | Purpose |
 |---|---|---|
-| `seg` | [segmentation-ext-spec.md](segmentation-ext-spec.md) | Segmentations (version 0.9): segments as sets of label values, background and unknown roles, labeling scheme, designations, CSS colors, DICOM SEG content. Groups, renditions, and inexact mappings live outside the file. Version 0.7 is in the [archive](archive/segmentation-ext-v07-spec.md). |
+| `seg` | [segmentation-ext-spec.md](segmentation-ext-spec.md) | Segmentations (arrays at version 0.9; 0.10 adds a block on a Zarr group naming its label-map arrays as `layers`): segments as sets of label values, background and unknown roles, labeling scheme, designations, CSS colors, DICOM SEG content. Groups, renditions, and inexact mappings live outside the file. Version 0.7 is in the [archive](archive/segmentation-ext-v07-spec.md). |
 | `semantic` (superseded draft) | [semantic-ext-spec.md](semantic-ext-spec.md) | Not an in-file extension. Source material for the deferred external-document specification: entities, groups and claims, inexact mappings. See the `seg` specification, §7.2. |
 | `rendition` (superseded draft) | [rendition-ext-spec.md](rendition-ext-spec.md) | Not an in-file extension. Source material for the deferred external stylesheet format: named renditions, rules, cascade, paint order. See the `seg` specification, §7.2. |
 | `presentation` (early draft, parked) | [presentation-extension.md](presentation-extension.md) | Recommended grayscale presentation carried by imaging formats: display windows and inversion. Survives derivation while the quantity does. Not implemented. |
@@ -54,9 +55,10 @@ was kept.
 
 ## A note on status
 
-Every document here is marked **Draft**. The convention is at version 1.1;
+Every document here is marked **Draft**. The convention is at version 1.2;
 extension versions are independent and declared in each extension's own
-`version` field.
+`version` field, and the library's release numbers are a third, separate
+thing (top-level README, "Versions").
 
 ## Appendix: deprecated
 
