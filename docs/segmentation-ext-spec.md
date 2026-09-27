@@ -288,7 +288,7 @@ The *reason* a region is unknown — artifact, outside the field of view, abstai
 
 #### `layer`
 
-The zero-based index of the layer (position along the `list` axis) holding this segment's values; a non-negative integer, present only in an array that has a `list` axis (§5). An absent `layer` means layer 0, and a writer omits `layer` when it is 0. When an array has more than one `list`-kind axis, `layer` indexes the first.
+The zero-based index of the layer (position along the `list` axis) holding this segment's values; a non-negative integer, present only in an array that has a `list` axis (§5) — or, on a group's block (0.10), an index into `layers`. An absent `layer` means layer 0, and a writer omits `layer` when it is 0. When an array has more than one `list`-kind axis, `layer` indexes the first.
 
 #### `extent`
 
