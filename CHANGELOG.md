@@ -52,6 +52,22 @@ pinned by a test that fails on 0.5.4 (`tests/test_review_055.py`).
   (duckn-spec §3.2). nifti-spec §2 had mapped it to "space_direction or unit", neither of which
   a time axis can hold. An export still reads `thickness` from a store written before.
 
+### Fixed - adapters and `io.write`
+- **`from_sitk` / `from_nifti` with `metadata=` no longer carry a source's format extensions
+  onto a derived array** (duckn-spec §4.5, §4.7). A shrunk float image kept `dicom`'s
+  `stored_values: true` and `BitsStored`. The adapters cannot see what was done to the image,
+  so they judge: the array is derived when the metadata had `value_transforms` (the image holds
+  calibrated values), when the grid moved, when the axis count differs, or when the pixel type
+  contradicts the `dicom` extension's; then `dicom`, `nifti`, `fits`, `nrrd`, `keyvalues` (and
+  the same keys per axis and per sample) are dropped. `derived=True/False` says so outright.
+- **Adapters build an axis per dimension.** `from_nifti` assumed three: a 4D image had four
+  data axes and three axes of metadata (a `time` axis and plain axes for NIfTI's dimensions
+  beyond three now come first, in C order). `from_sitk` gives a vector image a trailing `list`
+  axis, and a 2D image an unnamed 2D space (it raised building a 3D LPS space from two
+  components).
+- **`io.write` validates metadata against the array** (`validate_against_shape`, duckn-spec
+  §5) before writing anything.
+
 ### Fixed - DICOM
 - **The streaming converter wrote no chunk into a `.zarr.zip`** with its default
   `compressor="none"` (the same `bytes`-for-`Buffer` call), leaving a zip whose voxels read as

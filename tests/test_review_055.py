@@ -419,3 +419,103 @@ class TestNiftiTimeInterval:
         assert t.thickness is None  # §3.2: thickness is the extent measured
         assert [sm.position for sm in t.samples] == [0.0, 2000.0, 4000.0]
         assert float(h["pixdim"][4]) == 2000.0
+
+
+# ---------------------------------------------------------------------------
+# 5. adapters: a derived array keeps no source-format extension
+# ---------------------------------------------------------------------------
+
+
+def _ct_meta() -> DucknMetadata:
+    return DucknMetadata(
+        version="1.0", space="LPS", space_origin=[0.0, 0.0, 0.0],
+        value_transforms=[{"name": "linear", "parameters": {"slope": 1.0, "intercept": -1024.0}}],
+        sample_units="HU",
+        axes=[{"kind": "space", "space_direction": [0, 0, 2.0], "unit": "mm"},
+              {"kind": "space", "space_direction": [0, 1.0, 0], "unit": "mm"},
+              {"kind": "space", "space_direction": [1.0, 0, 0], "unit": "mm"}],
+        extensions={"dicom": {"version": "1.0", "stored_values": True,
+                              "tags": {"BitsAllocated": 16, "BitsStored": 12,
+                                       "PixelRepresentation": 0, "Modality": "CT"}},
+                    "keyvalues": {"version": "1.0", "entries": {"a": "b"}},
+                    "custom": {"version": "0.1", "note": "kept"}})
+
+
+class TestAdaptersDropSourceExtensions:
+    def test_from_sitk_of_a_shrunk_float_image(self):
+        sitk = pytest.importorskip("SimpleITK")
+        from duckn.sitk_adapter import from_sitk, to_sitk
+        from duckn.volume import Volume
+        vol = Volume(raw=np.zeros((4, 6, 6), np.uint16), metadata=_ct_meta())
+        shrunk = sitk.Shrink(sitk.Cast(to_sitk(vol), sitk.sitkFloat32), [2, 2, 2])
+        out = from_sitk(shrunk, metadata=vol.metadata)
+        assert "dicom" not in (out.metadata.extensions or {})
+        assert "keyvalues" not in (out.metadata.extensions or {})
+        assert out.metadata.extensions["custom"] == {"version": "0.1", "note": "kept"}
+
+    def test_from_nifti_of_calibrated_values(self):
+        nib = pytest.importorskip("nibabel")
+        from duckn.nibabel_adapter import from_nifti, to_nifti
+        from duckn.volume import Volume
+        vol = Volume(raw=np.zeros((4, 6, 6), np.uint16), metadata=_ct_meta())
+        out = from_nifti(to_nifti(vol), metadata=vol.metadata)
+        # the image holds vol.data, calibrated: stored_values: true would be false of it
+        assert "dicom" not in (out.metadata.extensions or {})
+
+    def test_an_unchanged_image_may_keep_them(self):
+        pytest.importorskip("SimpleITK")
+        from duckn.sitk_adapter import from_sitk, to_sitk
+        from duckn.volume import Volume
+        m = _ct_meta()
+        m.value_transforms = None
+        vol = Volume(raw=np.zeros((4, 6, 6), np.uint16), metadata=m)
+        out = from_sitk(to_sitk(vol), metadata=vol.metadata)
+        assert out.metadata.extensions["dicom"]["stored_values"] is True
+        forced = from_sitk(to_sitk(vol), metadata=vol.metadata, derived=True)
+        assert "dicom" not in (forced.metadata.extensions or {})
+
+
+# ---------------------------------------------------------------------------
+# 6. adapters build an axis per dimension; io.write validates
+# ---------------------------------------------------------------------------
+
+
+class TestAdapterAxes:
+    def test_a_4d_nifti_gets_four_axes(self):
+        nib = pytest.importorskip("nibabel")
+        from duckn.models import validate_against_shape
+        from duckn.nibabel_adapter import from_nifti
+        img = nib.Nifti1Image(np.zeros((4, 5, 6, 3), np.int16), np.diag([2.0, 3.0, 4.0, 1.0]))
+        vol = from_nifti(img)
+        assert vol.raw.shape == (3, 6, 5, 4)
+        validate_against_shape(vol.metadata, vol.raw.shape)
+        assert vol.metadata.axes[0].kind == "time"
+        assert [ax.space_direction for ax in vol.metadata.axes[1:]] == \
+            [[0, 0, 4], [0, 3, 0], [2, 0, 0]]
+
+    def test_a_vector_sitk_image_gets_a_component_axis(self):
+        sitk = pytest.importorskip("SimpleITK")
+        from duckn.models import validate_against_shape
+        from duckn.sitk_adapter import from_sitk
+        img = sitk.Image([4, 5, 6], sitk.sitkVectorFloat32, 3)
+        vol = from_sitk(img)
+        assert vol.raw.shape == (6, 5, 4, 3)
+        validate_against_shape(vol.metadata, vol.raw.shape)
+        assert vol.metadata.axes[-1].kind == "list"
+
+    def test_a_2d_sitk_image(self):
+        sitk = pytest.importorskip("SimpleITK")
+        from duckn.sitk_adapter import from_sitk
+        img = sitk.Image([4, 5], sitk.sitkUInt8)
+        img.SetSpacing([0.5, 2.0])
+        vol = from_sitk(img)
+        assert vol.metadata.space is None and vol.metadata.space_dimension == 2
+        assert [ax.space_direction for ax in vol.metadata.axes] == [[0, 2.0], [0.5, 0]]
+
+    def test_write_refuses_metadata_that_does_not_fit(self, tmp_path):
+        from duckn.io import write
+        from duckn.volume import Volume
+        m = DucknMetadata(version="1.0", axes=[{}, {}, {}])
+        with pytest.raises(ValueError, match="axes"):
+            write(Volume(raw=np.zeros((2, 2, 2, 2), np.uint8), metadata=m), tmp_path / "x.zarr")
+        assert not (tmp_path / "x.zarr").exists()
