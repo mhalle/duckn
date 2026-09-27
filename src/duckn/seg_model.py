@@ -560,10 +560,8 @@ def validate_seg_extension(
         if len(set(paths)) != len(paths):
             out.append(_err("rule-2", the_ext, "layers names a member twice"))
         for i, seg in enumerate(ext.segments):
-            if seg.layer is None and len(paths) > 1:
-                out.append(_err("rule-2", about(i, seg),
-                                f"no layer, in a group of {len(paths)} layers"))
-            elif seg.layer is not None and not 0 <= seg.layer < len(paths):
+            # an absent layer is layer 0, as on an array (the writer's spelling omits it)
+            if seg.layer is not None and not 0 <= seg.layer < len(paths):
                 out.append(_err("rule-2", about(i, seg),
                                 f"layer {seg.layer} is out of range for {len(paths)} layers"))
     elif axes is not None:

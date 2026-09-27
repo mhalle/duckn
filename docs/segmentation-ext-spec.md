@@ -469,7 +469,7 @@ A segment's **effective value set** is the set of *(layer, value)* pairs defined
 **Structure**
 
 1. *error; reader refuses.* `version` is present, is a string, is `N.N` — two decimal integers, each `0` or a digit string with no leading zero, no sign, and nothing else — and is not later than the reader supports (§3.1).
-2. *error; reader refuses.* On an array's block, `layer` is present only when the array has a `list`-kind axis, and is then a non-negative integer that is a valid index into it. On a group's block, `layers` is non-empty and names each member once, and `layer` is a valid index into `layers` — required on every segment when there is more than one layer.
+2. *error; reader refuses.* On an array's block, `layer` is present only when the array has a `list`-kind axis, and is then a non-negative integer that is a valid index into it. On a group's block, `layers` is non-empty and names each member once, and `layer` is a valid index into `layers` (absent means layer 0, as on an array).
 3. *error; reader continues.* **3a** `labeling_scheme`, when an array, has distinct entries (a reader ignores repeats). **3b** `implicit_background`, when present, is `false` (a reader ignores `true`). **3c** `implicit_background` is present only on a binary labelmap (a reader ignores it on a fractional one).
 
 **Identity**

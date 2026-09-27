@@ -138,9 +138,9 @@ def test_a_groups_seg_block_names_each_layers_member():
     assert not [d for d in validate_seg_extension(ext) if d.severity == "error"]
     bad = _group_seg([{"path": "parts/0"}, {"path": "parts/1"}],
                      [{"id": "a", "label_values": [1], "layer": 2},
-                      {"id": "b", "label_values": [1]}])
+                      {"id": "b", "label_values": [1]}])       # absent = layer 0: fine
     codes = [d.code for d in validate_seg_extension(bad)]
-    assert codes.count("rule-2") == 2                       # out of range; missing with 2 layers
+    assert codes.count("rule-2") == 1                       # only the out-of-range one
     twice = _group_seg([{"path": "p"}, {"path": "p"}], [])
     assert "rule-2" in [d.code for d in validate_seg_extension(twice)]
 
