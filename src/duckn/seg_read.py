@@ -19,6 +19,7 @@ from .models import AxisMetadata, _migrate_extension_pre_0_6
 from .seg_color import format_color, from_slicer_floats
 from .seg_model import (
     MAX_LABEL_MAGNITUDE,
+    SEG_LATEST,
     SEG_VERSION,
     SegmentationExtension,
     derive_token_ids,
@@ -422,7 +423,8 @@ def _refusals_in_raw(data: Any) -> list[Diagnostic]:
         out.append(Diagnostic(code, "error", about, message))
 
     version = data.get("version")
-    if version_tuple(version) != version_tuple(SEG_VERSION):
+    if not (version_tuple(SEG_VERSION) <= (version_tuple(version) or (0, 0))
+            <= version_tuple(SEG_LATEST)):
         err("rule-1", About.extension(),
             f"version {version!r} is not one this reader supports")
     segments = data.get("segments")

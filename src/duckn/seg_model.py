@@ -20,6 +20,11 @@ from .seg_color import SegColor, format_color, parse_color, to_rgb8
 
 # Version of the seg extension spec this module reads and writes.
 SEG_VERSION = "0.9"
+#: The latest version this module reads, and the one a group's block (``layers``, 0.10)
+#: declares. An array's block is still written as 0.9 - the lowest version covering it - so
+#: every reader of 0.9 keeps reading what duckn writes for arrays.
+SEG_GROUP_VERSION = "0.10"
+SEG_LATEST = SEG_GROUP_VERSION
 
 MAX_LABEL_MAGNITUDE = 2**53 - 1
 
@@ -182,6 +187,26 @@ class Segment(BaseModel):
         return frozenset((layer, v) for v in self.values)
 
 
+class SegLayerRef(BaseModel):
+    """One layer of a segmentation held by a group (seg 0.10, §2 "A segmentation held by a
+    group"): the member that yields the layer's labelmap, by path relative to the group, and
+    the extension on that member that defines how (``labelmap_from``; absent when the member is
+    itself a labelmap array)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str
+    labelmap_from: str | None = None
+
+    @model_validator(mode="after")
+    def _relative(self) -> "SegLayerRef":
+        parts = self.path.split("/")
+        if not self.path or self.path.startswith("/") or any(x in ("", ".", "..") for x in parts):
+            raise ValueError(f"layers path {self.path!r} must be a relative path inside the "
+                             "group, with no empty, '.' or '..' part")
+        return self
+
+
 class SegmentationExtension(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -194,6 +219,8 @@ class SegmentationExtension(BaseModel):
     segments: list[Segment]
     metadata: dict[str, Any] | None = None
     legacy: dict[str, Any] | None = None
+    # seg 0.10: present only on a group's seg block (duckn 1.2 §3.3) - layer i's member
+    layers: list[SegLayerRef] | None = None
 
     @model_validator(mode="after")
     def _resolve_members(self) -> "SegmentationExtension":
@@ -507,8 +534,11 @@ def validate_seg_extension(
     version = version_tuple(ext.version)
     if version is None:
         out.append(_err("rule-1", the_ext, f"version {ext.version!r} is not N.N"))
-    elif version > version_tuple(SEG_VERSION):  # type: ignore[operator]
-        out.append(_err("rule-1", the_ext, f"version {ext.version} is later than {SEG_VERSION}"))
+    elif version > version_tuple(SEG_LATEST):  # type: ignore[operator]
+        out.append(_err("rule-1", the_ext, f"version {ext.version} is later than {SEG_LATEST}"))
+    elif ext.layers is not None and version < version_tuple(SEG_GROUP_VERSION):  # type: ignore[operator]
+        out.append(_err("rule-1", the_ext,
+                        f"layers is a {SEG_GROUP_VERSION} field, in a {ext.version} block"))
 
     fractional = is_fractional(ext, dtype)
 
@@ -521,9 +551,22 @@ def validate_seg_extension(
     if ext.implicit_background is not None and fractional:
         out.append(_err("rule-3c", the_ext, "implicit_background on a fractional labelmap"))
 
-    # Rule 2
+    # Rule 2 - for a group's block (seg 0.10), `layer` indexes `layers`
     list_axes = None
-    if axes is not None:
+    if ext.layers is not None:
+        paths = [ref.path for ref in ext.layers]
+        if not paths:
+            out.append(_err("rule-2", the_ext, "layers is empty"))
+        if len(set(paths)) != len(paths):
+            out.append(_err("rule-2", the_ext, "layers names a member twice"))
+        for i, seg in enumerate(ext.segments):
+            if seg.layer is None and len(paths) > 1:
+                out.append(_err("rule-2", about(i, seg),
+                                f"no layer, in a group of {len(paths)} layers"))
+            elif seg.layer is not None and not 0 <= seg.layer < len(paths):
+                out.append(_err("rule-2", about(i, seg),
+                                f"layer {seg.layer} is out of range for {len(paths)} layers"))
+    elif axes is not None:
         list_axes = [
             i for i, ax in enumerate(axes) if ax.kind is not None and ax.kind.value == "list"
         ]
@@ -866,10 +909,11 @@ def normalized_for_writing(
     ascending, ``layer: 0`` and ``implicit_background: true`` omitted, empty
     collections omitted (§4.4), colors in their canonical spelling. An
     unreadable color is dropped. Order and ids are the caller's business."""
-    if (version_tuple(ext.version) or (0, 0)) > version_tuple(SEG_VERSION):  # type: ignore[operator]
-        raise ValueError(f"cannot write a version {ext.version} extension as {SEG_VERSION}")
+    if (version_tuple(ext.version) or (0, 0)) > version_tuple(SEG_LATEST):  # type: ignore[operator]
+        raise ValueError(f"cannot write a version {ext.version} extension as {SEG_LATEST}")
     out = ext.model_copy(deep=True)
-    out.version = SEG_VERSION
+    # the lowest version that covers it: a group's block (layers) is 0.10, an array's 0.9
+    out.version = SEG_GROUP_VERSION if out.layers is not None else SEG_VERSION
     resolve_members(out.segments)          # the copy's unions, from the copy's segments
     diagnostics: list[Diagnostic] = []
     if out.implicit_background is True:

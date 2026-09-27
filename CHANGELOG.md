@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Convention 1.2 (duckn-spec) - the owner's decisions of 2026-09-26
+- **An absent `value_transforms` means "not stated"** (§3.1, §4.2, §4.7), as "absent means
+  unknown" requires of every other field; `[]` states that the stored values are the quantity.
+  In a file declaring 1.0 or 1.1 (or no version) absence keeps its old meaning, identity, and
+  readers apply the rule by the declared version (`DucknMetadata.values_stated()`). Before, a
+  writer that could not vouch for a calibration had no way to say so: leaving the field out
+  claimed identity. Read-compatible: an older reader of a 1.2 file presents the stored values,
+  which is all a reader of an unstated mapping can do.
+- **`axis_linear`** (§3.1): a linear mapping whose slope and intercept vary along one axis - an
+  int8 array quantized per channel (an embedding). A new name, not list-valued `linear`
+  parameters, because a 1.0/1.1 reader would broadcast those against the wrong axis and return
+  plausible, wrong values; an unknown name makes it refuse. Applied correctly to any partial read
+  (the parameters follow the selected indices). Linear slopes and intercepts must be finite.
+- **Group metadata** (new §3.3): a Zarr group may carry `duckn` with only `version`, `intent`
+  and `extensions`, describing its member arrays jointly; each member stays a complete duckn
+  array. `DucknGroupMetadata`.
+
+### seg 0.10
+- **A segmentation held by a group** (§2, `layers`, rule 2): a group's `seg` block lists, per
+  layer, the member that yields its labelmap and the extension that derives it (`labelmap_from`,
+  e.g. `ranked`); every rule applies to the derived labelmap. This was the "not yet defined"
+  layout of §9, which rank-field stores already wrote. Every 0.9 file is a 0.10 file; an array's
+  block is still written as 0.9, a group's as 0.10.
+
 ## 0.5.4 — 2026-09-26
 
 An adversarial review of 0.5.3 (2026-09-26) found the two DICOM readers still encoding values

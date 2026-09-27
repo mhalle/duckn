@@ -226,7 +226,7 @@ class TestRead:
         assert ext.segments[0].color is None
         assert _codes(diagnostics) == [("color-unreadable", _seg("a"))]
 
-    @pytest.mark.parametrize("version", ["0.10", "1.0", "0.9.1", "0.09", "later"])
+    @pytest.mark.parametrize("version", ["0.11", "1.0", "0.9.1", "0.09", "later"])
     def test_refuses_by_version_before_fields(self, version):
         with pytest.raises(DiagnosticsError) as e:
             read_seg_extension({"version": version, "segments": [{"new_field": 1}]})

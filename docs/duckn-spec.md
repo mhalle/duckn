@@ -65,6 +65,8 @@ This convention defines the content of a single JSON object stored under the key
 
 A Zarr reader that does not recognize the `"duckn"` key simply ignores it. The array remains fully accessible.
 
+From version 1.2, a Zarr **group** may also carry a `"duckn"` object, describing several arrays jointly. It holds a restricted set of fields; every array inside the group remains a complete duckn array on its own. See §3.3.
+
 ---
 
 ## 3. Convention Fields
@@ -84,6 +86,8 @@ The version of this convention. Format is `"major.minor"`.
 ```
 
 A major version increment indicates breaking changes — a reader for version 1.x must not attempt to interpret version 2.x metadata. A minor version increment indicates additive changes (new optional fields, new `kind` values, new transform types). A reader for version 1.0 can safely read version 1.3 and ignore unknown fields.
+
+Version 1.2 adds the `axis_linear` transform, group-level metadata (§3.3), and one change of meaning that stays read-compatible: an absent `value_transforms` means the value mapping is **not stated**, where in 1.0 and 1.1 it meant identity (see `value_transforms`). A 1.0 or 1.1 reader of a 1.2 file presents the stored values as they are, which is all a reader of an unstated mapping can do; nothing it computes changes. A writer declares the lowest version that covers what it wrote, and at least 1.2 whenever it relies on 1.2's meaning of absence.
 
 This field should always be present.
 
@@ -188,7 +192,9 @@ Each transform is an object with `name` and (optionally) `parameters`:
 **Direction convention:** transforms map from stored values to real-world values.
 For `linear`: `real_value = stored_value * slope + intercept`.
 
-If `value_transforms` is absent, stored values are the real values (in `sample_units` if specified).
+**Stated and unstated mappings (1.2).** An empty list, `"value_transforms": []`, states that the stored values *are* the real values (in `sample_units` if specified). An absent `value_transforms` states nothing: the relation of the stored values to any quantity is unknown, as "absent means unknown" (§1) requires of every other field. A writer that knows its stored values are the quantity writes `[]`; one that cannot vouch for a calibration — a source that gave a value range it could not turn into a mapping, an encoding it does not describe — leaves the field out rather than claim one (§4.7).
+
+In a file declaring version 1.0 or 1.1, or no version, an absent `value_transforms` keeps the meaning those versions gave it: the stored values are the real values. Readers apply that rule by the file's declared version.
 
 **Defined transforms:**
 
@@ -196,6 +202,7 @@ If `value_transforms` is absent, stored values are the real values (in `sample_u
 |------|-------|-----------|-------------------------|
 | `linear` | 1.0 | `slope`, `intercept` | `real = stored * slope + intercept` |
 | `lut` | 1.1 | `values`, `first_value` | `real = values[clamp(stored - first_value, 0, n-1)]` |
+| `axis_linear` | 1.2 | `axis`, `slope`, `intercept` | `real[…, i, …] = stored[…, i, …] * slope[i] + intercept[i]` |
 
 Additional transforms may be defined in future versions. A reader that encounters an unknown transform name should treat the value mapping as unknown — the raw stored data remains accessible, but its physical interpretation is undefined.
 
@@ -219,6 +226,28 @@ An explicit lookup table, for value mappings that are not affine. `values[i]` is
 A `lut` indexes stored values, so it **must be the first transform in the chain**: anything preceding it would feed it already-rescaled, typically floating-point, values. A `linear` transform may follow one.
 
 Because the table is carried inline in the array's attributes, this transform suits the table sizes that occur in practice — Modality LUTs are typically hundreds to a few thousand entries. A table large enough to burden the attributes (tens of thousands of entries) is better represented as a `linear` approximation, or deferred until a future revision defines an out-of-line form.
+
+##### `axis_linear`
+
+A linear mapping whose slope and intercept vary along one array axis: each index `i` along `axis` has its own `slope[i]` and `intercept[i]`. The case it exists for is a quantized array whose channels were scaled independently — an 8-bit embedding with one scale per feature channel — where one global slope would lose the precision the per-channel quantization kept.
+
+```json
+"value_transforms": [
+  { "name": "axis_linear", "parameters": { "axis": 3, "slope": [0.012, 0.009, 0.031], "intercept": [0.0, -0.4, 0.1] } }
+]
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `axis` | yes | The array axis (0-based, in the array's axis order) along which the parameters vary |
+| `slope` | yes | One number per index along `axis`, or a single number used for every index |
+| `intercept` | yes | The same, for the intercept |
+
+Lists must have exactly as many entries as the axis has samples, and every value must be finite.
+
+It is a transform of its own rather than `linear` with list parameters on purpose: a reader implementing only 1.0 or 1.1 that met list-valued `linear` parameters could broadcast them against the wrong axis and return plausible, miscalibrated values. An unknown name is the safe failure — §4.2 tells such a reader the mapping is undefined.
+
+The parameters belong to the *indices* along `axis`, so a reader of a sub-region selects the entries for the indices it read, never the first ones.
 
 #### `intent`
 
@@ -491,6 +520,30 @@ Use per-axis extensions when the metadata describes what a specific axis represe
 
 A reader that does not understand the `"dwmri"` extension still knows the axis is a `"list"` and should not be resampled. A reader that understands it additionally knows the physical meaning of each position along the axis, and can interpret the gradient vectors using the array-level `measurement_frame`.
 
+### 3.3 Groups (1.2)
+
+A Zarr **group** whose attributes carry a `"duckn"` object describes the arrays beneath it jointly: a *store* of several arrays that together hold one thing — a segmentation encoded across several arrays, an embedding at several lattice resolutions, a set of derived fields computed together.
+
+On a group, the `duckn` object may contain only:
+
+| Field | Required | Description |
+|---|---|---|
+| `version` | yes | The convention version, as on an array. Group-level metadata exists from 1.2. |
+| `intent` | no | What the store as a whole represents. |
+| `extensions` | no | Group-level extension objects, under the rules for extensions on an array (§3.1). |
+
+Every other field — `space`, `space_origin`, `axes`, `sample_units`, `value_transforms`, `measurement_frame`, `space_transforms` — describes one array and must not appear on a group. **Each member array carries its own complete `duckn` object**: a reader of any single array needs nothing from its group to place it in space or to read its values. A group adds statements about the arrays together; it never supplies what an array lacks.
+
+A group-level extension says what its statements are about: which member arrays (by path relative to the group, or every duckn array beneath it) and how. An extension that defines a group form of an array-level extension defines how that extension's rules apply to what the members jointly encode — the `seg` extension on a group whose arrays jointly encode a segmentation is the case this section was written for ([segmentation-ext-spec](segmentation-ext-spec.md), "A segmentation held by a group").
+
+The rules for arrays carry over:
+
+- A reader ignores an unknown group-level extension when interpreting the arrays, and a tool that writes the store again without deriving it keeps it unchanged.
+- Derivation (§4.5) drops what was inherited: an array derived from a store's members does not carry the store's extensions, and a store derived from another does not carry the other's.
+- Every statement on a group must be true of the arrays it concerns (§4.7).
+
+Groups may nest; each group's `duckn` object concerns the arrays beneath it.
+
 ---
 
 ## 4. Value Interpretation
@@ -517,6 +570,8 @@ Whichever it offers, a reader **must not present partially transformed values as
 
 This matters more as the transform vocabulary grows: a reader implementing version 1.1 will eventually meet a file written against 1.2.
 
+**An unstated mapping (1.2).** When a 1.2 file carries no `value_transforms`, the stored values are all a reader has. A reader presents them as they are, and an implementation should let a caller tell a stated identity (`[]`) from an unstated mapping rather than report both as "calibrated".
+
 ### 4.3 Writing
 
 Writing is choosing an encoding for a known quantity. Three policies are well defined:
@@ -536,6 +591,8 @@ Writing is choosing an encoding for a known quantity. Three policies are well de
 An implementation should not require a caller to keep the array and its metadata in agreement by hand. An interface that accepts stored values and metadata as unrelated arguments permits exactly the mismatch this section forbids; one that writes a value carrying its own encoding does not.
 
 ### 4.4 Non-Affine Transforms Do Not Commute With Resampling
+
+(`axis_linear`, 1.2, sits between the two cases below: it commutes with interpolation along every axis except its own. Along `axis`, neighboring samples have different mappings, so interpolating stored values mixes them; resample calibrated values along that axis. It is typically a channel or list axis, which is not resampled at all.)
 
 For an affine transform, applying the transform and interpolating commute: interpolation is a weighted average whose weights sum to one, so scaling before or after gives the same result. Stored values may therefore be resampled directly and the transform carried forward unchanged.
 
@@ -578,6 +635,10 @@ A consequence worth stating: an array carrying no provenance extension records n
 **Every writer states only what is true of the array it writes, and states it so it cannot be misread.** A reader holding nothing but the file must be able to take each statement at its word: the convention fields describe the array (§4.1–§4.5), and anything an extension carries is either true of the array or explicitly about something else, such as the source an extension describes. A writer that cannot vouch for a piece of metadata leaves it out rather than guessing or passing it through; since absent means unknown (§1), leaving out never claims that the source lacked it. Where an extension defines a way to state what the writer could not vet — the `dicom` extension's `stored_values`, `anonymized`, `lossy_compressed` — the writer uses it.
 
 **A converter also owes the reader how the array relates to its source.** It keeps a source extension only while the array faithfully re-encodes that source (§4.5), and it makes that extension true of this array: it writes what kind of values the array holds, leaves out what the conversion made untrue (attributes in units the array no longer uses, a second copy of geometry the axes state), and never implies a completeness it does not have.
+
+**Statements on a group (§3.3) are held to the same rule**: each must be true of the arrays it concerns, read as the group's extension says they are to be read.
+
+**A writer states whether its values are the quantity (1.2).** When the stored values are the quantity, it writes `value_transforms: []`; when a mapping is known, it writes the mapping; when it cannot vouch for one, it leaves the field out and declares at least version 1.2, so the absence reads as "not stated" (§3.1).
 
 **What a writer optimizes for is its own choice.** One converter may favor compact storage and fast reads, another fidelity to the source for a round trip, another compliance with a particular standard; a writer may drop metadata it cannot vouch for, materialize values (§4.3), or carry a source's full header where an extension provides for it. None of these is more correct than the others. What the convention requires is not a particular choice but that the result be true and unambiguous under whichever choice was made — and a tool should document the choice it makes, since the file records the result, not the intention. (Recording the intention in the file belongs to provenance, §4.6.) Each source extension states its own default and what a writer may do differently: the `dicom` extension favors usability over round-trip fidelity ([dicom-spec](dicom-spec.md), section 1), the `nifti` extension round-trip fidelity ([nifti-spec](nifti-spec.md), section 1).
 

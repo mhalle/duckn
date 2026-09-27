@@ -32,6 +32,18 @@ An array carrying this extension should declare a matching duckn `intent`: `"lab
 
 Everything in this section describes binary labelmaps until the subsection on fractional ones.
 
+### A segmentation held by a group (0.10)
+
+A segmentation need not be one array. Its layers may sit on different grids — the stages of a cascade, each with its own crop — or be *encoded* rather than stored as labels: a rank-field store holds, per voxel, ranked candidate classes and margins from which the labelmap is derived. Such a segmentation is a Zarr group (duckn convention 1.2, §3.3) with one `seg` block on the group, and a `layers` list (§3.1) naming, for each layer, the member that yields that layer's labelmap:
+
+```json
+"layers": [ { "path": "parts/0", "labelmap_from": "ranked" } ]
+```
+
+`path` is relative to the group. When the member is itself a labelmap array, `labelmap_from` is omitted. Otherwise it names the extension on that member that defines how the labelmap is derived — `ranked` (rankfield's encoding) derives the winning class at every voxel — and a reader that does not know that extension cannot derive the labels, and says so rather than guessing.
+
+Every rule of this extension then applies to the **derived labelmap** of a layer: its values are the values the segments list, its grid and data type are the ones its member states, and the rules that need axes, a data type, or a `fill_value` take them from it. A segment's `layer` indexes `layers` (rule 2). The member arrays remain complete duckn arrays on their own; the group adds the segmentation they jointly encode.
+
 ### Segments own sets of values
 
 The array has 3 spatial dimensions. Each **segment** lists the integer voxel values that belong to it, in `label_values`. A segment's voxels are all voxels in its layer whose value is in that list. In the common case the list has one entry and no two segments share a value: that is the classic label table, one row per value (§5).
@@ -122,7 +134,11 @@ Required. The version of this extension specification, as a string.
 
 **Version semantics.** While the major version is `0`, the *minor* version may introduce breaking changes; this overrides the duckn convention's default rule that minor increments are additive. From 1.0 onward, major increments signal breaking changes and minor increments are additive. `version` must be a string: a JSON number `0.10` is the float 0.1, and a reader that parsed it that way would mistake a later file for an earlier one. A missing or unparseable version is an error, never "older than everything." The two parts are decimal integers and are compared as integers, which is the reason the field is a string. A reader for 0.9 refuses, by its version and before looking at its fields, a file that declares a later minor version while the major version is `0`, or any later major version, since it cannot know what changed.
 
-Version 0.8 was a breaking change from 0.7. Version 0.9 adds `members` (§3.2), which a 0.8 reader does not accept, and changes nothing else: every 0.8 file is a 0.9 file. §6.3 describes how older files are read.
+Version 0.8 was a breaking change from 0.7. Version 0.9 adds `members` (§3.2), which a 0.8 reader does not accept, and changes nothing else: every 0.8 file is a 0.9 file. Version 0.10 adds `layers`, the group form (§2), and changes nothing else: every 0.9 file is a 0.10 file, and a writer declares 0.10 only for a group's block, so an array's block stays readable by a 0.9 reader. §6.3 describes how older files are read.
+
+#### `layers` (0.10)
+
+Present only on a group's block (§2, "A segmentation held by a group"), and required there. An array of objects, one per layer: `path`, the member relative to the group (no empty, `.` or `..` part, each member named once), and `labelmap_from`, the extension on that member that derives the layer's labelmap — omitted when the member is itself a labelmap array.
 
 #### `source_representation`
 
@@ -453,7 +469,7 @@ A segment's **effective value set** is the set of *(layer, value)* pairs defined
 **Structure**
 
 1. *error; reader refuses.* `version` is present, is a string, is `N.N` — two decimal integers, each `0` or a digit string with no leading zero, no sign, and nothing else — and is not later than the reader supports (§3.1).
-2. *error; reader refuses.* `layer` is present only when the array has a `list`-kind axis, and is then a non-negative integer that is a valid index into it.
+2. *error; reader refuses.* On an array's block, `layer` is present only when the array has a `list`-kind axis, and is then a non-negative integer that is a valid index into it. On a group's block, `layers` is non-empty and names each member once, and `layer` is a valid index into `layers` — required on every segment when there is more than one layer.
 3. *error; reader continues.* **3a** `labeling_scheme`, when an array, has distinct entries (a reader ignores repeats). **3b** `implicit_background`, when present, is `false` (a reader ignores `true`). **3c** `implicit_background` is present only on a binary labelmap (a reader ignores it on a fractional one).
 
 **Identity**
@@ -674,7 +690,7 @@ The unresolved remainder of a hierarchical structure (§2) carries no designatio
 - **Inexact correspondences.** `closeMatch`, `broadMatch`, `narrowMatch`, and `relatedMatch`, keyed by relation with lists of coded entries, in the manner of SKOS — including, perhaps, "remainder of" for the unresolved part of a structure. `semantic-ext-spec.md` drafts these, with the conceptual model — entities, bindings, the three kinds of meaning — that describes the external layer, where things other than segments (fiducials, class ranks) would be bound to the same vocabulary. Exact identifications are designations and stay in the file (§4.1).
 - **Translations** of names, per language.
 - **Measurements.** DICOM puts these in a separate object, the structured report, and so does this design. Records of a coded concept, a value, a UCUM unit, and one segment or a pair; checkable where recomputable from the arrays referenced.
-- **Scope of a document.** One external specification with sections is preferred to several, since every section shares the targeting mechanism of §7.1. The convention defines duckn metadata only on arrays; placing it on a Zarr *group*, as a home for documents that span the group's arrays with references that may not leave the group, is a change to the convention and is not assumed here.
+- **Scope of a document.** One external specification with sections is preferred to several, since every section shares the targeting mechanism of §7.1. Convention 1.2 allows duckn metadata on a Zarr *group* (its §3.3) — the home a document spanning the group's arrays would use, with references that may not leave the group.
 
 ---
 
@@ -905,7 +921,7 @@ On export to `.seg.nrrd` the file is materialized, since a segment other than a 
 
 **Why `dicom` is separate from `designations`.** The DICOM Segmentation IOD has a specific classification structure (category → type → modifier, plus anatomic region → modifier) that does not map onto a flat list of codes, and it requires attributes — an algorithm type — that are about how a segment was made rather than what it is. Mixing these into `designations` would either force the DICOM structure onto non-DICOM uses, as `.seg.nrrd` does, or lose what DICOM round-tripping needs.
 
-**Not yet defined: a segmentation held in several arrays.** This extension describes one array: `layer` indexes that array's `list` axis (rule 2), and the rules that need axes, a data type, or a `fill_value` take them from it. A segmentation whose layers cannot share an array — the stages of a cascade, each on its own grid and crop — is naturally a Zarr group of sibling arrays with one `seg` block on the group, `layer` naming the member array. At least one producer writes that layout, keeping the order of the members in a block of its own. Nothing here forbids it and nothing here defines it: in particular, which member is layer *i* is not something a reader of this document can know, and a reader that paired such a block with one member's axes would refuse the file under rule 2. Defining it means saying how a group names its member arrays, which is the convention's open question of references between sibling arrays (its notes on out-of-line data) and should be answered there, once, rather than here. Until it is, such a block is read without axes, so that rule 2 is not checked.
+**A segmentation held in several arrays (defined in 0.10).** Until convention 1.2 this was "not yet defined": the convention placed duckn metadata only on arrays, and which member of a group was layer *i* was something no reader of this document could know. Convention 1.2 defines group metadata (its §3.3), and 0.10 answers the second question with `layers` — a list, one entry per layer, naming the member by its path and the extension that derives its labelmap. The layer order that producers kept in a block of their own now lives here, where a reader looks for it.
 
 **Why `segments` is an array, not a map.** Segments have a natural order — creation order, UI order, draw order, and now specificity. An array preserves it; `id` provides lookup.
 

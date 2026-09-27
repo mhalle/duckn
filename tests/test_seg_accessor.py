@@ -104,8 +104,8 @@ class TestReading:
                 a.model
 
     def test_a_later_version_is_refused_but_still_viewable(self):
-        a = SegAccessor({"version": "0.10", "segments": [{"id": "a", "label_values": [1]}]})
-        assert a.version == "0.10" and a.segments[0].id == "a"
+        a = SegAccessor({"version": "0.11", "segments": [{"id": "a", "label_values": [1]}]})
+        assert a.version == "0.11" and a.segments[0].id == "a"
         with pytest.raises(DiagnosticsError):
             a.model
 

@@ -202,16 +202,40 @@ def _apply_lut(data: np.ndarray, params: dict, work: np.dtype) -> np.ndarray:
     return table[idx]
 
 
+def _axis_index(shape: tuple[int, ...], axis: int, key: Any = None) -> np.ndarray:
+    """Each element's index along ``axis`` - of the whole array (``key`` None) or of what
+    ``array[key]`` selects. A broadcast view indexed with the same key as the data, so any key
+    zarr accepts selects the matching indices, and only the result's size is materialized."""
+    n = shape[axis]
+    view = np.broadcast_to(
+        np.arange(n).reshape([n if i == axis else 1 for i in range(len(shape))]), shape)
+    return view if key is None else np.asarray(view[key])
+
+
+def _apply_axis_linear(data: np.ndarray, params: dict, work: np.dtype,
+                       index: np.ndarray) -> np.ndarray:
+    """``axis_linear``: ``stored * slope[i] + intercept[i]``, ``i`` each element's index along
+    the stated axis (``index``, the same shape as ``data``)."""
+    out = data.astype(work, copy=False)
+    for name, op in (("slope", np.multiply), ("intercept", np.add)):
+        v = np.asarray(params[name], dtype=work)
+        out = op(out, v[index] if v.ndim else v)
+    return out
+
+
 def _apply_value_transforms(
     data: np.ndarray,
     transforms: list[Any] | None,
     transform_dtype: np.dtype | None,
+    *,
+    index_for: Any = None,
 ) -> np.ndarray:
     """Apply a transform chain in order, supporting non-affine steps.
 
     Used when :func:`has_nonlinear_transforms` is True; the all-linear case
     is handled by composing to one (slope, intercept) and calling
-    :func:`_rescale`.
+    :func:`_rescale`. ``index_for(axis)`` gives each element's index along an axis, for
+    ``axis_linear``; the default treats ``data`` as the whole array.
     """
     target = transform_dtype if transform_dtype is not None else np.dtype(np.float32)
     work = (
@@ -223,6 +247,11 @@ def _apply_value_transforms(
         name, params = _transform_parts(vt)
         if name == "lut":
             out = _apply_lut(out, params, work)
+        elif name == "axis_linear":
+            axis = int(params["axis"])
+            index = (index_for(axis) if index_for is not None
+                     else _axis_index(np.shape(out), axis))
+            out = _apply_axis_linear(out, params, work, index)
         elif name == "linear":
             slope = float(params.get("slope", 1.0))
             intercept = float(params.get("intercept", 0.0))
@@ -425,8 +454,10 @@ class DucknArray:
         if not self.apply_value_transforms:
             return data
         if self._nonlinear:
+            shape = self.shape
             return _apply_value_transforms(
-                data, self._metadata.value_transforms, self.transform_dtype
+                data, self._metadata.value_transforms, self.transform_dtype,
+                index_for=lambda axis: _axis_index(shape, axis, key),
             )
         return _rescale(data, self._slope, self._intercept, self.transform_dtype)
 

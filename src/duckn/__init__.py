@@ -125,6 +125,7 @@ from .models import (
     NiftiLegacyTags,
     NiftiSliceTiming,
     NiftiTags,
+    DucknGroupMetadata,
     DucknMetadata,
     SampleMetadata,
     SpaceName,
@@ -135,7 +136,10 @@ from .models import (
 )
 from .diagnostics import About, Diagnostic, DiagnosticsError
 from .seg_model import (
+    SEG_GROUP_VERSION,
+    SEG_LATEST,
     SEG_VERSION,
+    SegLayerRef,
     DicomContent,
     Segment,
     SegmentationExtension,
@@ -163,6 +167,9 @@ SEG_EXTENSION_VERSION = SEG_VERSION
 __all__ = [  # noqa: RUF022
     "SEG_EXTENSION_VERSION",
     "SEG_VERSION",
+    "SEG_GROUP_VERSION",
+    "SEG_LATEST",
+    "SegLayerRef",
     "About",
     "Diagnostic",
     "DiagnosticsError",
@@ -196,6 +203,7 @@ __all__ = [  # noqa: RUF022
     "NiftiLegacyTags",
     "NiftiSliceTiming",
     "NiftiTags",
+    "DucknGroupMetadata",
     "DucknMetadata",
     "SampleMetadata",
     "SpaceName",

@@ -188,11 +188,65 @@ class UnitSystemEntry(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _finite(name: str, value: float) -> float:
+    import math
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite number, not {value!r}")
+    return value
+
+
 class LinearParameters(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     slope: float
     intercept: float
+
+    @model_validator(mode="after")
+    def _finite_values(self) -> LinearParameters:
+        # a NaN or infinite slope maps every stored value to no quantity at all, which no
+        # writer means; refuse it rather than calibrate every read to NaN (review, 2026-09-26)
+        _finite("linear slope", self.slope)
+        _finite("linear intercept", self.intercept)
+        return self
+
+
+class AxisLinearParameters(BaseModel):
+    """``axis_linear`` (convention 1.2): a linear mapping whose slope and intercept vary along
+    one array axis - ``real[..., i, ...] = stored[..., i, ...] * slope[i] + intercept[i]``,
+    ``i`` the index along ``axis``. Either may be a single number (the same for every index).
+    The usual case is a quantized per-channel array: an int8 embedding whose channels each have
+    their own scale."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    axis: int
+    slope: float | list[float]
+    intercept: float | list[float]
+
+    @model_validator(mode="after")
+    def _shape(self) -> AxisLinearParameters:
+        if self.axis < 0:
+            raise ValueError(f"axis_linear axis must be a non-negative axis index, not {self.axis}")
+        lengths = set()
+        for name in ("slope", "intercept"):
+            v = getattr(self, name)
+            values = v if isinstance(v, list) else [v]
+            if not values:
+                raise ValueError(f"axis_linear {name} must not be empty")
+            for x in values:
+                _finite(f"axis_linear {name}", float(x))
+            if isinstance(v, list):
+                lengths.add(len(v))
+        if len(lengths) > 1:
+            raise ValueError("axis_linear slope and intercept lists must have one length")
+        return self
+
+    def length(self) -> int | None:
+        """The number of indices the parameters state, or None if both are scalars."""
+        for v in (self.slope, self.intercept):
+            if isinstance(v, list):
+                return len(v)
+        return None
 
 
 class LutParameters(BaseModel):
@@ -231,6 +285,11 @@ class ValueTransform(BaseModel):
             if self.parameters is None:
                 raise ValueError("lut transform requires parameters with a 'values' table")
             LutParameters(**self.parameters)
+        elif self.name == "axis_linear":
+            if self.parameters is None:
+                raise ValueError("axis_linear transform requires parameters with axis, slope "
+                                 "and intercept")
+            AxisLinearParameters(**self.parameters)
         return self
 
 
@@ -346,6 +405,15 @@ class SpaceTransformEntry(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+def _version_tuple(version: str | None) -> tuple[int, int]:
+    """``"1.2"`` -> (1, 2); an absent or unreadable version reads as (1, 0), the oldest."""
+    try:
+        major, minor = (int(x) for x in str(version).split(".")[:2])
+        return major, minor
+    except (TypeError, ValueError):
+        return 1, 0
+
+
 class DucknMetadata(BaseModel):
     """The `duckn` attributes object stored in a Zarr v3 array."""
 
@@ -375,6 +443,16 @@ class DucknMetadata(BaseModel):
                     f"value_transforms[{i}] is a 'lut': a lut indexes stored "
                     "values and must be the first transform in the chain"
                 )
+
+        # an axis_linear names an axis the array has
+        if self.axes is not None:
+            for i, vt in enumerate(self.value_transforms or []):
+                if vt.name == "axis_linear":
+                    axis = AxisLinearParameters(**vt.parameters).axis
+                    if axis >= len(self.axes):
+                        raise ValueError(
+                            f"value_transforms[{i}] (axis_linear) names axis {axis}, but the "
+                            f"array has {len(self.axes)} axes")
 
         # space and space_dimension mutually exclusive
         if self.space is not None and self.space_dimension is not None:
@@ -413,6 +491,16 @@ class DucknMetadata(BaseModel):
                     )
 
         return self
+
+    def values_stated(self) -> bool:
+        """Whether the metadata states how stored values relate to the quantity (duckn-spec
+        §3.1, convention 1.2). An explicit ``value_transforms`` - ``[]`` included, the stated
+        identity - always does. An absent one does only in a file declaring version 1.0 or 1.1
+        (or none), where absence meant identity; from 1.2 it means "not stated" - a writer that
+        cannot vouch for a calibration leaves it out rather than claim one."""
+        if self.value_transforms is not None:
+            return True
+        return _version_tuple(self.version) < (1, 2)
 
     def _get_space_dim(self) -> int | None:
         """Return the space dimension from either space or space_dimension."""
@@ -861,11 +949,43 @@ def duckn_attrs(meta: DucknMetadata) -> dict[str, Any]:
     return {"duckn": dumped}
 
 
+class DucknGroupMetadata(BaseModel):
+    """The ``duckn`` object on a Zarr GROUP (convention 1.2, duckn-spec §3.3): statements about
+    the arrays beneath it jointly. Only ``version``, ``intent`` and ``extensions``; every field
+    that describes one array is refused here - each member array carries its own."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: str
+    intent: str | None = None
+    extensions: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _group_rules(self) -> "DucknGroupMetadata":
+        if _version_tuple(self.version) < (1, 2):
+            raise ValueError(f"group metadata exists from convention 1.2; this group declares "
+                             f"{self.version}")
+        for name, ext in (self.extensions or {}).items():
+            if not isinstance(ext, dict) or "version" not in ext:
+                raise ValueError(f"group extension {name!r} has no version (duckn-spec §3.1)")
+        return self
+
+
 def validate_against_shape(meta: DucknMetadata, shape: tuple[int, ...]) -> None:
     """Validate that metadata is consistent with the given array shape.
 
     Raises ValueError on any inconsistency.
     """
+    for i, vt in enumerate(meta.value_transforms or []):
+        if vt.name == "axis_linear":
+            p = AxisLinearParameters(**vt.parameters)
+            if p.axis >= len(shape):
+                raise ValueError(f"value_transforms[{i}] (axis_linear) names axis {p.axis}, "
+                                 f"but the array has {len(shape)} dimensions")
+            n = p.length()
+            if n is not None and n != shape[p.axis]:
+                raise ValueError(f"value_transforms[{i}] (axis_linear) states {n} values for "
+                                 f"axis {p.axis}, which has {shape[p.axis]}")
     if meta.axes is not None:
         if len(meta.axes) != len(shape):
             raise ValueError(
