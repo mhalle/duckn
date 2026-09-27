@@ -316,6 +316,31 @@ class SampleMetadata(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
+# Color spaces a color axis may state (convention 1.2, duckn-spec §3.2 `color_space`): CSS
+# Color 4's predefined spaces, the vocabulary the seg extension's color strings already use.
+# Components are 0-1 in each (CSS `color()`). `xyz` is CSS's alias of `xyz-d65` and is not
+# accepted: a file names the white it means.
+RGB_COLOR_SPACES = (
+    "srgb", "srgb-linear", "display-p3", "display-p3-linear", "a98-rgb", "prophoto-rgb",
+    "rec2020",
+)
+XYZ_COLOR_SPACES = ("xyz-d50", "xyz-d65")
+
+
+def color_component_scale(dtype) -> float | None:
+    """The value that stands for component 1.0 of a color axis in an array of `dtype` read
+    through `value_transforms: []` (duckn-spec §3.2 `color_space`): an unsigned type's
+    maximum, 1.0 for a float; None for a signed type, which needs a stated mapping."""
+    import numpy as np
+
+    dtype = np.dtype(dtype)
+    if np.issubdtype(dtype, np.unsignedinteger):
+        return float(np.iinfo(dtype).max)
+    if np.issubdtype(dtype, np.floating):
+        return 1.0
+    return None
+
+
 class AxisMetadata(BaseModel):
     """Metadata for a single array axis."""
 
@@ -327,7 +352,26 @@ class AxisMetadata(BaseModel):
     thickness: float | None = None
     unit: UnitValue | None = None
     samples: list[SampleMetadata] | None = None
+    color_space: str | None = None
     extensions: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _color_space_fits_the_kind(self) -> AxisMetadata:
+        if self.color_space is None:
+            return self
+        if self.kind in (AxisKind.RGB_COLOR, AxisKind.RGBA_COLOR):
+            allowed = RGB_COLOR_SPACES
+        elif self.kind == AxisKind.XYZ_COLOR:
+            allowed = XYZ_COLOR_SPACES
+        else:
+            raise ValueError(
+                f"color_space applies to RGB-color, RGBA-color and XYZ-color axes, not "
+                f"{self.kind.value if self.kind else 'an axis with no kind'}")
+        if self.color_space not in allowed:
+            raise ValueError(
+                f"color_space {self.color_space!r} is not one for an axis of kind {self.kind.value}; "
+                f"use one of {', '.join(allowed)}")
+        return self
 
 
 # ---------------------------------------------------------------------------

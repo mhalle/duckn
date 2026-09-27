@@ -43,9 +43,10 @@ The following DICOM attributes are already captured by Zarr or the duckn convent
 | Rescale Slope, Rescale Intercept | `RescaleSlope`, `RescaleIntercept` | `value_transforms` `linear` |
 | Modality LUT Sequence | `ModalityLUTSequence` | `value_transforms` `lut` |
 | Rescale Type, Modality LUT Type | `RescaleType`, `ModalityLUTType` | `sample_units` |
+| Color Space | `ColorSpace` | the RGB axis' `color_space` (`SRGB` `srgb`, `ADOBERGB` `a98-rgb`, `ROMMRGB` `prophoto-rgb`, `DISPLAYP3` `display-p3`), stated only when the stored values are the components (unsigned, Bits Stored filling the type, no rescale) |
 | Pixel Data | `PixelData` | Zarr array data |
 
-See §9 for the full list of excluded fields. `BitsStored` and `HighBit` are not in this table: the dtype does not say them, and they stay in `tags` while the array holds the source's stored values (§5.10).
+`ColorSpace` also stays in `tags`, as the source's; the axis is authoritative for the array, and an exporter writes the axis' term, dropping a carried ICC Profile that described another space (the standard requires the two to agree). An ICC Profile with no Color Space names no space: nothing is stated on the axis and the profile stays in `tags`. See §9 for the full list of excluded fields. `BitsStored` and `HighBit` are not in this table: the dtype does not say them, and they stay in `tags` while the array holds the source's stored values (§5.10).
 
 **The Modality LUT stage maps to `value_transforms`; the VOI LUT stage does not.** DICOM's display pipeline has two lookup stages, and they land in different places because they answer different questions. The Modality LUT — whether expressed as `RescaleSlope`/`RescaleIntercept` or as an explicit `ModalityLUTSequence` — converts stored values into real-world values such as Hounsfield units, which is precisely what the convention's `value_transforms` and `sample_units` describe. The two forms are mutually exclusive in DICOM (PS3.3 C.11.1.1.2); where both appear, the explicit table wins.
 

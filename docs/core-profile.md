@@ -73,7 +73,8 @@ common case. Leaving it out in a 1.2 file says the mapping is not stated
 
 The rest of the convention covers what a plain volume does not have:
 measurement frames for vector and tensor data, per-slice positions for
-irregular series, `lut` and `axis_linear` value mappings, groups of arrays,
+irregular series, `lut` and `axis_linear` value mappings, the `color_space`
+of an RGB axis, groups of arrays,
 and extensions carrying a source format's metadata (`dicom`, `nifti`,
 `nrrd`) or a domain's (`seg`, `dwmri`). Each is optional, and a reader of
 this page loses nothing by skipping it.

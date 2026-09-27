@@ -6,6 +6,7 @@ from copy import deepcopy
 
 import numpy as np
 
+from .models import color_component_scale
 from .volume import Volume
 
 
@@ -93,6 +94,9 @@ def cast(
     # is no longer any stated quantity, so nothing is claimed (absent: "not
     # stated" from convention 1.2, duckn-spec §3.1).
     new_meta.value_transforms = None if normalize else []
+    if _color_axes_after_cast(new_meta, vol, result.dtype, normalize=normalize, range=range):
+        # A kept color_space reads the result through `[]` (duckn-spec §3.2): state it.
+        new_meta.value_transforms = []
     # A fill value is a stored value: it survives a plain cast that can hold it,
     # and means nothing after the values were rescaled.
     fill = None if normalize else vol.fill_value
@@ -101,6 +105,35 @@ def cast(
         if not info.min <= fill <= info.max:
             fill = None
     return Volume(raw=result, metadata=new_meta, fill_value=fill)
+
+
+def _color_axes_after_cast(meta, vol: Volume, target: np.dtype, *, normalize: bool,
+                           range: tuple[float, float] | None) -> bool:
+    """Keep each color axis' `color_space` only while the cast result still reads as the same
+    colors; drop it otherwise, since the axis would claim wrong colors. Returns whether any
+    was kept.
+
+    A color_space reads the components from the values' full range, so a plain uint8 -> float
+    cast (255 stays 255.0, where a float's 1.0 is white) or uint8 -> uint16 (255 is no longer
+    full scale) changes the colors it claims. What survives: the same scale on both sides, or
+    a normalization from exactly the source's component range to the target's.
+    """
+    color_axes = [a for a in (meta.axes or []) if a.color_space is not None]
+    if not color_axes:
+        return False
+    # The cast reads vol.data: calibrated values, float whenever a transform is applied.
+    source = color_component_scale(
+        np.dtype(np.float64) if vol.metadata.value_transforms else vol.raw.dtype)
+    dest = color_component_scale(target)
+    if normalize:
+        keep = (source is not None and dest is not None and range is not None
+                and float(range[0]) == 0.0 and float(range[1]) == source)
+    else:
+        keep = source is not None and source == dest
+    if not keep:
+        for axis in color_axes:
+            axis.color_space = None
+    return keep
 
 
 def _seg_after_cast(

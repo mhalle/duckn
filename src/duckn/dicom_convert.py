@@ -1655,8 +1655,10 @@ def build_duckn_metadata(
                 sample.metadata = {**(sample.metadata or {}), "dicom": tags}
 
     # Channel axis (RGB color) — appended after spatial axes (channel-last).
+    color_space = None
     if is_color:
-        axes.append(AxisMetadata(kind=AxisKind.RGB_COLOR))
+        color_space = _color_space_of(datasets[0], geometry)
+        axes.append(AxisMetadata(kind=AxisKind.RGB_COLOR, color_space=color_space))
 
     # Value transforms: the DICOM Modality LUT stage. An explicit
     # ModalityLUTSequence and RescaleSlope/Intercept are mutually exclusive
@@ -1730,10 +1732,15 @@ def build_duckn_metadata(
                 extensions = {}
             extensions["seg"] = seg_ext.model_dump(exclude_none=True)
 
+    if color_space is not None:
+        # The stored values ARE the components (_color_space_of states a space only then);
+        # 1.2 needs it said, since there an absent value_transforms is "not stated".
+        value_transforms = []
+
     return DucknMetadata(
         # Declare the lowest convention version that covers what was written:
-        # the `lut` transform was introduced in 1.1.
-        version="1.1" if modality_lut is not None else "1.0",
+        # the `lut` transform was introduced in 1.1, `color_space` in 1.2.
+        version="1.2" if color_space is not None else ("1.1" if modality_lut is not None else "1.0"),
         space=geometry.space,
         space_origin=geometry.space_origin,
         sample_units=sample_units,
@@ -1741,6 +1748,72 @@ def build_duckn_metadata(
         axes=axes,
         extensions=extensions,
     )
+
+
+# Color Space (0028,2002) defined terms (PS3.3 C.11.15, read 2026-09-26) and the CSS Color 4
+# predefined space each names: ROMM RGB is CSS's prophoto-rgb, Adobe RGB (1998) its a98-rgb.
+_DICOM_COLOR_SPACES = {
+    "SRGB": "srgb",
+    "ADOBERGB": "a98-rgb",
+    "ROMMRGB": "prophoto-rgb",
+    "DISPLAYP3": "display-p3",
+}
+_COLOR_SPACE_TERMS = {css: term for term, css in _DICOM_COLOR_SPACES.items()}
+
+
+def _export_color_space(ds, color_space: str | None) -> None:
+    """Make an exported RGB object's Color Space agree with the axis's `color_space`.
+
+    The axis is the statement about the array; tags carried from the source are provenance
+    and lose to it. A space DICOM has a term for is written as that term, and an ICC Profile
+    carried from a source in another space is dropped (the standard requires the two to
+    agree). A space DICOM cannot name leaves both out, with a warning: the export then
+    states no space rather than a wrong one. An axis that states nothing leaves the carried
+    tags as they came.
+    """
+    if color_space is None:
+        return
+    term = _COLOR_SPACE_TERMS.get(color_space)
+    carried = str(getattr(ds, "ColorSpace", "") or "").strip().upper()
+    if term is not None and carried == term:
+        return
+    for keyword in ("ColorSpace", "ICCProfile"):
+        if keyword in ds:
+            delattr(ds, keyword)
+    if term is not None:
+        ds.ColorSpace = term
+    else:
+        warnings.warn(
+            f"color space {color_space!r} has no DICOM Color Space term (SRGB, ADOBERGB, "
+            "ROMMRGB, DISPLAYP3); the exported object states none",
+            stacklevel=3,
+        )
+
+
+def _color_space_of(ds, geometry) -> str | None:
+    """The CSS color space an RGB series' stored values are components of, or None.
+
+    Stated only when the file names one (Color Space, on the dataset or on its one Optical
+    Path item, where a whole-slide image keeps its ICC Profile) AND the stored values are the
+    components as the convention reads them (duckn-spec §3.2 `color_space`): unsigned, Bits
+    Stored filling the container, no rescale. An ICC Profile alone names no space: the
+    profile stays in the tags as provenance and nothing is stated here.
+    """
+    term = getattr(ds, "ColorSpace", None)
+    if term is None:
+        paths = getattr(ds, "OpticalPathSequence", None)
+        if paths is not None and len(paths) == 1:
+            term = getattr(paths[0], "ColorSpace", None)
+    css = _DICOM_COLOR_SPACES.get(str(term or "").strip().upper())
+    if css is None:
+        return None
+    dtype = np.dtype(geometry.dtype)
+    bits_stored = int(getattr(ds, "BitsStored", dtype.itemsize * 8))
+    if dtype.kind != "u" or bits_stored != dtype.itemsize * 8:
+        return None
+    if geometry.rescale_slope is not None or geometry.rescale_intercept is not None:
+        return None
+    return css
 
 
 # ---------------------------------------------------------------------------
@@ -2297,6 +2370,20 @@ def _restore_tag(ds: Any, keyword: str, value: Any) -> None:
         ds.add_new(tag, vr, Sequence(items))
         return
 
+    # A binary value is carried as base64 text (dicom-spec: binary VRs, the encoding
+    # _convert_value and dicom_tags write); it goes back as the bytes it was. Written as the text, a
+    # store imported with binary_tags=True could not be exported at all (pydicom refuses a str
+    # for OB), found 2026-09-26 when an exported ICC Profile was tested.
+    if isinstance(value, str) and ({v.strip() for v in vr.split(" or ")} & _BINARY_VRS):
+        import base64
+        import binascii
+        try:
+            value = base64.b64decode(value, validate=True)
+        except (binascii.Error, ValueError):
+            return
+        if " or " in vr:
+            vr = vr.split(" or ")[0].strip()
+
     # Handle arrays → MultiValue where appropriate
     if isinstance(value, list):
         ds.add_new(tag, vr, value)
@@ -2578,6 +2665,7 @@ def zarr_to_dicom(
         ds.PhotometricInterpretation = "RGB"
         # Color-by-pixel layout: channel-last canonical form
         ds.PlanarConfiguration = 0
+        _export_color_space(ds, meta.axes[-1].color_space)
     else:
         spp = int(getattr(ds, "SamplesPerPixel", 1))
         if spp != 1:

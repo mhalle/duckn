@@ -87,7 +87,7 @@ The version of this convention. Format is `"major.minor"`.
 
 A major version increment indicates breaking changes — a reader for version 1.x must not attempt to interpret version 2.x metadata. A minor version increment indicates additive changes (new optional fields, new `kind` values, new transform types). A reader for version 1.0 can safely read version 1.3 and ignore unknown fields.
 
-Version 1.2 adds the `axis_linear` transform, group-level metadata (§3.3), and one change of meaning that stays read-compatible: an absent `value_transforms` means the value mapping is **not stated**, where in 1.0 and 1.1 it meant identity (see `value_transforms`). A 1.0 or 1.1 reader of a 1.2 file presents the stored values as they are, which is all a reader of an unstated mapping can do; nothing it computes changes. A writer declares the lowest version that covers what it wrote, and at least 1.2 whenever it relies on 1.2's meaning of absence.
+Version 1.2 adds the `axis_linear` transform, the per-axis `color_space` field, group-level metadata (§3.3), and one change of meaning that stays read-compatible: an absent `value_transforms` means the value mapping is **not stated**, where in 1.0 and 1.1 it meant identity (see `value_transforms`). A 1.0 or 1.1 reader of a 1.2 file presents the stored values as they are, which is all a reader of an unstated mapping can do; nothing it computes changes. A writer declares the lowest version that covers what it wrote, and at least 1.2 whenever it relies on 1.2's meaning of absence.
 
 This field should always be present.
 
@@ -501,6 +501,29 @@ Example: per-sample DICOM metadata:
 ```
 
 `samples` is allowed on any axis — spatial, temporal, or otherwise. A time axis with irregular temporal sampling can use `position` to specify per-frame timestamps. An empty object `{}` at any index means "this sample uses the uniform defaults."
+
+#### `color_space`
+
+*(1.2)* The color space whose components a color axis holds. `kind` says which component is which (`"RGB-color"`: red, green, blue); `color_space` says what those numbers mean. Without it, `[200, 40, 40]` could be sRGB, Adobe RGB or linear light, and nothing in the file says which.
+
+```json
+{ "kind": "RGB-color", "color_space": "srgb" }
+```
+
+The value is one of CSS Color 4's predefined color spaces, the vocabulary the segmentation extension's color strings use, so the convention gives one answer to "what color is this":
+
+| Axis `kind` | `color_space` |
+|---|---|
+| `"RGB-color"`, `"RGBA-color"` | `"srgb"`, `"srgb-linear"`, `"display-p3"`, `"display-p3-linear"`, `"a98-rgb"` (Adobe RGB 1998), `"prophoto-rgb"` (ROMM RGB), `"rec2020"` |
+| `"XYZ-color"` | `"xyz-d50"`, `"xyz-d65"` — the reference white is part of the statement; CSS's alias `"xyz"` is not accepted |
+
+No other kind takes a `color_space`. The spelling is the lowercase keyword shown.
+
+**The components.** Each space's components run from 0 to 1, as in CSS `color()`. The components are the array's calibrated values (§4): when `value_transforms` is `[]` and the array holds an unsigned integer type, the full range of the type is 0–1 (`uint8` 255 is 1.0, `uint16` 65535 is 1.0); a floating-point array holds the components themselves. Any other encoding — 12-bit values in a 16-bit container, a signed type — states a `value_transforms` that maps it to 0–1. A space's nonlinear transfer function (sRGB's, for example) is part of the space: `"srgb"` components are the encoded values, `"srgb-linear"` the linear-light ones.
+
+**Alpha.** In an `"RGBA-color"` axis, alpha is the fourth component on the same 0–1 scale and is not premultiplied: the color components are the color as it is, not the color times its coverage.
+
+**Absent means unknown.** A color axis without `color_space` states nothing about what its components mean. A viewer may still display such data as sRGB, the common case, but must not report it as sRGB. A space characterized by an ICC profile rather than a named space (as whole-slide scanners do) has no value here yet: a writer converts to a named space, or states nothing and keeps the profile as provenance (see §8 on out-of-line data).
 
 #### `extensions`
 
@@ -951,15 +974,19 @@ A 640×480 RGBA image with color components contiguous in memory (C order, last 
   "fill_value": 0,
   "attributes": {
     "duckn": {
-      "version": "1.0",
+      "version": "1.2",
+      "value_transforms": [],
       "axes": [
         { "kind": "space", "centering": "node" },
-        { "kind": "RGBA-color" }
+        { "kind": "space", "centering": "node" },
+        { "kind": "RGBA-color", "color_space": "srgb" }
       ]
     }
   }
 }
 ```
+
+Each component is sRGB-encoded, 255 meaning 1.0, and alpha is straight, not premultiplied (§3.2 `color_space`). `value_transforms: []` is what makes the full `uint8` range the components.
 
 ### 7.6 CT with DICOM Provenance
 

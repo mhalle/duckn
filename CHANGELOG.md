@@ -18,6 +18,25 @@
 - **Group metadata** (new §3.3): a Zarr group may carry `duckn` with only `version`, `intent`
   and `extensions`, describing its member arrays jointly; each member stays a complete duckn
   array. `DucknGroupMetadata`.
+- **`color_space` on a color axis** (§3.2): what an RGB-color, RGBA-color or XYZ-color axis's
+  numbers mean, as a CSS Color 4 predefined space (`srgb`, `srgb-linear`, `display-p3`,
+  `display-p3-linear`, `a98-rgb`, `prophoto-rgb`, `rec2020`; `xyz-d50`, `xyz-d65`) - the
+  vocabulary the seg extension's colors use. Components are 0-1: an unsigned array read through
+  `value_transforms: []` spans its type's full range, a float array holds them, anything else
+  states a mapping. RGBA alpha is straight, not premultiplied. Absent: unknown. An ICC-profiled
+  space has no value yet (out-of-line data, §8). DICOM Color Space (SRGB, ADOBERGB, ROMMRGB,
+  DISPLAYP3; PS3.3 C.11.15) becomes the axis's space on import when the stored values are the
+  components, and is written back on export, where the axis wins over carried tags and a carried
+  ICC Profile describing another space is dropped. `cast` keeps a color space only while the
+  colors are unchanged; an interpolating `resample` of uint8 color states slope 1/255.
+- **The simple case is written, not implied.** Materializing (the SimpleITK, nibabel and VTK
+  adapters, `resample`, a plain `cast`) writes `value_transforms: []`, not an absent field, which
+  in a 1.2 file would say "not stated". `duckn_attrs()` warns (`UnstatedCalibrationWarning`) for
+  a 1.2 array naming `sample_units` with no `value_transforms`. A "Versions" note separates the
+  convention version (in each file), extension versions and library releases;
+  `docs/core-profile.md` is the one-page plain volume.
+- **Carried binary tags export.** A store imported with `binary_tags=True` could not be written
+  back to DICOM: base64 values were restored as text and pydicom refused them. They are decoded.
 
 ### seg 0.10
 - **A segmentation held by a group** (§2, `layers`, rule 2): a group's `seg` block lists, per

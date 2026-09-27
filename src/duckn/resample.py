@@ -17,7 +17,7 @@ from typing import Any
 
 import numpy as np
 
-from .models import Centering, DucknMetadata
+from .models import Centering, DucknMetadata, ValueTransform, color_component_scale
 from .spatial import VolumeGeometry
 from .volume import Volume
 
@@ -320,6 +320,19 @@ def resample(
     # in a convention-1.2 file (§3.1).
     if materialize:
         new_meta.value_transforms = []
+
+    # A color axis reads its components from the values' full range (duckn-spec §3.2
+    # `color_space`): interpolated uint8 comes back as float 0-255, where a float's 1.0 is
+    # full scale. State the mapping back to 0-1 rather than let the axis claim other colors.
+    if resampled.dtype != vol.raw.dtype and not new_meta.value_transforms and any(
+            a.color_space is not None for a in (new_meta.axes or [])):
+        scale = color_component_scale(vol.raw.dtype)
+        if scale is None:
+            for a in new_meta.axes:
+                a.color_space = None
+        elif scale != 1.0:
+            new_meta.value_transforms = [ValueTransform(
+                name="linear", parameters={"slope": 1.0 / scale, "intercept": 0.0})]
 
     # A resampled array is derived with respect to whatever its source
     # format described, so format-specific provenance does not survive
