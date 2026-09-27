@@ -981,3 +981,79 @@ def test_every_xform_code_imports_as_ras_and_exports_its_code(tmp_path, code):
     hdr = nib.load(back).header
     assert int(hdr["sform_code"]) == code
     np.testing.assert_allclose(nib.load(back).affine, affine, atol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# Dimensions 4 and 5 (0.6.1): components where nifti1.h puts them, spectra that are not time
+# ---------------------------------------------------------------------------
+
+
+def _import_axes(tmp_path, data, *, intent_code=0, xyzt_units=2, pixdim4=0.0):
+    affine = np.diag([2.0, 2.0, 2.0, 1.0])
+    img = nib.Nifti1Image(data, affine)
+    hdr = img.header
+    hdr.set_sform(affine, code=1)
+    hdr["xyzt_units"] = xyzt_units
+    if intent_code:
+        hdr["intent_code"] = intent_code
+    if pixdim4:
+        hdr["pixdim"][4] = pixdim4
+    nii_path = _save_nifti(img, tmp_path / "in.nii")
+    zarr_path = tmp_path / "out.zarr"
+    nifti_to_zarr(nii_path, zarr_path)
+
+    import zarr
+
+    arr = zarr.open_array(zarr.storage.LocalStore(str(zarr_path)), mode="r")
+    return DucknMetadata(**arr.attrs["duckn"]), arr, zarr_path
+
+
+class TestHigherDimensions:
+    def test_a_tensor_in_the_fifth_dimension_is_not_time(self, tmp_path):
+        """nifti1.h's layout: dim[4] = 1, the six components in dim[5]."""
+        data = np.zeros((4, 4, 3, 1, 6), dtype=np.float32)
+        meta, arr, _ = _import_axes(tmp_path, data, intent_code=1005)
+        assert meta.axes[3].kind is None
+        assert meta.axes[4].kind == "3D-symmetric-matrix"
+        assert arr.metadata.dimension_names == ("i", "j", "k", "d3", "c")
+
+    def test_a_tensor_in_the_fourth_dimension_is_its_components(self, tmp_path):
+        data = np.zeros((4, 4, 3, 6), dtype=np.float32)
+        meta, arr, _ = _import_axes(tmp_path, data, intent_code=1005)
+        assert meta.axes[3].kind == "3D-symmetric-matrix"
+        assert arr.metadata.dimension_names == ("i", "j", "k", "c")
+
+    def test_a_displacement_field_is_a_vector(self, tmp_path):
+        data = np.zeros((4, 4, 3, 1, 3), dtype=np.float32)
+        meta, _, _ = _import_axes(tmp_path, data, intent_code=1006)
+        assert meta.axes[4].kind == "vector"
+
+    def test_rgb_intent_is_a_color(self, tmp_path):
+        data = np.zeros((4, 4, 3, 1, 3), dtype=np.float32)
+        meta, _, _ = _import_axes(tmp_path, data, intent_code=2003)
+        assert meta.axes[4].kind == "RGB-color"
+
+    def test_an_unmatched_component_count_is_a_list(self, tmp_path):
+        data = np.zeros((4, 4, 3, 1, 5), dtype=np.float32)
+        meta, _, _ = _import_axes(tmp_path, data, intent_code=1005)
+        assert meta.axes[4].kind == "list"
+
+    def test_a_frequency_unit_makes_a_spectral_domain(self, tmp_path):
+        """xyzt_units' temporal bits also carry Hz / ppm / rad/s: that is not time."""
+        data = np.zeros((4, 4, 3, 5), dtype=np.float32)
+        meta, arr, zarr_path = _import_axes(tmp_path, data, xyzt_units=2 | 40, pixdim4=0.5)
+        assert meta.axes[3].kind == "domain"
+        assert meta.axes[3].unit == "ppm"
+        assert arr.metadata.dimension_names == ("i", "j", "k", "d3")
+
+        rt_path = tmp_path / "rt.nii"
+        zarr_to_nifti(zarr_path, rt_path)
+        rt_hdr = nib.load(str(rt_path)).header
+        assert int(rt_hdr["xyzt_units"]) & 0x38 == 40
+        assert float(rt_hdr["pixdim"][4]) == pytest.approx(0.5)
+
+    def test_plain_4d_stays_time(self, tmp_path):
+        data = np.zeros((4, 4, 3, 5), dtype=np.int16)
+        meta, arr, _ = _import_axes(tmp_path, data, xyzt_units=2 | 8, pixdim4=2.0)
+        assert meta.axes[3].kind == "time"
+        assert arr.metadata.dimension_names == ("i", "j", "k", "t")

@@ -1118,6 +1118,36 @@ class TestPerSampleMetadata:
         assert slice_axis.samples[0].origin is None
         assert slice_axis.samples[2].position == pytest.approx(5.0)
 
+    def test_irregular_positions_are_distances_from_the_origin(self):
+        """0.6.1: `position` is the distance from the origin along the slice direction, not the
+        absolute projection of Image Position (Patient) on the normal. The test above starts at
+        z = 0, where the two coincide, which is how the bug hid."""
+        datasets = [
+            _make_dataset(position=(0, 0, -100.0), modality="CT"),
+            _make_dataset(position=(0, 0, -97.5), modality="CT"),
+            _make_dataset(position=(0, 0, -95.0), modality="CT"),
+            _make_dataset(position=(0, 0, -90.0), modality="CT"),
+        ]
+        geom = DicomImageInfo(
+            shape=(4, 4, 4),
+            dtype=np.dtype("uint16"),
+            space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
+            space_origin=[0.0, 0.0, -100.0],
+            space_directions=[[0, 0, 2.5], [0, 1.0, 0], [1.0, 0, 0]],
+            slice_thickness=2.5,
+            rescale_slope=None,
+            rescale_intercept=None,
+            rescale_type=None,
+        )
+        meta = build_duckn_metadata(geom, datasets, anonymized=None, include_tags=False)
+        got = [s.position for s in meta.axes[0].samples]
+        assert got == pytest.approx([0.0, 2.5, 5.0, 10.0])
+        # the world position a reader computes is the slice's own Image Position (Patient)
+        o = np.array(meta.space_origin)
+        d = np.array(meta.axes[0].space_direction)
+        placed = [o + p * d / np.linalg.norm(d) for p in got]
+        np.testing.assert_allclose(np.array(placed)[:, 2], [-100.0, -97.5, -95.0, -90.0])
+
     def test_gantry_tilt_uses_origin(self):
         """In-plane origin shift per slice → origin (vector)."""
         datasets = [
@@ -1219,3 +1249,49 @@ class TestPerSampleMetadata:
             for s in slice_axis.samples:
                 if s.metadata and "dicom" in s.metadata:
                     assert "ImagePositionPatient" not in s.metadata["dicom"]
+
+
+# ---------------------------------------------------------------------------
+# 0.6.1: a 4D series' time axis states real times only
+# ---------------------------------------------------------------------------
+
+
+def _four_d(tag, values):
+    """Two time points x two slices, each time point's instances tagged with ``tag``."""
+    datasets = []
+    for t, v in enumerate(values):
+        for z in (0.0, 2.0):
+            ds = _make_dataset(position=(0, 0, z), modality="MR")
+            if tag is not None:
+                setattr(ds, tag, v)
+            ds.InstanceNumber = t * 2 + int(z / 2) + 1
+            datasets.append(ds)
+    geom = DicomImageInfo(
+        shape=(2, 2, 4, 4), dtype=np.dtype("uint16"), space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
+        space_origin=[0.0, 0.0, 0.0], space_directions=[[0, 0, 2.0], [0, 1.0, 0], [1.0, 0, 0]],
+        slice_thickness=2.0, rescale_slope=None, rescale_intercept=None, rescale_type=None)
+    return build_duckn_metadata(geom, datasets, anonymized=None, include_tags=False).axes[0]
+
+
+def test_trigger_times_are_times_in_ms():
+    t = _four_d("TriggerTime", [0.0, 450.0])
+    assert t.unit == "ms" and [s.position for s in t.samples] == [0.0, 450.0]
+
+
+def test_acquisition_times_become_ms_from_the_first():
+    t = _four_d("AcquisitionTime", ["101500.000", "101502.500"])
+    assert t.unit == "ms" and [s.position for s in t.samples] == pytest.approx([0.0, 2500.0])
+
+
+def test_acquisition_times_across_midnight_keep_increasing():
+    t = _four_d("AcquisitionTime", ["235959.000", "000001.000"])
+    assert [s.position for s in t.samples] == pytest.approx([0.0, 2000.0])
+
+
+@pytest.mark.parametrize("tag", ["TemporalPositionIdentifier", None])
+def test_an_index_is_not_a_time(tag):
+    """TemporalPositionIdentifier and InstanceNumber order the frames; until 0.6.1 they were
+    written as positions in ms."""
+    t = _four_d(tag, [1, 2])
+    assert t.kind.value == "time"
+    assert t.unit is None and t.samples is None

@@ -131,6 +131,19 @@ def _chunk_bytes(chunks: list[int], itemsize: int) -> int:
     return result
 
 
+def _unit_along(direction: list[float], space_units: list[str]) -> str | None:
+    """The unit of an axis that steps by `direction`.
+
+    NRRD's `space units` name one unit per WORLD axis, so an array axis takes the unit of the
+    world axes its step moves along, when they agree. Through 0.6.0 the k-th entry went to the
+    k-th spatial array axis, which is wrong whenever the units differ (a 2D+time space, a
+    permuted or oblique grid).
+    """
+    known = [u if u and u != "???" else None for u in space_units]
+    along = {known[j] for j, c in enumerate(direction) if j < len(known) and c != 0}
+    return along.pop() if len(along) == 1 else None
+
+
 def _transpose_matrix(mat: list[list[float]]) -> list[list[float]]:
     """Transpose a list-of-lists matrix."""
     n = len(mat)
@@ -265,7 +278,6 @@ def _header_to_metadata(
 
     # --- Build AxisMetadata for each axis ---
     axes: list[AxisMetadata] = []
-    spatial_count = 0
     for i in range(ndim):
         ax_kwargs: dict[str, Any] = {}
 
@@ -292,11 +304,9 @@ def _header_to_metadata(
 
         # Units: for spatial axes prefer space units, else use per-axis units
         if is_spatial and space_units_raw is not None:
-            if spatial_count < len(space_units_raw):
-                su = space_units_raw[spatial_count]
-                if su and su != "???":
-                    ax_kwargs["unit"] = su
-            spatial_count += 1
+            su = _unit_along(ax_kwargs["space_direction"], list(space_units_raw))
+            if su is not None:
+                ax_kwargs["unit"] = su
         elif units is not None and i < len(units):
             u = units[i]
             if u and u != "???":
@@ -517,17 +527,29 @@ def _metadata_to_header(
             header["thicknesses"] = thicknesses_out
 
         # space units
+        # One entry per WORLD axis (not per spatial array axis, as through 0.6.0): the unit of
+        # the array axes stepping along it. A world axis no array axis steps along (a 2D slice
+        # in 3D) takes the unit every spatial axis shares, if they share one.
         if space_dim is not None:
+            def _symbol(u: Any) -> str:
+                if u is None:
+                    return ""
+                return u if isinstance(u, str) else getattr(u, "symbol", None) or ""
+
+            spatial = [ax for ax in nrrd_axes if ax.space_direction is not None]
+            shared = {_symbol(ax.unit) for ax in spatial}
+            shared_unit = shared.pop() if len(shared) == 1 else ""
             spatial_units: list[str] = []
-            for ax in nrrd_axes:
-                if ax.space_direction is not None:
-                    u = ax.unit
-                    if isinstance(u, str):
-                        spatial_units.append(u)
-                    elif u is not None:
-                        spatial_units.append(u.symbol)  # type: ignore[union-attr]
-                    else:
-                        spatial_units.append("")
+            for j in range(space_dim):
+                along = {_symbol(ax.unit) for ax in spatial
+                         if j < len(ax.space_direction) and ax.space_direction[j] != 0}
+                along.discard("")
+                if len(along) == 1:
+                    spatial_units.append(along.pop())
+                elif not along:
+                    spatial_units.append(shared_unit)
+                else:
+                    spatial_units.append("")
             if any(spatial_units):
                 header["space units"] = spatial_units
 

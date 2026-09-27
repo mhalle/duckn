@@ -627,3 +627,38 @@ class TestEnhancedRescale:
         slopes = [float(fg.PixelValueTransformationSequence[0].RescaleSlope)
                   for fg in ds.PerFrameFunctionalGroupsSequence]
         assert slopes == [1.0, 2.0, 1.0]
+
+
+# ---------------------------------------------------------------------------
+# 0.6.1: `space units` name one unit per WORLD axis, not per spatial array axis
+# ---------------------------------------------------------------------------
+
+
+class TestSpaceUnitsPerWorldAxis:
+    def _convert(self, tmp_path, header_lines, data):
+        p = tmp_path / "in.nrrd"
+        _write_nrrd_text(p, header_lines, data)
+        z = tmp_path / "x.zarr"
+        out = tmp_path / "out.nrrd"
+        nrrd_to_zarr(p, z)
+        zarr_to_nrrd(z, out)
+        return _meta(z), nrrd.read_header(str(out))
+
+    def test_an_axis_takes_the_unit_of_the_world_axis_it_steps_along(self, tmp_path):
+        # NRRD axis 0 steps along world axis 0 (mm), NRRD axis 1 along world axis 1 (um).
+        # Array order is slowest first, so duckn's axis 0 is NRRD's axis 1.
+        data = np.zeros((5, 4), dtype=np.uint8)
+        m, h = self._convert(tmp_path, ["space dimension: 2",
+                                        "space directions: (2,0) (0,3)",
+                                        'space units: "mm" "um"'], data)
+        assert [ax.unit for ax in m.axes] == ["um", "mm"]
+        assert list(h["space units"]) == ["mm", "um"]
+
+    def test_a_slice_in_3d_writes_a_unit_for_every_world_axis(self, tmp_path):
+        data = np.zeros((6, 5), dtype=np.int16)
+        m, h = self._convert(tmp_path, ["space: left-posterior-superior",
+                                        "space directions: (0,1,0) (0,0,-1)",
+                                        "space origin: (10,-120,90)",
+                                        'space units: "mm" "mm" "mm"'], data)
+        assert [ax.unit for ax in m.axes] == ["mm", "mm"]
+        assert list(h["space units"]) == ["mm", "mm", "mm"]

@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.6.1 — 2026-09-27
+
+Four converter defects in how 1.x files state where samples lie and what a dimension is. None
+changes the convention; each test fails on 0.6.0.
+
+- **DICOM, irregular slice spacing: `samples[i].position` is a distance from the origin**
+  (duckn-spec §3.2), as it always was for regular series. 0.6.0 wrote each slice's position
+  along the slice normal measured from the patient origin - its absolute coordinate - so a
+  reader adding it to `space_origin` counted the first slice's offset twice. **Stores written by
+  0.6.0 or earlier from an irregularly spaced DICOM series carry those absolute positions and
+  must be converted again**; regular series were never affected.
+- **DICOM 4D: a time axis states times only when the series gives them.** Trigger Time is
+  milliseconds; otherwise Acquisition Time differences, in milliseconds from the first frame,
+  continued past midnight. Temporal Position Identifier (an index) and nothing at all no longer
+  become "times" - the axis is time with no positions then, which says what is known.
+- **NIfTI: components where nifti1.h puts them, and spectra are not time.** A vector or matrix
+  intent (symmetric and general matrix, displacement, vector, quaternion, RGB, RGBA) makes the
+  5th dimension its components (`3D-symmetric-matrix`, `vector`, `RGB-color`, ... or `list`
+  when the count fits no kind), with the placeholder 4th dimension of size 1 stating nothing; in
+  the four-dimensional layout some tools write, the 4th dimension is the components. A Hz, ppm
+  or rad/s unit in `xyzt_units` makes the 4th dimension a `domain`, not time, and exports its
+  unit code back. Through 0.6.0 the 4th dimension was always time and the 5th stated nothing,
+  so a tensor file gained a one-sample time axis. Dimension names follow: `t` only for time,
+  `c` for components.
+- **NRRD `space units` are one per world axis.** Import gives an array axis the unit of the
+  world axes its step moves along (when they agree); export writes one entry per world axis.
+  Through 0.6.0 the k-th entry went to the k-th spatial array axis - wrong whenever units differ
+  or axes are permuted - and a 2D slice in 3D exported two entries where NRRD requires three.
+
 ## 0.6.0 — 2026-09-27
 
 Writes and reads convention 1.2; reads 1.0 and 1.1 files as before. The convention version (in
