@@ -8,9 +8,8 @@ changes the convention; each test fails on 0.6.0.
 - **DICOM, irregular slice spacing: `samples[i].position` is a distance from the origin**
   (duckn-spec §3.2), as it always was for regular series. 0.6.0 wrote each slice's position
   along the slice normal measured from the patient origin - its absolute coordinate - so a
-  reader adding it to `space_origin` counted the first slice's offset twice. **Stores written by
-  0.6.0 or earlier from an irregularly spaced DICOM series carry those absolute positions and
-  must be converted again**; regular series were never affected.
+  reader adding it to `space_origin` counted the first slice's offset twice. Regular series were
+  never affected.
 - **DICOM 4D: a time axis states times only when the series gives them.** Trigger Time is
   milliseconds; otherwise Acquisition Time differences, in milliseconds from the first frame,
   continued past midnight. Temporal Position Identifier (an index) and nothing at all no longer
@@ -28,6 +27,13 @@ changes the convention; each test fails on 0.6.0.
   world axes its step moves along (when they agree); export writes one entry per world axis.
   Through 0.6.0 the k-th entry went to the k-th spatial array axis - wrong whenever units differ
   or axes are permuted - and a 2D slice in 3D exported two entries where NRRD requires three.
+
+**Stores written by 0.6.0 or earlier need converting again from their sources** when they came
+from: an irregularly spaced DICOM series (absolute positions); a 4D DICOM series with only
+Temporal Position Identifier (indices labeled milliseconds); a NIfTI vector or tensor file, or one
+whose 4th dimension is in `Hz`, `ppm` or `rad/s` (a time axis where the components or the
+spectrum were); an NRRD whose `space units` differ between world axes (units on the wrong axes).
+Nothing in a store records which duckn wrote it, so a reader cannot find these by itself.
 
 ## 0.6.0 — 2026-09-27
 
