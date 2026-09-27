@@ -1083,6 +1083,53 @@ def _load_seg(
 # ---------------------------------------------------------------------------
 
 
+_RESCALE_KEYWORDS = ("RescaleIntercept", "RescaleSlope", "RescaleType")
+
+
+def _pvt_item(group: Any) -> Any:
+    seq = getattr(group, "PixelValueTransformationSequence", None)
+    return seq[0] if seq is not None and len(seq) > 0 else None
+
+
+def _hoist_enhanced_rescale(ds: Any) -> None:
+    """Read an Enhanced object's rescale from where PS3.3 puts it.
+
+    Enhanced CT, MR and PET state Rescale Intercept/Slope/Type in the Pixel Value
+    Transformation functional group (C.7.6.16.2.9), shared or per frame, not at the top level;
+    the reader looked only at the top level, so a scanner's Enhanced CT came in uncalibrated.
+    A shared mapping, or one every frame states alike, is copied to the top level of this
+    in-memory dataset, where the value-mapping code reads it (the attributes are excluded from
+    ``tags`` there, as everywhere). A mapping that varies by frame cannot be one value
+    transform: it is left where it is, reported, and the array holds stored values.
+    """
+    if any(k in ds for k in ("RescaleSlope", "RescaleIntercept")):
+        return
+    shared = getattr(ds, "SharedFunctionalGroupsSequence", None)
+    item = _pvt_item(shared[0]) if shared else None
+    if item is None:
+        per_frame = getattr(ds, "PerFrameFunctionalGroupsSequence", None) or []
+        items = [_pvt_item(fg) for fg in per_frame]
+        if not items or any(i is None for i in items):
+            return
+        states = {tuple(str(getattr(i, k, "")) for k in _RESCALE_KEYWORDS) for i in items}
+        if len(states) > 1:
+            warnings.warn(
+                "the Pixel Value Transformation varies by frame; it cannot be represented as "
+                "a single value transform, so the array holds uncalibrated stored values",
+                stacklevel=3,
+            )
+            return
+        item = items[0]
+    for k in _RESCALE_KEYWORDS:
+        if k in item:
+            setattr(ds, k, getattr(item, k))
+
+
+def _first(value: Any) -> Any:
+    """A single-valued attribute kept as a one-element list reads as its value."""
+    return value[0] if isinstance(value, list) and value else value
+
+
 def _load_multiframe(
     file_path: Path,
 ) -> tuple[np.ndarray, DicomImageInfo, list[Any]]:
@@ -1109,6 +1156,8 @@ def _load_multiframe(
         raise ValueError(
             f"Unsupported PhotometricInterpretation={photometric!r}"
         )
+
+    _hoist_enhanced_rescale(ds)
 
     n_frames = int(getattr(ds, "NumberOfFrames", 1))
     if n_frames <= 1 and hasattr(ds, "ImagePositionPatient"):
@@ -2208,7 +2257,8 @@ _PER_FRAME_SKIP = frozenset({
     "InstanceCreationDate", "InstanceCreationTime", "ContentDate", "ContentTime",
     "SmallestImagePixelValue", "LargestImagePixelValue",
     # a per-slice rescale kept because it varied (no value transform could state it) is not a
-    # per-frame attribute; the export's mapping comes from value_transforms alone
+    # top-level attribute of a frame: an Enhanced export writes it as that frame's Pixel Value
+    # Transformation functional group instead
     "RescaleSlope", "RescaleIntercept", "RescaleType",
 })
 
@@ -2566,6 +2616,20 @@ def zarr_to_dicom(
     measures_item.SpacingBetweenSlices = slice_spacing
     shared_fg.PixelMeasuresSequence = Sequence([measures_item])
 
+    # The value mapping of an Enhanced CT/MR/PET object belongs in the Pixel Value
+    # Transformation functional group (PS3.3 C.7.6.16.2.9; mandatory in Enhanced CT and PET),
+    # not at the top level, where 0.5.4 wrote it. Secondary Capture keeps it at the top level.
+    enhanced = sop_class_uid in _ENHANCED_SOP_CLASSES.values()
+    if enhanced and ("RescaleSlope" in ds or "RescaleIntercept" in ds):
+        pvt = Dataset()
+        pvt.RescaleIntercept = ds.RescaleIntercept if "RescaleIntercept" in ds else 0
+        pvt.RescaleSlope = ds.RescaleSlope if "RescaleSlope" in ds else 1
+        pvt.RescaleType = ds.RescaleType if "RescaleType" in ds else "US"
+        shared_fg.PixelValueTransformationSequence = Sequence([pvt])
+        for keyword in _RESCALE_KEYWORDS:
+            if keyword in ds:
+                delattr(ds, keyword)
+
     ds.SharedFunctionalGroupsSequence = Sequence([shared_fg])
 
     # Per-Frame Functional Groups
@@ -2601,13 +2665,25 @@ def zarr_to_dicom(
         if slice_axis.samples and z_idx < len(slice_axis.samples):
             sample = slice_axis.samples[z_idx]
             if sample.metadata and "dicom" in sample.metadata:
-                for keyword, value in sample.metadata["dicom"].items():
+                slice_tags = sample.metadata["dicom"]
+                for keyword, value in slice_tags.items():
                     if keyword in _PER_FRAME_SKIP:
                         continue
                     try:
                         _restore_tag(frame_fg, keyword, value)
                     except Exception:
                         continue
+                # A rescale that varied by slice has no value_transforms to state it; each
+                # slice's own mapping is its only statement (dicom-spec §9), and an Enhanced
+                # object has a per-frame place for it. 0.5.4 wrote none, so the export's
+                # stored values carried no calibration at all.
+                if enhanced and not modality_lut_tags and (
+                        "RescaleSlope" in slice_tags or "RescaleIntercept" in slice_tags):
+                    pvt = Dataset()
+                    pvt.RescaleIntercept = _first(slice_tags.get("RescaleIntercept", 0))
+                    pvt.RescaleSlope = _first(slice_tags.get("RescaleSlope", 1))
+                    pvt.RescaleType = str(_first(slice_tags.get("RescaleType", "US")))
+                    frame_fg.PixelValueTransformationSequence = Sequence([pvt])
 
         # Temporal position for 4D
         if is_4d and time_axis:

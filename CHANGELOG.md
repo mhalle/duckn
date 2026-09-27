@@ -61,6 +61,21 @@ pinned by a test that fails on 0.5.4 (`tests/test_review_055.py`).
   tables (plain and segmented) and its UID are indexed by stored values. They joined
   `dicom_tags.STORED_ENCODING`, so a copy of rescaled values no longer carries them.
 
+### Fixed - Enhanced DICOM rescale
+- **`zarr_to_dicom` wrote an Enhanced CT/MR/PET's rescale at the top level**, which those IODs
+  do not contain: PS3.3 puts it in the Pixel Value Transformation functional group
+  (C.7.6.16.2.9), mandatory in Enhanced CT and PET. It is written in the shared functional
+  groups now. GDCM reads either place; a strict validator does not.
+- **The reader looked only at the top level**, so an Enhanced object stating its rescale where
+  the standard puts it came in uncalibrated. A shared Pixel Value Transformation, or per-frame
+  ones that all agree, is read as the value transform; per-frame ones that differ are reported
+  and the stored values kept.
+- **An export of a store whose rescale varied by slice carried no calibration at all**: the
+  per-slice `RescaleSlope`/`Intercept` were kept in `samples[i].metadata.dicom` (0.5.4) and
+  then skipped by the export. An Enhanced export writes each as that frame's Pixel Value
+  Transformation. (Re-reading such a file still gives uncalibrated values, reported: the
+  per-frame mappings are not yet carried into `samples[i].metadata` on import.)
+
 ### Fixed - adapters and `io.write`
 - **`from_sitk` / `from_nifti` with `metadata=` no longer carry a source's format extensions
   onto a derived array** (duckn-spec §4.5, §4.7). A shrunk float image kept `dicom`'s

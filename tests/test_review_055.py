@@ -575,3 +575,55 @@ def test_every_palette_attribute_follows_stored_values(tag):
     assert dt.tags_from_sitk([{k: "256\\0\\16", "0008|0060": "CT"}])[0] == {"Modality": "CT"}
     if vr != "OW":   # binary values are left out unless asked for, whatever their units
         assert dt.keyword_of(tag) in dt.dataset_tags(ds, stored_values=True)
+
+
+# ---------------------------------------------------------------------------
+# 10, D29. an Enhanced object's rescale is a functional group
+# ---------------------------------------------------------------------------
+
+
+class TestEnhancedRescale:
+    def _series(self, tmp_path, edit):
+        from test_dicom_convert_gaps import _series
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return _series(tmp_path, edit)
+
+    def test_a_uniform_rescale_is_the_shared_group(self, tmp_path):
+        from duckn.dicom_convert import dicom_to_zarr, zarr_to_dicom
+
+        def ct(i, ds):
+            ds.Modality = "CT"
+            ds.RescaleSlope, ds.RescaleIntercept, ds.RescaleType = 1, -1024, "HU"
+        z, m = self._series(tmp_path, ct)
+        assert m.value_transforms
+        out = tmp_path / "e.dcm"
+        zarr_to_dicom(z, out)
+        ds = pydicom.dcmread(out)
+        assert ds.SOPClassUID == "1.2.840.10008.5.1.4.1.1.2.1"   # Enhanced CT
+        assert "RescaleSlope" not in ds and "RescaleIntercept" not in ds
+        pvt = ds.SharedFunctionalGroupsSequence[0].PixelValueTransformationSequence[0]
+        assert (float(pvt.RescaleSlope), float(pvt.RescaleIntercept), pvt.RescaleType) == \
+            (1.0, -1024.0, "HU")
+        # and duckn reads it back from there
+        back = tmp_path / "back.zarr"
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            dicom_to_zarr(out, back)
+        vt = _meta(back).value_transforms[0]
+        assert (vt.parameters["slope"], vt.parameters["intercept"]) == (1.0, -1024.0)
+
+    def test_a_varying_rescale_is_written_per_frame(self, tmp_path):
+        from duckn.dicom_convert import zarr_to_dicom
+
+        def vary(i, ds):
+            ds.Modality = "CT"
+            ds.RescaleSlope, ds.RescaleIntercept, ds.RescaleType = [1, 2, 1][i], -1024, "HU"
+        z, m = self._series(tmp_path, vary)
+        assert not m.value_transforms
+        out = tmp_path / "e.dcm"
+        zarr_to_dicom(z, out)
+        ds = pydicom.dcmread(out)
+        slopes = [float(fg.PixelValueTransformationSequence[0].RescaleSlope)
+                  for fg in ds.PerFrameFunctionalGroupsSequence]
+        assert slopes == [1.0, 2.0, 1.0]
