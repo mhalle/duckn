@@ -519,3 +519,59 @@ class TestAdapterAxes:
         with pytest.raises(ValueError, match="axes"):
             write(Volume(raw=np.zeros((2, 2, 2, 2), np.uint8), metadata=m), tmp_path / "x.zarr")
         assert not (tmp_path / "x.zarr").exists()
+
+
+# ---------------------------------------------------------------------------
+# 9. a lut over uint64 stored values
+# ---------------------------------------------------------------------------
+
+
+class TestLutUnsigned64:
+    def test_a_large_uint64_clamps_to_the_last_entry(self):
+        from duckn.zarr_io import _apply_lut
+        data = np.array([0, 1, 2, 2**63, 2**64 - 1], dtype=np.uint64)
+        got = _apply_lut(data, {"first_value": 0, "values": [10.0, 20.0, 30.0]},
+                         np.dtype(np.float64))
+        assert got.tolist() == [10.0, 20.0, 30.0, 30.0, 30.0]
+
+    def test_a_table_above_int64(self):
+        from duckn.zarr_io import _apply_lut
+        data = np.array([2**63 + 4, 2**63 + 5, 2**63 + 9, 3], dtype=np.uint64)
+        got = _apply_lut(data, {"first_value": 2**63 + 5, "values": [1.0, 2.0]},
+                         np.dtype(np.float64))
+        assert got.tolist() == [1.0, 1.0, 2.0, 1.0]
+
+    def test_signed_and_scalar_still_clamp(self):
+        from duckn.zarr_io import _apply_lut
+        p = {"first_value": -1, "values": [5.0, 6.0, 7.0]}
+        assert _apply_lut(np.array([-5, -1, 0, 1, 9], np.int16), p,
+                          np.dtype(np.float32)).tolist() == [5, 5, 6, 7, 7]
+        assert float(_apply_lut(np.int8(0), p, np.dtype(np.float32))) == 6.0
+        assert _apply_lut(np.array([True, False]), {"values": [1.0, 2.0]},
+                          np.dtype(np.float32)).tolist() == [2.0, 1.0]
+
+
+# ---------------------------------------------------------------------------
+# 11. the palette is stated in stored values (dicom-spec §5.10)
+# ---------------------------------------------------------------------------
+
+
+# LITERAL, as in test_dicom_tags_gaps: a list read from dt.STORED_ENCODING shrinks with it
+@pytest.mark.parametrize("tag", [0x00281101, 0x00281102, 0x00281103, 0x00281104, 0x00281111,
+                                 0x00281112, 0x00281113, 0x00281199, 0x00281201, 0x00281202,
+                                 0x00281203, 0x00281204, 0x00281221, 0x00281222, 0x00281223,
+                                 0x00281224])
+def test_every_palette_attribute_follows_stored_values(tag):
+    from pydicom.datadict import dictionary_VR
+    from pydicom.dataset import Dataset
+    import duckn.dicom_tags as dt
+    ds = Dataset()
+    ds.Modality = "CT"
+    vr = dictionary_VR(tag).split(" or ")[0]
+    value = {"US": [256, 0, 16], "UI": "1.2.3", "OW": b"\x00\x01"}[vr]
+    ds.add_new(tag, vr, value)
+    assert dt.dataset_tags(ds) == {"Modality": "CT"}
+    k = f"{tag >> 16:04x}|{tag & 0xFFFF:04x}"
+    assert dt.tags_from_sitk([{k: "256\\0\\16", "0008|0060": "CT"}])[0] == {"Modality": "CT"}
+    if vr != "OW":   # binary values are left out unless asked for, whatever their units
+        assert dt.keyword_of(tag) in dt.dataset_tags(ds, stored_values=True)

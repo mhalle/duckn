@@ -245,11 +245,24 @@ def _apply_lut(data: np.ndarray, params: dict, work: np.dtype) -> np.ndarray:
         raise ValueError(
             f"lut transform requires integer stored values, got {idx.dtype}"
         )
-    idx = idx.astype(np.int64, copy=False) - int(params.get("first_value", 0))
+    if idx.dtype == np.bool_:
+        idx = idx.astype(np.uint8)
+    # Clamp in the stored type, against the table's range cut to what that type can hold, and
+    # only then take the offset: a uint64 value >= 2**63 cast to int64 first (as 0.5.4 did)
+    # wrapped negative and read the table's FIRST entry instead of its last.
+    first = int(params.get("first_value", 0))
+    last = first + table.size - 1
+    info = np.iinfo(idx.dtype)
+    if last < info.min:            # every storable value is above the table
+        return table[np.full(idx.shape, table.size - 1, dtype=np.intp)]
+    if first > info.max:           # every storable value is below it
+        return table[np.zeros(idx.shape, dtype=np.intp)]
+    lo, hi = max(first, info.min), min(last, info.max)
     # Not in-place: a scalar index (arr[i, j, k]) yields a 0-d result that
     # np.clip cannot write back through `out=`.
-    idx = np.clip(idx, 0, table.size - 1)
-    return table[idx]
+    clipped = np.clip(idx, np.array(lo, dtype=idx.dtype), np.array(hi, dtype=idx.dtype))
+    offset = (clipped - np.array(lo, dtype=idx.dtype)).astype(np.intp) + (lo - first)
+    return table[offset]
 
 
 def _apply_value_transforms(

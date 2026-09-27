@@ -423,6 +423,8 @@ These are the most commonly anonymized fields. When anonymized, include them wit
 | `SmallestImagePixelValue`, `LargestImagePixelValue`, `SmallestPixelValueInSeries`, `LargestPixelValueInSeries`, `SmallestImagePixelValueInPlane`, `LargestImagePixelValueInPlane` | Ranges of stored values |
 | `PixelPaddingValue`, `PixelPaddingRangeLimit` | Stored values marking padding |
 | `RealWorldValueMappingSequence` | Maps *from* stored values |
+| `RedPaletteColorLookupTableDescriptor`, `Green...`, `Blue...`, `AlphaPaletteColorLookupTableDescriptor`, the `LargeRed/Green/Blue...` descriptors | The second value is the first *stored* value the palette maps |
+| `Red/Green/Blue/AlphaPaletteColorLookupTableData`, `SegmentedRed/Green/Blue/AlphaPaletteColorLookupTableData`, `PaletteColorLookupTableUID` | The palette is indexed by stored values; the UID names that mapping |
 
 The padding value is the case that makes this a rule rather than tidiness: CT scanners commonly state `PixelPaddingValue` −2000 with a rescale intercept of −1024, so in an array of Hounsfield units the padding is −3024, and a reader masking −2000 would mask nothing.
 

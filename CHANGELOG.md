@@ -52,6 +52,15 @@ pinned by a test that fails on 0.5.4 (`tests/test_review_055.py`).
   (duckn-spec §3.2). nifti-spec §2 had mapped it to "space_direction or unit", neither of which
   a time axis can hold. An export still reads `thickness` from a store written before.
 
+### Fixed - values and tags
+- **A `lut` over `uint64` stored values** cast them to `int64` first, so a value at or above
+  2**63 wrapped negative and read the table's first entry instead of clamping to its last. The
+  clamp is taken in the stored type now, and a table placed above `int64` works.
+- **The palette is stored-value metadata** (dicom-spec §5.10): the Red/Green/Blue/Alpha (and
+  Large) Palette Color LUT Descriptors state the first *stored* value they map, and the palette
+  tables (plain and segmented) and its UID are indexed by stored values. They joined
+  `dicom_tags.STORED_ENCODING`, so a copy of rescaled values no longer carries them.
+
 ### Fixed - adapters and `io.write`
 - **`from_sitk` / `from_nifti` with `metadata=` no longer carry a source's format extensions
   onto a derived array** (duckn-spec §4.5, §4.7). A shrunk float image kept `dicom`'s

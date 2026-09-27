@@ -115,6 +115,14 @@ STORED_ENCODING = frozenset({
     0x00280110, 0x00280111,                  # Smallest / Largest Image Pixel Value in Plane
     0x00280120, 0x00280121,                  # Pixel Padding Value, Pixel Padding Range Limit
     0x00409096,                              # Real World Value Mapping Sequence
+    # The palette: each descriptor's second value is the first STORED value mapped, and the
+    # tables (plain, segmented, large) are indexed by stored values; the UID names that
+    # mapping. A copy of other values would be colored by the wrong entries.
+    0x00281101, 0x00281102, 0x00281103, 0x00281104,   # R/G/B/Alpha Palette Color LUT Descriptor
+    0x00281111, 0x00281112, 0x00281113,               # Large R/G/B Palette Color LUT Descriptor
+    0x00281199,                                       # Palette Color LUT UID
+    0x00281201, 0x00281202, 0x00281203, 0x00281204,   # R/G/B/Alpha Palette Color LUT Data
+    0x00281221, 0x00281222, 0x00281223, 0x00281224,   # Segmented R/G/B/Alpha Palette Color LUT Data
 })
 #: SimpleITK's keys for the two excluded attributes whose facts a caller moves into convention
 #: fields (dicom-spec §2): Slice Thickness -> the slice axis' ``thickness`` (or per sample),
