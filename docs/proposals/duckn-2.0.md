@@ -1,9 +1,9 @@
 # duckn convention 2.0 — draft specification
 
-**Status:** draft for review, revision 4, 2026-09-27. Not implemented. Supersedes the two
+**Status:** draft for review, revision 5, 2026-09-27. Not implemented. Supersedes the two
 world-frame proposals of 2026-09-26/27, whose decisions it records in §16. Revisions 2–4 answer
-three adversarial rounds and a study of every extension (§18); the decisions still open are in
-§19.
+three adversarial rounds and a study of every extension; revision 5 follows duckn 0.6.1's
+converter fixes (§18); the decisions still open are in §19.
 
 2.0 keeps NRRD's principles and replaces the vocabulary that made them hard to read. It is a
 breaking change, made once; a 2.0 reader reads every 1.x file (§14).
@@ -745,13 +745,15 @@ A 2.0 reader maps every 1.x file in one function; writers write 2.0.
 | a `-time` space | the three, plus a time axis `{ "id": "t" }` |
 | `scanner-xyz`, `3D-right-handed`, `3D-left-handed`, the general 3D names | three axes without `positive`; a stated handedness is reported as not carried over |
 | `space_dimension: n` | n axes without `positive` |
-| a spatial axis's `unit` | the world axes' `unit`, normalized to UCUM (`µm`, `micron`, `micrometer` → `um`; `sec` → `s`; `ppm` → `[ppm]`); a file whose spatial axes disagree is refused |
+| a spatial axis's `unit` | each world axis takes the unit of the spatial axes whose `space_direction` has a nonzero component along it, normalized to UCUM (`µm`, `micron`, `micrometer` → `um`; `sec` → `s`; `ppm` → `[ppm]`); a world axis no spatial axis steps along takes the unit all spatial axes share, if they share one. Spatial axes in different units are legitimate when each steps along world axes of its own unit (a grid permuted against a world in `mm` and `um`, as NRRD's per-world-axis `space units` state it); a file is refused only when one world axis would take two units (an oblique step across axes in different units) |
 | `space_origin` | `origin` |
 | `axes` | `dimensions` |
 | `space_direction` | `step` |
 | `kind: "domain" / "space" / "time"` with a direction | implied by the step |
 | `kind: "time"` with per-sample times and no direction | a time axis added to the world; the dimension steps along it by one time unit, each sample's time its `position` |
 | `kind: "time"` with no times | a dimension that states nothing; no time axis is added |
+| `kind: "domain"` with per-sample positions, a unit and no direction (a NIfTI spectrum in `Hz`, `ppm` or `rad/s`, as duckn 0.6.1 writes it) | a world axis in that unit is added (§3.3's chemical shift; §19 item 3); the dimension steps along it by one unit, each sample's coordinate its `position` |
+| `kind: "domain"` with neither positions nor direction | a dimension that states nothing |
 | `kind` of a range kind | `components`, the same word |
 | `measurement_frame` | `frame` on each spatial components dimension; on a file with none, the `frame` of the extension whose vectors it governs (`dwmri`); otherwise it is reported as not carried over. A 1.0 file's frame is in columns and is transposed. |
 | `samples[i].position` (a distance) | `samples[i].position` divided by the spacing |
@@ -766,6 +768,16 @@ A 2.0 reader maps every 1.x file in one function; writers write 2.0.
 | an extension's own `space_transforms` | `world.transforms`, the target qualified by the extension's name |
 | a 1.x target `to.name` | `to.reference` |
 | `centering`, `thickness`, `color_space`, `intent`, `unit_systems`, `extensions` | unchanged |
+
+**Files from duckn 0.6.0 and earlier converters.** The mapping carries what a 1.x file says, and
+four converters said wrong things until duckn 0.6.1: an irregularly spaced DICOM series' sample
+positions were absolute coordinates along the slice normal, not distances from the origin; a 4D
+DICOM series with only Temporal Position Identifier had those indices labeled milliseconds; a
+NIfTI vector or tensor file (components in the 5th dimension) gained a one-sample time axis and
+lost its components' kind, and a spectrum in `Hz` or `ppm` became time; an NRRD's `space units`
+were given to spatial axes by position, not by the world axis each steps along. A reader cannot
+detect these, because no 1.x store records which library wrote it (§19 item 8). They are
+re-converted from their sources, not repaired in the mapping.
 
 ## 15. Correspondence
 
@@ -861,10 +873,10 @@ Each extension is revised separately; this is what 2.0 asks of each (from the st
 | `dwmri` | 2.0 (breaking) | A `frame` beside `gradients`/`b_matrices`, defined as in §5.3 (gradients F·g, b-matrices F·B·Fᵀ; absent means unknown), replacing `gradient_frame`; the `vector` DWI dimension becomes `list`; phase-encoding directions name a dimension; the §3 interleaving table (which read axis order fastest-first) is withdrawn. Required before any 2.0 DWI file: an unrevised 1.0 block would read a lost measurement frame as identity. |
 | `seg` | 0.10, wording only | "a `list` axis" → "a dimension with `components: \"list\"`"; binary labelmaps write `values.transforms: []`; no field changes. |
 | `microscopy` | 2.0 (breaking) | `timestamps` and `z_positions` move to core `samples[i].position`; channel `color` becomes a CSS string (as `seg`); §1 against OME 0.6; spectral and FLIM bins (§19). |
-| `nifti` | 2.0 | the world from sform/qform (codes 1–5 are RAS), a differing qform as a `world.transforms` entry, `xyzt_units` onto world axes, `toffset` onto the origin, a 4th dimension that is time only when its unit is a time, intent codes onto `intent` and `components`, names for codes 3 and 4. |
+| `nifti` | 2.0 | the world from sform/qform (codes 1–5 are RAS), a differing qform as a `world.transforms` entry, `xyzt_units` onto world axes, `toffset` onto the origin, a 4th dimension that is time only when its unit is a time (a `Hz`, `ppm` or `rad/s` unit makes it a spectral world axis), intent codes onto `intent` and `components`: a vector or matrix intent's components are the 5th dimension, as nifti1.h lays them out, with a length-1 4th dimension that states nothing, or the 4th dimension in the four-dimensional layout some tools write; names for codes 3 and 4. |
 | `dicom` | 1.1 | Frame of Reference UID → `world.reference` (`dicom:`), Synchronization Frame of Reference UID → an identity transform (`dicom-sync:`), a new section defining those names, per-frame geometry onto `samples`, time only from real times, varying rescale onto `axis_linear`. |
 | `fits` | 2.0 (breaking) | the world is FITS's *intermediate* world coordinates (exact, linear); CTYPE/CUNIT/CRVAL/CDELT/PV on world axes, CRPIX on dimensions; the celestial projection as an extension-defined transform type to `fits:icrs`; a unit table to UCUM. |
-| `nrrd` | 0.2 | `spacings` of a no-space file become world axes (§19); `space units` map one per world axis; range-axis `units` and a scalar file's measurement frame stay in the extension. |
+| `nrrd` | 0.2 | `spacings` of a no-space file become world axes (§19); `space units` map one per world axis (export writes one entry for every world axis, including one no dimension steps along, as NRRD requires); range-axis `units` and a scalar file's measurement frame stay in the extension. |
 | units spec | folded into this document (§19) | the UCUM reading on world axes; normalization tables (OME/UDUNITS, FITS, NIfTI) and the UDUNITS names for export. |
 | transform spec | folded into §7 (§19) | the derived spaces' formulas move to the implementer's guide. |
 | `keyvalues`, `provenance`, `presentation` | wording | `presentation` requires `[]` before its windows apply. |
@@ -901,6 +913,13 @@ normalization; the measurement frame of a DWI file; 1.x §4.5 and §4.7 carried 
 groups with 1.x members; `intent` wording; one home per extension fact; OME 0.6's centering and
 axis limits.
 
+**duckn 0.6.1 (revision 5).** The extension study found four 1.x converter defects; 0.6.1 fixed
+them in 1.x, each toward what this draft already specified (§5.4 positions from the origin, the
+`dicom` row's time only from real times, the `nifti` row's time only for a time unit, §15.1's
+units per world axis). Answered by revision 5: §14's unit rule (it refused files 0.6.1 writes),
+a §14 row for the spectral `domain` axis 0.6.1 writes, the `nifti` row's component layout, the
+note on files from older converters, and §19 item 8.
+
 ## 19. Open decisions
 
 1. **Transforms from derived spaces.** 2.0 drops `index`, `axis-aligned` and
@@ -921,3 +940,8 @@ axis limits.
 6. **Template names.** Whether `nifti:mni152` names any MNI template the header claims, or finer
    names (`mni152nlin2009c`) are defined for the variants that differ by millimeters.
 7. **Folding the units and transform specifications into this document.**
+8. **The writing software.** Nothing in a 1.x store says which library and version wrote it,
+   so a reader cannot tell a file from a converter later found defective (§14's note). A 2.0
+   field naming the writer (and its version) beside `version` would let a reader recognize
+   such files; the `provenance` extension could hold it instead, but a core field is read by
+   every reader.
