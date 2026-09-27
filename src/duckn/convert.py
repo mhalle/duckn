@@ -345,6 +345,12 @@ def _header_to_metadata(
             top_nrrd[key] = str(header[field]) if key == "content" else float(header[field])
     if top_nrrd or any(ax.extensions and "nrrd" in ax.extensions for ax in axes):
         extensions["nrrd"] = {"version": NRRD_EXTENSION_VERSION, **top_nrrd}
+        if "old_min" in top_nrrd or "old_max" in top_nrrd:
+            # the stored values are a QUANTIZATION of values that spanned old min..old max, and
+            # NRRD leaves the forward mapping implicit: no transform is claimed, and the file
+            # declares 1.2 so the absent value_transforms reads as "not stated" rather than, as
+            # in 1.0, "these are the values" (duckn-spec §3.1, convention 1.2)
+            meta_kwargs["version"] = "1.2"
     unkept = sorted(
         k for k in header
         if k in _NRRD_SPEC_FIELDS and k not in _NRRD_STORAGE_FIELDS

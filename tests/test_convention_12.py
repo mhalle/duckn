@@ -160,3 +160,21 @@ def test_layers_is_a_0_10_field_and_a_group_block_is_written_as_0_10():
     from duckn.seg_model import SegmentationExtension
     array_block, _ = normalized_for_writing(SegmentationExtension(version="0.9", segments=[]))
     assert array_block.version == SEG_VERSION == "0.9"      # arrays stay readable by 0.9
+
+
+def test_an_nrrd_with_old_min_and_max_does_not_claim_its_values_are_the_quantity(tmp_path):
+    nrrd = pytest.importorskip("nrrd")
+    from duckn.convert import nrrd_to_zarr
+    from duckn.zarr_io import read_duckn_metadata
+    src = tmp_path / "q.nrrd"
+    nrrd.write(str(src), np.zeros((2, 2, 2), np.uint8),
+               {"space": "left-posterior-superior", "space directions": np.eye(3),
+                "old min": -1.5, "old max": 2.5})
+    nrrd_to_zarr(str(src), str(tmp_path / "q.zarr"))
+    meta = read_duckn_metadata(str(tmp_path / "q.zarr"))
+    assert meta.values_stated() is False
+    plain = tmp_path / "p.nrrd"
+    nrrd.write(str(plain), np.zeros((2, 2, 2), np.uint8),
+               {"space": "left-posterior-superior", "space directions": np.eye(3)})
+    nrrd_to_zarr(str(plain), str(tmp_path / "p.zarr"))
+    assert read_duckn_metadata(str(tmp_path / "p.zarr")).values_stated() is True
