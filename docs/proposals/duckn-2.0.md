@@ -1,8 +1,8 @@
 # duckn convention 2.0 — draft specification
 
-**Status:** draft for review, revision 2, 2026-09-27. Not implemented. Supersedes the two
-world-frame proposals of 2026-09-26/27, whose decisions it records in §15. Revision 2 answers
-the first adversarial round (§17).
+**Status:** draft for review, revision 3, 2026-09-27. Not implemented. Supersedes the two
+world-frame proposals of 2026-09-26/27, whose decisions it records in §15. Revisions 2 and 3
+answer the adversarial rounds recorded in §17.
 
 2.0 keeps NRRD's principles and replaces the vocabulary that made them hard to read. It is a
 breaking change, made once; a 2.0 reader reads every 1.x file (§13).
@@ -41,6 +41,12 @@ position = origin + Σ index_d · step_d        (over the dimensions d that have
 
 where `origin` and every `step` have one component per world axis. This is NRRD's model
 (`space origin`, `space directions`) unchanged; only the names and the grouping are new.
+
+The formula places a sample only as far as its dimensions are stated. Samples that differ along
+a dimension that states nothing (§5) have no stated relation in the world: the formula gives
+them one point, and that is not a claim that they coincide. A world axis that no dimension steps
+along gives every sample the origin's coordinate on it, which is a claim (one time point, one
+slice position), so a writer includes such an axis only when that is true.
 
 ---
 
@@ -94,14 +100,21 @@ What the array represents as a whole. Defined values; others may be used and rea
 | `"diffusion-tensor"` | diffusion tensors, on a matrix `components` dimension |
 | `"diffusion-weighted"` | a series of diffusion-weighted measurements, on a `list` dimension; the gradients are the `dwmri` extension's |
 | `"signed-distance"` | the signed distance to a surface, in `values.unit`, negative inside |
-| `"displacement-field"` | a displacement `d` on a `vector` dimension: the position `p` corresponds to `p + d(p)` |
+| `"displacement-field"` | a displacement `d` on a `vector` dimension, defined on this array's grid: the point `p` corresponds to `p + d(p)`, in this world's coordinates (the field of a registration's fixed image, sampled where it is used) |
 | `"velocity-field"` | velocities on a `vector` dimension |
 
 ### 2.3 `extensions`
 
 Each extension's top-level block carries its `version`. A dimension may carry a block for the
 same extension (§5); it has no version of its own and is read under the top-level block's.
-Extensions keep their own specifications, each revised for 2.0 separately (§16).
+Extensions keep their own specifications, each revised for 2.0 separately (§16); until an
+extension is revised, a 2.0 file may carry its current version, read under its own
+specification, with the extension's 1.x names (`measurement_frame`, `kind`, an axis) read as
+their 2.0 counterparts (§13).
+
+An `intent` or a `world.name` that refers to an extension (`diffusion-weighted`, `dicom:…`)
+does not require that extension's block. Without it the file is incomplete, not invalid: it
+says what the array is and leaves the details unstated.
 
 ---
 
@@ -121,7 +134,7 @@ Extensions keep their own specifications, each revised for 2.0 separately (§16)
 
 | Field | Meaning |
 |---|---|
-| `axes` | The world's axes, in the order of every `origin`, `step` and per-sample vector's components. Its length is the world's dimension. Required when `world` is present. |
+| `axes` | The world's axes, in the order of the components of `origin`, of every `step`, and of `samples[i].origin` and `samples[i].steps`. Its length is the world's dimension. Required when `world` is present. |
 | `name` | The frame's identity, when known: arrays whose worlds have the same `name` share one set of physical coordinates. Extension-qualified (`"dicom:<FrameOfReferenceUID>"`, `"nifti:mni152"`) or ad hoc (no colon). An extension defines the names under its prefix. |
 | `transforms` | How this world relates to other frames (§7). |
 
@@ -134,7 +147,7 @@ cannot. Its one parse, the extension prefix, happens in one resolver.
 | Field | Meaning |
 |---|---|
 | `name` | A short identifier, unique among this world's axes (`"x"`, `"t"`). Transforms address axes by it (§7): an axis a transform acts on must have one. |
-| `unit` | The unit of this coordinate. Every `origin`, `step` and per-sample component along this axis is in it. A string is a UCUM code (case-sensitive: `mm`, `um`, `s`, `ms`, `Hz`, `[ppm]`); a structured unit follows the units spec. |
+| `unit` | The unit of this coordinate: the component along this axis of `origin`, of every `step`, and of `samples[i].origin` and `samples[i].steps` is in it. (The unit of vector or tensor *values* is `values.unit`, §6.) A string is a UCUM code (case-sensitive: `mm`, `um`, `s`, `ms`, `Hz`, `[ppm]`); a structured unit follows the units spec. |
 | `positive` | For a spatial axis: the direction in which coordinates increase. One of `left`, `right`, `anterior`, `posterior`, `superior`, `inferior`. Absent: unknown. |
 
 **What an axis measures follows from its unit.** An axis whose unit is a UCUM length is spatial;
@@ -150,9 +163,9 @@ names where values *grow*, not a span from one end to the other: `"positive": "l
 coordinates increase toward the patient's left, as CF's `positive: "up"` and ISO 19111's axis
 direction state it. The opposite end is the pair's other term.
 
-**Handedness.** When exactly three axes carry `positive`, one from each pair, map each term to
-its LPS unit vector (left +x, right −x, posterior +y, anterior −y, superior +z, inferior −z) in
-axis order: the determinant of the matrix whose columns are those vectors is +1 (right-handed)
+**Handedness.** When exactly three axes carry `positive`, one from each pair, take those three
+in axis order, ignoring the others (time, a chemical shift), and map each term to its LPS unit
+vector (left +x, right −x, posterior +y, anterior −y, superior +z, inferior −z): the determinant of the matrix whose columns are those vectors is +1 (right-handed)
 or −1 (left-handed). Otherwise the handedness is not stated. It is never written.
 
 **A time axis** increases toward later. Its zero is the writer's: the origin's time component
@@ -173,12 +186,14 @@ gives the first sample's time on it (§4).
 
 ## 4. `origin`
 
-The world position of the first sample (index 0 on every dimension), one component per world
-axis. For a time axis it is the first sample's time; a writer with no other zero measures time
+The world point at index 0 on every dimension (position 0, where `samples` places samples by
+position, §5.4), one component per world axis. On a regular grid that is the first sample; where
+samples are placed by position it is their common reference, such as a time zero from which PET
+frames are placed at their middles. For a time axis it is the first sample's time; a writer with no other zero measures time
 from the start of the acquisition. The origin is a point, not a property of the world: arrays
 that share a world have their own origins.
 
-The position does not depend on `centering` (§5.1): the origin is where the first sample *is*.
+The origin does not depend on `centering` (§5.1): it is a point, not the corner of a cell.
 
 **Without an origin**, the steps still give the geometry relative to the first sample (spacing,
 direction, extent), but not where the array is in the world.
@@ -192,7 +207,8 @@ name is Zarr's `dimension_names` entry and is not repeated here. Elsewhere in th
 dimension is referred to by its index in this list (§6).
 
 Each dimension has at most one of `step` (§5.1) and `components` (§5.2). A dimension with
-neither states nothing about what moving along it means.
+neither states nothing about what moving along it means, and may carry only `samples` (with
+`metadata` alone) and `extensions`.
 
 ### 5.1 A dimension that moves through the world
 
@@ -220,8 +236,9 @@ sample's position.
   The grid ends at the first and last samples. A field sampled at grid points is node-centered,
   and so is a series whose samples are instants (fMRI volumes timed by their acquisition).
 
-It applies along the step as a whole, so on a step that moves through space and time at once
-(§5.1, below) a cell also spans time; `thickness`, not the cell, states what was measured.
+On a step that moves through space and time at once (below), `centering` describes the step's
+spatial part; its time part places each sample at an instant (fMRI slice timing: each slice is
+a spatial cell acquired at one moment).
 
 **`thickness`** is centered on the sample's position. For a spatial dimension it is measured
 perpendicular to the steps of the array's other spatial dimensions: a slice's thickness normal
@@ -230,15 +247,16 @@ measured along the step: a time frame's duration. It is distinct from the spacin
 step's length.
 
 A step's non-zero components say what the dimension moves through: a dimension stepping only
-along spatial axes is spatial, one stepping along a time axis is temporal, and a step may move
-through space and time at once (fMRI slice timing: each slice is 3 mm higher and 0.055 s
-later).
+along spatial axes is spatial; along a time axis, temporal; along another continuous axis (a
+chemical shift), a dimension of that coordinate. A step may move through space and time at once
+(fMRI slice timing: each slice is 3 mm higher and 0.055 s later).
 
 The steps of the dimensions that have one are **linearly independent**: two indices never land
 on one position. There may be fewer of them than world axes (a single 2D slice in a 3D world).
 
-**A dimension of length 1** may have a step. With no second sample its length is not a spacing:
-it states only a direction, usually carrying `thickness`. A single slice with a known thickness
+**A dimension of length 1** may have a step. With no second sample its length is not a spacing
+and `centering` gives it no extent: the step states only a direction (either sense, any non-zero
+length), and `thickness` alone gives the extent along it. A single slice with a known thickness
 is written this way, with a length-1 dimension along its normal.
 
 ### 5.2 A dimension that holds the parts of one value
@@ -254,6 +272,9 @@ is written this way, with a length-1 dimension along its normal.
 | `frame` | For the spatial kinds: the basis the components are written in (§5.3). |
 | `samples` | Per-sample metadata (§5.4). |
 | `extensions` | Per-dimension extension metadata (§2.3). |
+
+Where a kind with a size fixed by the world (`vector`, `covariant-vector`) and a sized kind
+(`3-gradient`) both fit, a writer uses the first.
 
 The vocabulary is NRRD's range kinds, word for word, so a NRRD file's `kinds` map without a
 table. Where a size is given, the dimension's length in `shape` must equal it.
@@ -304,10 +325,11 @@ components: a quantity in an unsigned integer type spans that type's full range 
 array read through `transforms: []`, 255 is 1.0); a floating-point quantity is the components
 themselves. A color space is never stated by an ICC profile. Absent: unknown.
 
-**`frame`** gives the basis a spatial kind's components are written in: a square matrix with
-one row and one column per spatial world axis, in their order. It is 1.x's `measurement_frame`,
-moved onto the dimension it describes. With F the frame, the components in the world's spatial
-axes are:
+**`frame`** gives the basis a spatial kind's components are written in: a square matrix, written
+as a list of rows (as every matrix in duckn is), with one row per spatial world axis and one
+column per component. Column c is the c-th basis vector of the components, in world axes. It is
+1.x's `measurement_frame`, moved onto the dimension it describes. With F the frame, the
+components in the world's spatial axes are:
 
 | Kinds | In world axes |
 |---|---|
@@ -315,9 +337,15 @@ axes are:
 | `covariant-vector`, `normal`, `3-gradient`, `3-normal` | F⁻ᵀ · v |
 | the matrix kinds | F · M · Fᵀ (the mask, where present, is unchanged) |
 
-For a rotation, F⁻ᵀ = F. Only the spatial kinds take a `frame`, and only when their spatial size
-equals the world's number of spatial axes. **Absent: the basis is unknown.** A writer whose
-components are already in the world's axes writes the identity matrix, stating it.
+For a rotation, F⁻ᵀ = F. F need not be a rotation, but it must be invertible; a `normal`
+brought into world axes by a non-orthogonal F is renormalized. Only the spatial kinds take a
+`frame`, and only when their spatial size equals the world's number of spatial axes. **Absent:
+the basis is unknown.** A writer whose components are already in the world's axes writes the
+identity matrix, stating it.
+
+**Color interpolation.** A reader may interpolate a color space's encoded components as they
+are (most do), or convert to the space's linear form first for accuracy; `srgb-linear` and
+`display-p3-linear` are already linear.
 
 ### 5.4 `samples`
 
@@ -350,11 +378,13 @@ time, a frame time) is written in `position` on a temporal dimension, or as a ti
 
 | Field | Meaning |
 |---|---|
-| `unit` | What the values measure: a string or a structured unit. Was `sample_units`. A string is shown as written (`HU`); UCUM codes are recommended, and `[arb'U]` states arbitrary units. |
+| `unit` | The unit of the *quantity* (the values after `transforms`), never of stored values the transforms have not been applied to. A string or a structured unit; a string is shown as written (`HU`); UCUM codes are recommended, and `[arb'U]` states arbitrary units. Was `sample_units`. |
 | `transforms` | An ordered list mapping stored values to the quantity, applied first to last. Was `value_transforms`. |
 
 **`transforms: []` states that the stored values are the quantity. An absent `transforms`
-states nothing.** In 2.0 this is the only rule; 1.x files keep their own (§13).
+states nothing**, so with a `unit` and no `transforms` a reader knows what the quantity is but
+not how the stored values give it, and must not show stored values in that unit. In 2.0 this is
+the only rule; 1.x files keep their own (§13).
 
 The transform types are 1.2's, with one parameter renamed:
 
@@ -386,7 +416,7 @@ fact has one place.
 
 | Field | Meaning |
 |---|---|
-| `to` | The target frame: `{ "name": … }`, with `axes` describing the target's axes as world-axis objects (§3.1) unless the name's extension defines them. |
+| `to` | The target frame: `{ "name": … }`, and `axes` describing the target's axes as world-axis objects (§3.1). Without `axes` the target's coordinates are numbers whose units and directions are not stated; a writer states them. |
 | `on` | The names of this world's axes the transform acts on. Absent: all of them. |
 | `forward` | A transform object mapping this world's coordinates (on `on`) to the target's. |
 | `inverse` | A transform object mapping the target's coordinates back. |
@@ -414,8 +444,10 @@ basis of vector components; neither is a transform here.
 - Only a dimension with a `step` may be interpolated. A `components` dimension never is:
   interpolating across it mixes different quantities. A dimension that states neither is not.
 - Values are interpolated as quantities. An affine transform commutes with interpolation, so a
-  reader may interpolate stored values under `linear`; under `lut`, or `axis_linear` along the
-  dimension being interpolated, it applies the transform first.
+  reader may interpolate stored values under `linear` or `[]`; under `lut`, or `axis_linear`
+  along the dimension being interpolated, it applies the transform first. With `transforms`
+  absent the mapping is not stated, and interpolating stored values is the reader's own
+  assumption.
 - A `label-map` (§2.2), and the binary labelmaps of the `seg` extension, are resampled
   nearest-neighbor only.
 - Vectors and tensors are interpolated component by component in one basis; a reader brings them
@@ -430,7 +462,8 @@ basis of vector components; neither is a transform here.
 3. The steps are linearly independent.
 4. A `components` kind's size matches the dimension's length in `shape`.
 5. World axis names are unique. A world uses at most one term of each `positive` pair.
-6. `frame` is square, one row and column per spatial world axis, on a spatial kind (§5.3).
+6. `frame` is square and invertible, one row and column per spatial world axis, on a spatial
+   kind (§5.3).
 7. A `color_space` fits its kind (§5.3).
 8. A transform's `on` names axes of this world; its affine has one column per such axis plus
    one, and one row per target axis.
@@ -758,3 +791,25 @@ the ground truth. The defects all four found, and revision 2's answer:
 | `axis_linear`'s `axis` named a dimension | `dimension`, an index |
 | Handedness had no stated rule; units no stated parsing | §3.1: a determinant over the terms; unit strings on world axes are UCUM |
 | Arbitrary units, a distance field's sign, a displacement's direction could not be stated | `[arb'U]`; the `signed-distance` and `displacement-field` intents |
+
+**Round 2 (2026-09-27, revision 2).** The same fourteen scenarios plus two aimed at the new
+rules (irregular slice spacing; a gradient field in a skewed basis), fresh writers and fresh
+blind readers. The writers wrote identical headers for 11 of 16 scenarios, including a single
+slice (its length-1 normal dimension), irregular spacing (the same step and positions) and the
+covariant frame; the rest differed only where the scenario's own facts were truncated or open.
+Both readers recovered every stated position, extent and value, and the world components of the
+skewed gradient, correctly. The defects found, and revision 3's answer:
+
+| Defect | Revision 3 |
+|---|---|
+| §4 called the origin the first sample, while samples placed by position put the first frame elsewhere | the origin is the point at index 0 (position 0) on every dimension |
+| `frame` did not say rows or columns, which matters for a non-orthogonal basis | a list of rows; column c is the c-th basis vector; F need only be invertible |
+| a cell on a space-time step claimed a time extent | `centering` describes the step's spatial part; its time part is an instant |
+| a dimension stating nothing put all its samples at one world point | the formula places samples only as far as their dimensions are stated (§1) |
+| a length-1 dimension's cell extent contradicted "not a spacing" | its step is a direction only; `thickness` alone gives its extent |
+| `values.unit` with no `transforms` could be applied to stored values | the unit is the quantity's; with no mapping, stored values are not shown in it |
+| the unit of vector components against the world axes' unit | world-axis units govern positions and steps; `values.unit` governs values |
+| target axes deferred to an extension that defines none | `to.axes` is stated; without it the target's units and directions are unknown |
+| 1.x extensions inside a 2.0 file; an intent or name without its extension | allowed, read under their own versions; incomplete, not invalid |
+| interpolation with no stated mapping; color interpolation; the "other" dimension class; handedness in a 4-axis world | §8, §5.3, §5.1, §3.1 |
+
