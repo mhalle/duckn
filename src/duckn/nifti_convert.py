@@ -56,12 +56,17 @@ def _require_nibabel() -> None:
 # Mappings
 # ---------------------------------------------------------------------------
 
-# sform_code → space name
+# sform_code / qform_code → space name. NIfTI defines the world as RAS+ (+x Right, +y Anterior,
+# +z Superior) for EVERY code; a code says which RAS frame (the scanner's, an aligned one, a
+# template), which the `nifti` extension keeps as `sform_code`/`qform_code`. Code 1 was mapped
+# to `scanner-xyz` - a frame with no directions - and code 5 (TEMPLATE_OTHER, added to NIfTI in
+# 2019) not at all, so both lost their orientation on import (found 2026-09-27).
 _SFORM_CODE_TO_SPACE: dict[int, SpaceName] = {
-    1: SpaceName.SCANNER_XYZ,
+    1: SpaceName.RIGHT_ANTERIOR_SUPERIOR,
     2: SpaceName.RIGHT_ANTERIOR_SUPERIOR,
     3: SpaceName.RIGHT_ANTERIOR_SUPERIOR,
     4: SpaceName.RIGHT_ANTERIOR_SUPERIOR,
+    5: SpaceName.RIGHT_ANTERIOR_SUPERIOR,
 }
 
 # space name → default sform_code (for writing back). Anatomical spaces
@@ -845,8 +850,8 @@ _NII_DATATYPE_MAP: dict[int, tuple[str, int]] = {
     256: ("int8", 1), 512: ("uint16", 2), 768: ("uint32", 4),
 }
 
-_NII_SFORM_TO_SPACE: dict[int, str] = {
-    1: "scanner-xyz",
+_NII_SFORM_TO_SPACE: dict[int, str] = {   # every code is RAS+ (see _SFORM_CODE_TO_SPACE)
+    1: "right-anterior-superior",
     2: "right-anterior-superior",
     3: "right-anterior-superior",
     4: "right-anterior-superior",

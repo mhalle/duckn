@@ -101,7 +101,7 @@ class TestSformDecomposition:
         arr = zarr.open_array(store, mode="r")
         meta = DucknMetadata(**arr.attrs["duckn"])
 
-        assert meta.space == "scanner-xyz"
+        assert meta.space == "right-anterior-superior"   # NIfTI is RAS+ for every code
         np.testing.assert_allclose(meta.space_origin, [0, 0, 0])
         np.testing.assert_allclose(meta.axes[0].space_direction, [1, 0, 0])
         np.testing.assert_allclose(meta.axes[1].space_direction, [0, 1, 0])
@@ -135,8 +135,8 @@ class TestSformDecomposition:
         np.testing.assert_allclose(meta.axes[2].space_direction, [0, 0.1, 2.0])
 
     def test_sform_code_mapping(self, tmp_path):
-        """sform_code 1 → scanner-xyz, 4 → RAS with tag."""
-        # code 1 → scanner-xyz
+        """sform_code 1 → RAS (NIfTI is RAS+ for every code), 4 → RAS with tag."""
+        # code 1 → RAS: the code says WHICH RAS frame (the scanner's), and is kept as a tag
         nii_path = tmp_path / "scanner.nii"
         img = _make_nifti(sform_code=1)
         _save_nifti(img, nii_path)
@@ -148,7 +148,8 @@ class TestSformDecomposition:
         store = zarr.storage.LocalStore(str(zarr_path))
         arr = zarr.open_array(store, mode="r")
         meta = DucknMetadata(**arr.attrs["duckn"])
-        assert meta.space == "scanner-xyz"
+        assert meta.space == "right-anterior-superior"
+        assert meta.extensions["nifti"]["tags"]["sform_code"] == 1
 
         # code 4 → RAS + sform_code tag
         nii_path2 = tmp_path / "mni.nii"
@@ -955,3 +956,28 @@ class TestEdgeCases:
         slope, inter = _read_raw_slope_inter(rt_path)
         assert slope == pytest.approx(3.5)
         assert inter == pytest.approx(-50.0)
+
+
+@pytest.mark.parametrize("code", [1, 2, 3, 4, 5])
+def test_every_xform_code_imports_as_ras_and_exports_its_code(tmp_path, code):
+    """NIfTI's world is RAS+ for every xform code (nifti1.h); code 1 used to lose its
+    orientation (scanner-xyz) and code 5, TEMPLATE_OTHER, had no mapping at all. The code
+    itself round-trips through the `nifti` extension."""
+    import nibabel as nib
+    import zarr
+    affine = np.diag([-1.0, 2.0, 3.0, 1.0])
+    affine[:3, 3] = [10.0, -20.0, 30.0]
+    img = nib.Nifti1Image(np.zeros((4, 5, 6), dtype=np.int16), affine)
+    img.header.set_sform(affine, code=code)
+    img.header.set_qform(affine, code=code)
+    nii = tmp_path / "in.nii"
+    nib.save(img, nii)
+    out = tmp_path / "in.zarr"
+    nifti_to_zarr(nii, out)
+    meta = DucknMetadata(**zarr.open_array(zarr.storage.LocalStore(str(out)), mode="r").attrs["duckn"])
+    assert meta.space == "right-anterior-superior"
+    back = tmp_path / "back.nii"
+    zarr_to_nifti(out, back)
+    hdr = nib.load(back).header
+    assert int(hdr["sform_code"]) == code
+    np.testing.assert_allclose(nib.load(back).affine, affine, atol=1e-6)

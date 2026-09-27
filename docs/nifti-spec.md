@@ -53,10 +53,15 @@ The `sform_code` maps to the specification's `space` field:
 
 | `sform_code` | `space` value |
 |---|---|
-| 1 (NIFTI_XFORM_SCANNER_ANAT) | `"scanner-xyz"` |
+| 1 (NIFTI_XFORM_SCANNER_ANAT) | `"right-anterior-superior"` |
 | 2 (NIFTI_XFORM_ALIGNED_ANAT) | `"right-anterior-superior"` |
 | 3 (NIFTI_XFORM_TALAIRACH) | `"right-anterior-superior"` |
 | 4 (NIFTI_XFORM_MNI_152) | `"right-anterior-superior"` |
+| 5 (NIFTI_XFORM_TEMPLATE_OTHER) | `"right-anterior-superior"` |
+
+NIfTI defines its world as RAS+ for every code; the code says which RAS frame is meant, and
+`tags.sform_code` / `tags.qform_code` keep it. Before 0.6.0 code 1 was mapped to `"scanner-xyz"`,
+a frame with no directions, and code 5 was not mapped, so such files lost their orientation.
 
 When both `sform_code` and `qform_code` are 0, the file states no transform: NIfTI-1's "method 1"
 (x = `pixdim[1]` × i, and so on) is kept for Analyze 7.5 compatibility and places the grid in no
