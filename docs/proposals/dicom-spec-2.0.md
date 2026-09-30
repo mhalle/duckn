@@ -88,8 +88,9 @@ Per-slice tags may sit in `samples` on a regular dimension, one with a step and 
   `linear`, or `[]` where the source has none (duckn 2.0 §6: no rescale and no Modality LUT is the
   identity); `values.unit` is Rescale Type (`HU` as `{ "symbol": "HU", "scheme": "UCUM", "code":
   "[hnsf'U]" }`) - for CT, HU where Rescale Type is absent (PS3.3 C.8.2.1 requires it only when it
-  is not HU); for PET, Units (0054,1001) `BQML` as `Bq/mL`; never `US` (unspecified), which states
-  no unit.
+  is not HU); for PET, Units (0054,1001) `BQML` as `Bq/mL`; never `US`, Rescale Type's and Modality LUT
+  Type's defined term for *unspecified* (PS3.3 C.11.1.1.2), which states no unit (a Modality of
+  `US`, ultrasound, is another attribute and stays in the record).
 - **Materialized values** (`stored_values` `false`): the array holds the quantity, and
   `values.transforms` is `[]`.
 - **A rescale that varies along one dimension** is an `axis_linear` on it. Along the slices: one slope and one
