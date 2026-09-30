@@ -748,11 +748,17 @@ def nrrd_to_zarr(
     compressor: str = "zstd",
     level: int = 3,
     overwrite: bool = False,
+    convention: str = "1.x",
+    domain_axes: str | None = None,
 ) -> list[Diagnostic]:
     """Convert an NRRD file to a duckn Zarr v3 store.
 
     Uses pynrrd to decompress and zarr to recompress the data.
     Per-axis fields are stored in C order (slowest-first).
+
+    ``convention="2.0"`` writes the draft convention 2.0 instead (EXPERIMENTAL: see
+    :mod:`duckn.convention2_write`); ``domain_axes="space"`` then asserts that a no-space
+    file's ``domain`` axes are spatial.
 
     Parameters
     ----------
@@ -776,6 +782,12 @@ def nrrd_to_zarr(
         chunks = _auto_chunks(shape, data.dtype)
 
     attrs = duckn_attrs(meta)
+    if convention == "2.0":
+        from duckn.convention2_write import upgrade
+        attrs = {"duckn": upgrade(attrs["duckn"], shape, str(data.dtype), what="convert NRRD",
+                                  source_format="NRRD", domain_axes=domain_axes)}
+    elif convention != "1.x":
+        raise ValueError(f"convention {convention!r}: \"1.x\" or \"2.0\"")
 
     is_zip = _is_zip_path(zarr_path)
     with open_store(zarr_path, mode="w", overwrite=overwrite) as store:
