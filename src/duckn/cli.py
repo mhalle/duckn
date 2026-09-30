@@ -357,6 +357,13 @@ def roundtrip(
 )
 @click.option("--level", type=int, default=3, help="Compression level (default: 3)")
 @click.option("--overwrite", is_flag=True, help="Overwrite existing output")
+@click.option(
+    "--affine",
+    type=click.Choice(["sform", "qform"]),
+    default="sform",
+    help="Which transform places the array when both are set: sform (default; nibabel's, "
+    "FSL's and SPM's rule) or qform. nifti1.h leaves the choice to the reader.",
+)
 def from_nifti(
     input_path: str,
     output_path: str,
@@ -364,6 +371,7 @@ def from_nifti(
     compressor: str,
     level: int,
     overwrite: bool,
+    affine: str,
 ) -> None:
     """Convert a NIfTI file to a duckn Zarr v3 store or ZMP manifest.
 
@@ -394,6 +402,7 @@ def from_nifti(
             compressor=compressor,
             level=level,
             overwrite=overwrite,
+            affine=affine,
         )
     click.echo(f"Wrote {output_path}")
 

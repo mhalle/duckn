@@ -1,9 +1,10 @@
 # NIfTI Provenance Extension for duckn
 
 **Extension name:** `nifti`
-**Version:** 1.1
-**Status:** Draft. 1.1 (2026-09-26): `sform_code` and `qform_code` are stated when 0, and
-`xyzt_units` keeps a time unit no axis can carry (§4.2).
+**Version:** 1.2
+**Status:** Draft. 1.2 (2026-09-30): header extensions are kept whole (`tags.extensions`, §4.4).
+1.1 (2026-09-26): `sform_code` and `qform_code` are stated when 0, and `xyzt_units` keeps a time
+unit no axis can carry (§4.2). A reader of 1.1 reads 1.2 whole but for `tags.extensions`.
 
 ---
 
@@ -24,9 +25,9 @@ The following table shows which NIfTI header fields are already captured by Zarr
 | NIfTI field | Captured by | Notes |
 |---|---|---|
 | `dim[0..7]` | Zarr `shape` | Dimension count and sizes |
-| `datatype`, `bitpix` | Zarr `data_type` | Element type |
+| `datatype`, `bitpix` | Zarr `data_type` | Element type. RGB24 (128) and RGBA32 (2304) are uint8 with a trailing `RGB-color` / `RGBA-color` dimension, and scaling does not apply to them (nifti1.h); an export writes such a dimension back as RGB24 / RGBA32. |
 | `pixdim[1..3]` (spatial) | `axes[i].space_direction` magnitude | Voxel spacing |
-| `pixdim[4]` (temporal) | Time axis `samples[k].position` = k × `pixdim[4]`, in the axis `unit` | The interval between volumes (TR). Not `thickness`, which is the extent each sample measures (duckn-spec §3.2); a time axis has no `space_direction` to hold it. A single volume has no interval to state. |
+| `pixdim[4]` (temporal), `toffset` | Time axis `samples[k].position` = `toffset` + k × `pixdim[4]`, in the axis `unit` | nifti1.h's time of volume k (a spectrum's bin k likewise). `pixdim[4]` is the interval between volumes (TR), not `thickness`, which is the extent each sample measures (duckn-spec §3.2). A single volume has no interval to state, and a position only when `toffset` is not 0. duckn 0.6.3 and earlier left `toffset` out of the positions. |
 | `sform44` | `space_origin` + `axes[i].space_direction` | Primary affine decomposition (see §3) |
 | `sform_code` | `space` | Coordinate space identity; the code itself is in `tags` (§4.2) |
 | `qform44` | `space_origin` + `axes[i].space_direction` | Reconstructed from specification fields; only `qform_code` preserved in extension |
@@ -73,6 +74,19 @@ file does not contain.
 All NIfTI sform coordinate systems are RAS-oriented (the NIfTI-1 spec defines the sform output as left-right / posterior-anterior / inferior-superior with the positive direction being right, anterior, superior). Codes 2–4 differ in what the space *means* (alignment target, atlas), not in the axis directions. The specification's `"right-anterior-superior"` captures the geometric orientation; this extension's `sform_code` field (§4.2) preserves the specific interpretation when round-trip fidelity is needed.
 
 This decomposition is exact. No information is lost, and the sform can be reconstructed by assembling the columns back into a matrix.
+
+**Which transform.** nifti1.h defines the qform (method 2) and the sform (method 3) and leaves the
+choice between them to the reader, "depending on its purposes"; readers differ. duckn's converter
+takes the caller's choice (`nifti_to_zarr(..., affine=)`): `"sform"`, the default, uses the sform
+when `sform_code` > 0 and otherwise the qform - nibabel's rule (`get_best_affine`), and FSL's and
+SPM's; `"qform"` prefers the qform. SimpleITK (2.5.6) differs: it takes the qform for an MNI or
+aligned sform beside a scanner qform, and for a sheared sform, so two readers can place one file
+differently. The chosen matrix is used as written: method 3 does not use `pixdim`, so a
+disagreement between its column lengths and `pixdim` is reported and never acted on. A singular or
+non-finite matrix places nothing: it is reported and passed over for the other, and with neither,
+method 1. (duckn 0.6.3 and earlier took the qform whenever the sform's lengths disagreed with
+`pixdim` and otherwise rescaled the sform's columns to `pixdim`.) A quaternion whose b, c, d have
+a squared norm above 1 is normalized as nifti1_io does, where nibabel refuses the file.
 
 ---
 
@@ -223,13 +237,31 @@ Omit the entire field when `intent_code` is 0 (NIFTI_INTENT_NONE).
 | 4 (FTEST) | F-statistic | `"statistical-map"` | `p1` = numerator DOF, `p2` = denominator DOF |
 | 5 (ZSCORE) | Z-score | `"statistical-map"` | — |
 | 1001 (ESTIMATE) | Parameter estimate | `"statistical-map"` | — |
+| 6-24 | the other statistics of nifti1.h (CHISQ ... LOG10PVAL) | `"statistical-map"` | as nifti1.h states per code |
 | 1002 (LABEL) | Label index | `"label-map"` | — |
-| 1005 (SYMMATRIX) | Symmetric matrix | `"diffusion-tensor"` (when appropriate) | — |
+| 1003 (NEURONAME) | Label index, by name | `"label-map"` | — |
+| 1004 (GENMATRIX) | M × N matrix | — | `p1` = M, `p2` = N: a 2 × 2 or 3 × 3 is a matrix dimension, any other shape a `list` |
+| 1005 (SYMMATRIX) | Symmetric matrix | `"diffusion-tensor"` | `p1` = N |
 | 1006 (DISPVECT) | Displacement vector | `"displacement-field"` | — |
-| 1007 (VECTOR) | Generic vector | `"velocity-field"` (when appropriate) | — |
-| 2003 (POINTSET) | Point set | — | — |
+| 1007 (VECTOR) | Generic vector | — | — |
+| 2003 (RGB_VECTOR), 2004 (RGBA_VECTOR) | Color components | — | — |
+| 2006 (FSL_FNIRT_DISPLACEMENT_FIELD) | FSL's displacement field | `"displacement-field"` | components in the 4th dimension, a `vector` |
+| 2007-2009, 2016, 2017 | FSL's spline, DCT and TOPUP coefficient fields | — | components in the 4th dimension, a `list`: never time |
+| 3000-3099 | CIFTI-2 | — | refused (§4.4) |
 | 0 (NONE) | None | — | — |
 | All others | — | — | Raw code preserved here |
+
+A statistical intent's 5th dimension, when there is one, holds the statistic and then its
+parameters per voxel (nifti1.h, "STATISTICAL PARAMETRIC DATASETS"): a `list` dimension. The codes
+and names are nifti1.h's (and, for 2006-2017, FSL's nifti1.h, as nibabel lists them). Earlier
+versions of this table put POINTSET at 2003; it is 1008, and 2003 is RGB_VECTOR.
+
+**Components and the world.** A vector's or tensor's components are written on export in the
+file's world, RAS: v' = R v and T' = R T Rᵀ, where R takes the store's measurement frame (when it
+states one) and then its space (an LPS store negates x and y). A store without nifti tags states
+its intent by its components: 1005 for a 3D symmetric matrix (with `p1` = 3), 1006 for a vector
+whose `intent` is `displacement-field`, 1007 for any other vector. On import NIfTI states no frame
+for the components (ITK writes LPS components in an RAS file), so none is written.
 
 This mapping is a guideline for converters. The NIfTI extension always preserves the exact code; the specification's `intent` provides a coarser human-readable classification.
 
@@ -251,7 +283,7 @@ Acquisition timing metadata for the slice dimension.
 | `code` | string | Slice acquisition order (see table below) |
 | `start` | integer | `slice_start` — index of the first acquired slice |
 | `end` | integer | `slice_end` — index of the last acquired slice |
-| `duration` | number | `slice_duration` — time in seconds to acquire one slice |
+| `duration` | number | `slice_duration` — the time to acquire one slice, in the unit of `pixdim[4]` |
 
 **Slice code values:**
 
@@ -271,7 +303,9 @@ The `slice_dim` in `dim_info` (§4.2) identifies which array dimension these tim
 
 #### `toffset`
 
-Temporal offset in seconds of the first volume relative to some reference time point.
+The time of the first volume (or the first bin of a spectrum), in `pixdim[4]`'s unit
+(`xyzt_units`) - not always seconds. Since duckn 0.6.4 it is also the time axis's first sample
+position (§2); an export takes `toffset` from here when present and from that position otherwise.
 
 ```json
 "toffset": 12.5
@@ -350,6 +384,39 @@ Contains the original NIfTI affine matrices as 4×4 arrays (row-major).
 
 A converter writing back to NIfTI should reconstruct both affines from specification fields, not from these legacy copies. When the qform and sform were identical (the common case from dcm2niix), both matrices will be equal. When they differed — for example, sform in MNI space and qform in scanner space — both originals are available for inspection.
 
+### 4.4 Header extensions, and what is refused
+
+#### `tags.extensions`
+
+Since 1.2. The header extensions the file carried after its header (`esize` > 0), in order, each
+as its code and its bytes, never interpreted:
+
+```json
+"extensions": [ { "code": 6, "content": "YSBjb21tZW50AAAAAAAAAA==" } ]
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `code` | integer | `ecode` |
+| `content` | string | the extension's bytes, base64 (as the file holds them, padding included) |
+
+An export writes them back as they are. They are a source record: a tool that derives an array
+from the store drops them with the rest of this block. duckn 0.6.3 and earlier dropped them
+without a word.
+
+#### Refused
+
+Two kinds of file put their meaning where this extension does not model it, and are refused with
+a message rather than converted into a store that misstates them:
+
+- **CIFTI-2** (intent 3000-3099, or a file nibabel reads as CIFTI-2): a matrix of brain-ordinates
+  described by its XML extension, not an image on a grid;
+- **NIfTI-MRS** (a header extension with code 44): its dimensions 5 to 7 are defined by that
+  extension's JSON.
+
+An Analyze 7.5 header (a `.hdr` without NIfTI's magic) states no transform or units, and is refused
+too.
+
 ## 5. Fields Deliberately Excluded
 
 | NIfTI field | Reason |
@@ -375,7 +442,7 @@ A converter writing back to NIfTI should reconstruct both affines from specifica
 
 ## 6. Consistency Rules
 
-- `sform_code` and `qform_code`, when present, are NIfTI transform codes (0-4); 0 means the file had no such transform.
+- `sform_code` and `qform_code`, when present, are NIfTI transform codes (0-5); 0 means the file had no such transform.
 - When `dim_info` is present, dimension indices must be in the range 0–3 and, if non-zero, must refer to valid spatial dimensions in the array.
 - When `slice_timing` is present, `start` and `end` must be valid indices along the slice dimension identified by `dim_info.slice_dim`. If `dim_info.slice_dim` is unknown (0 or absent), `slice_timing` is still permitted but its axis association is ambiguous.
 - `intent.code` and the specification-level `intent` field should be consistent when both are present. The extension preserves the NIfTI code exactly; the specification provides a coarser label.
@@ -776,4 +843,4 @@ The "absent means unknown" principle applies: omit keys whose values are at thei
 
 **Relationship to NIfTI-2.** NIfTI-2 expanded header field sizes (64-bit dimensions and offsets) but did not add new semantic fields. This extension handles both versions — the `nifti_version` field records which header format was used, and all field definitions are compatible with both versions.
 
-**Tensor component ordering.** NIfTI's SYMMATRIX intent stores upper-triangle components in row-major order: `Dxx Dxy Dxz Dyy Dyz Dzz`. NRRD's `3D-symmetric-matrix` kind uses the same ordering. No reordering is needed during conversion, but this should be verified when the measurement frames differ between source and target.
+**Tensor component ordering.** NIfTI's SYMMATRIX intent stores the lower triangle by rows (nifti1.h): `Dxx Dxy Dyy Dxz Dyz Dzz`. NRRD's and duckn's `3D-symmetric-matrix` is `Dxx Dxy Dxz Dyy Dyz Dzz`. duckn's converter permutes on import and back on export (0.6.4); earlier versions of this note said no reordering was needed, which was wrong.
