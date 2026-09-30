@@ -145,6 +145,23 @@ _NON_TIME_UNITS = frozenset({"Hz", "ppm", "rad/s"})
 
 # Intents whose values are vectors or matrices: nifti1.h puts the components in the 5th
 # dimension (dim[5]), with dim[4] = 1; some writers put them in the 4th instead.
+def _load_ignoring_intercept(nib, path):
+    """``nib.load`` for a file nibabel refuses over a usable ``scl_slope`` beside an intercept
+    that is not finite: its header, with the intercept set to 0, over the file's own data."""
+    from nibabel.arrayproxy import ArrayProxy
+    from nibabel.openers import ImageOpener
+
+    for klass in (nib.Nifti1Image, nib.Nifti2Image):
+        with ImageOpener(str(path), "rb") as fh:
+            try:
+                header = klass.header_class.from_fileobj(fh)
+            except Exception:                    # noqa: BLE001 - not this NIfTI version
+                continue
+        header["scl_inter"] = 0
+        return klass(ArrayProxy(str(path), header), header.get_best_affine(), header)
+    raise ValueError(f"{path}: not a NIfTI-1 or NIfTI-2 file")
+
+
 def _components_kind(intent_code: int, size: int) -> AxisKind:
     if intent_code == 1005:                               # NIFTI_INTENT_SYMMATRIX
         return {6: AxisKind.THREE_D_SYMMETRIC_MATRIX,
@@ -163,6 +180,12 @@ def _components_kind(intent_code: int, size: int) -> AxisKind:
 
 
 _VECTOR_INTENTS = frozenset({1004, 1005, 1006, 1007, 1010, 2003, 2004})
+
+# nifti1.h stores NIFTI_INTENT_SYMMATRIX as the lower triangle, row by row: A00 A10 A11 A20 A21
+# A22, that is xx xy yy xz yz zz. duckn's 3D-symmetric-matrix is xx xy xz yy yz zz (NRRD's
+# order). The permutation is its own inverse. 0.6.3 and earlier took the file's order as duckn's,
+# so a tensor read Dyy as Dxz and Dxz as Dyy. (The 2D order, xx xy yy, is the same in both.)
+_SYMMATRIX_3D_ORDER = [0, 1, 3, 2, 4, 5]
 
 # NIfTI intent codes → convention-level intent strings
 _INTENT_CODE_TO_CONVENTION: dict[int, str] = {
@@ -208,7 +231,13 @@ def nifti_to_zarr(
     input_path = Path(input_path)
     output_path = Path(output_path)
 
-    img = nib.load(str(input_path))
+    try:
+        img = nib.load(str(input_path))
+    except nib.spatialimages.HeaderDataError:
+        # nibabel refuses a usable scl_slope beside an intercept that is not finite; nifti1_io,
+        # NIfTI's reference library, reads that intercept as 0. The file is read here with the
+        # intercept set aside, and the value transform below follows nifti1_io.
+        img = _load_ignoring_intercept(nib, input_path)
     hdr = img.header
 
     # Read raw header directly from file for fields nibabel sanitizes
@@ -360,17 +389,22 @@ def nifti_to_zarr(
             axes.append(AxisMetadata(kind=_components_kind(intent_code_hdr, shape[i])))
         else:
             axes.append(AxisMetadata())
+    if intent_code_hdr == 1005 and components_dim is not None \
+            and axes[components_dim].kind == AxisKind.THREE_D_SYMMETRIC_MATRIX:
+        data = np.take(np.asarray(data), _SYMMATRIX_3D_ORDER, axis=components_dim)
 
     # --- Value transforms from scl_slope/scl_inter ---
     # Use raw header because nibabel sanitizes these in the image header
     value_transforms = None
     scl_slope = float(raw_hdr["scl_slope"])
     scl_inter = float(raw_hdr["scl_inter"])
-    # Skip if unset (NaN or 0) or identity (slope=1, inter=0)
-    slope_set = not (np.isnan(scl_slope) or scl_slope == 0)
-    if slope_set and not (scl_slope == 1.0 and (scl_inter == 0.0 or np.isnan(scl_inter))):
-        if np.isnan(scl_inter):
-            scl_inter = 0.0
+    # As nifti1_io reads them: a slope of 0 or not finite leaves the stored values unscaled,
+    # whatever the intercept; a usable slope beside an intercept that is not finite reads that
+    # intercept as 0. (0.6.3 took an infinite slope as a slope, which no transform can hold.)
+    slope_set = bool(np.isfinite(scl_slope)) and scl_slope != 0
+    if slope_set and not np.isfinite(scl_inter):
+        scl_inter = 0.0
+    if slope_set and not (scl_slope == 1.0 and scl_inter == 0.0):
         value_transforms = [
             ValueTransform(
                 name="linear",
@@ -655,6 +689,14 @@ def zarr_to_nifti(
     if tags and tags.qform_code is not None:
         qform_code_out = tags.qform_code
 
+    # --- A symmetric tensor in nifti1.h's order (see _SYMMATRIX_3D_ORDER) ---
+    sym_axis = next((i for i, ax in enumerate(meta.axes or [])
+                     if ax.kind == AxisKind.THREE_D_SYMMETRIC_MATRIX and i >= 3), None)
+    out_intent = tags.intent.code if tags and tags.intent is not None else (
+        1005 if sym_axis is not None else 0)
+    if sym_axis is not None and out_intent == 1005:
+        data = np.take(np.asarray(data), _SYMMATRIX_3D_ORDER, axis=sym_axis)
+
     # --- Choose NIfTI version ---
     use_nifti2 = False
     if nifti_ext and nifti_ext.nifti_version == 2:
@@ -779,6 +821,9 @@ def zarr_to_nifti(
         elif time_ax.thickness is not None and not time_ax.samples:
             # stores written by 0.5.4 and earlier put pixdim[4] here
             hdr["pixdim"][4] = time_ax.thickness
+
+    if out_intent == 1005 and not (tags and tags.intent is not None):
+        hdr["intent_code"] = 1005                      # the order written is nifti1.h's
 
     # --- Restore NIfTI tags ---
     if tags:

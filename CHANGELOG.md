@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+Converter defects found by the review of the convention 2.0 extension revisions (2026-09-30).
+
+- **A NRRD's `centers` field is read.** NRRD's own name for the field is `centers` (teem writes
+  it); `centerings` is its synonym. pynrrd parses only the synonym and hands `centers` back as a
+  raw string, which 0.6.3 and earlier ignored: a node-centered file read as cell-centered, its
+  origin half a spacing off, and the field was filed under `keyvalues`.
+- **A NIfTI symmetric tensor is reordered.** nifti1.h stores `NIFTI_INTENT_SYMMATRIX` as the
+  lower triangle by rows (xx xy yy xz yz zz); duckn's `3D-symmetric-matrix` is xx xy xz yy yz zz.
+  0.6.3 and earlier took one for the other, so Dyy read as Dxz and Dxz as Dyy. Import and export
+  now permute, and an exported tensor states intent 1005.
+- **NIfTI scaling as nifti1_io reads it.** A usable `scl_slope` beside an intercept that is not
+  finite no longer fails to load (nibabel refuses such a file): the intercept reads as 0. A slope
+  that is not finite leaves the values unscaled, as 0 does; 0.6.3 failed validating it.
+
 ## 0.6.3 — 2026-09-30
 
 Two 1.x converters declared a convention version whose rules their output did not follow, found
