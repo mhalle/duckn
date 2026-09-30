@@ -187,16 +187,19 @@ class TestReviewFixes(unittest.TestCase):
         nifti_to_zarr(Path(tmp) / "a.nii", Path(tmp) / "o.zarr", convention="2.0")
         return dict(zarr.open_array(str(Path(tmp) / "o.zarr"), mode="r").attrs)["duckn"]
 
-    def test_a_world_from_the_qform_is_not_named_by_the_sforms_code(self):
+    def test_the_sform_names_the_frame_and_a_differing_qform_is_a_transform(self):
+        """nifti1.h's precedence (duckn 0.6.4): the sform, used as written, even where its column
+        lengths disagree with pixdim; the scanner qform is a transform to the bare `qform`."""
         import nibabel as nib
         img = nib.Nifti1Image(np.zeros((2, 2, 2), np.int16), np.diag([2.0, 2, 2, 1]))
         img.set_qform(np.diag([2.0, 2, 2, 1]), code=1)
         img.set_sform(np.diag([2.5, 2.5, 2.5, 1]), code=4)  # disagrees with pixdim 2
         d = self._nifti(img)
-        self.assertNotIn("reference", d["world"])                    # the qform: scanner, code 1
+        self.assertEqual(d["world"]["reference"], "nifti:mni152")
+        self.assertEqual(d["dimensions"][0]["step"][0], 2.5)
         (t,) = d["world"]["transforms"]
-        self.assertEqual(t["to"]["reference"], "nifti:mni152")        # the sform, a transform
-        np.testing.assert_allclose(np.array(t["forward"]["affine"])[:, :3], np.eye(3) * 1.25)
+        self.assertEqual(t["to"]["reference"], "qform")
+        np.testing.assert_allclose(np.array(t["forward"]["affine"])[:, :3], np.eye(3) * 0.8)
         self.assertNotIn("legacy", d["extensions"]["nifti"])
 
     def test_a_qform_that_differs_is_a_transform_to_qform(self):
