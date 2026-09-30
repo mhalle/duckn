@@ -83,3 +83,76 @@ def test_non_finite_nifti_scaling_is_read_as_nifti1_io_reads_it(tmp_path):
             m.value_transforms[0].parameters["slope"], m.value_transforms[0].parameters["intercept"])
         assert got == expect, (slope, inter)
         assert np.array_equal(zarr.open_array(str(out), mode="r")[:], d)
+
+
+def _nifti_with(tmp_path, name, sform=None, sform_code=0, qform=None, qform_code=0, zooms=(2, 2, 2)):
+    import nibabel as nib
+
+    img = nib.Nifti1Image(np.zeros((2, 3, 4), np.int16), None)
+    img.header.set_zooms(zooms)
+    if qform is not None:
+        img.set_qform(qform, code=qform_code)
+    if sform is not None:
+        img.set_sform(sform, code=sform_code)
+    p = tmp_path / f"{name}.nii"
+    nib.save(img, str(p))
+    return p
+
+
+def test_the_sform_is_used_as_written_whatever_pixdim_says(tmp_path):
+    """nifti1.h's precedence, and nibabel's: the sform when sform_code > 0. 0.6.3 took the qform
+    when the sform's column lengths disagreed with pixdim - a scanner qform then read as the
+    sform's MNI frame - and otherwise rescaled the sform's columns to pixdim."""
+    import warnings
+
+    from duckn.nifti_convert import nifti_to_zarr
+
+    sform = np.diag([2.5, 2.5, 2.5, 1.0])
+    sform[:3, 3] = [-10, -20, -30]
+    p = _nifti_with(tmp_path, "a", sform=sform, sform_code=4, qform=np.diag([2.0, 2, 2, 1]),
+                    qform_code=1)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        nifti_to_zarr(p, tmp_path / "a.zarr")
+    m = _meta(tmp_path / "a.zarr")
+    assert [a.space_direction for a in m.axes] == [[2.5, 0, 0], [0, 2.5, 0], [0, 0, 2.5]]
+    assert m.space_origin == [-10.0, -20.0, -30.0]
+    assert any("disagree with pixdim" in str(x.message) for x in w)       # reported, not acted on
+
+
+def test_a_sheared_sform_is_used_as_written(tmp_path):
+    from duckn.nifti_convert import nifti_to_zarr
+
+    sform = np.array([[2.0, 0.3, 0, 1], [0, 2.0, 0, 2], [0, 0, 3.0, 3], [0, 0, 0, 1]])
+    p = _nifti_with(tmp_path, "b", sform=sform, sform_code=1, zooms=(2, 2, 3))
+    nifti_to_zarr(p, tmp_path / "b.zarr")
+    m = _meta(tmp_path / "b.zarr")
+    np.testing.assert_allclose(np.array([a.space_direction for a in m.axes]).T, sform[:3, :3])
+
+
+def test_with_no_sform_the_qform_is_used(tmp_path):
+    import nibabel as nib
+    from duckn.nifti_convert import nifti_to_zarr
+
+    q = np.diag([-2.0, 2, 2, 1])
+    q[:3, 3] = [5, 6, 7]
+    p = _nifti_with(tmp_path, "c", qform=q, qform_code=1)
+    nifti_to_zarr(p, tmp_path / "c.zarr")
+    m = _meta(tmp_path / "c.zarr")
+    expect = nib.load(str(p)).get_qform()
+    np.testing.assert_allclose(np.array([a.space_direction for a in m.axes]).T, expect[:3, :3])
+    assert m.space_origin == [5.0, 6.0, 7.0]
+
+
+def test_rescale_type_us_is_unspecified_not_a_unit(tmp_path):
+    """Rescale Type's "US" is UNSPECIFIED (PS3.3 C.11.1.1.2), not the Modality's ultrasound."""
+    import warnings
+
+    from test_dicom_convert_gaps import _series
+
+    def us(i, ds):
+        ds.RescaleSlope, ds.RescaleIntercept, ds.RescaleType = 1, -1024, "US"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _, meta = _series(tmp_path, us)
+    assert meta.sample_units is None and meta.value_transforms
