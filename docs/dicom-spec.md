@@ -281,7 +281,9 @@ Single-valued attributes (VM = 1) are bare values, not single-element arrays. At
 
 This section lists the DICOM tags most commonly useful for provenance, organized by DICOM module. This is guidance, not a requirement — writers should include whatever tags are relevant to the use case.
 
-### 5.1 Patient Module
+Each group has a name (in parentheses) by which a reader can ask for its tags: a tool serving a file's tags may offer "the `ct` and `series` tags", or withhold "the `patient` tags" by the rule of §4.3 (each value present becomes `null`, and the extension says `anonymized: true`). The names select exactly the keywords listed here — not the whole of each DICOM module as PS3.3 defines it. duckn's `dicom_tags.MODULES` is this table in code.
+
+### 5.1 Patient Module (`patient`)
 
 | Keyword | VR | Description |
 |---|---|---|
@@ -294,7 +296,7 @@ This section lists the DICOM tags most commonly useful for provenance, organized
 
 These are the most commonly anonymized fields. When anonymized, include them with `null` values.
 
-### 5.2 Study Module
+### 5.2 Study Module (`study`)
 
 | Keyword | VR | Description |
 |---|---|---|
@@ -306,7 +308,7 @@ These are the most commonly anonymized fields. When anonymized, include them wit
 | `ReferringPhysicianName` | PN | Referring physician |
 | `StudyID` | SH | Study ID |
 
-### 5.3 Series Module
+### 5.3 Series Module (`series`)
 
 | Keyword | VR | Description |
 |---|---|---|
@@ -319,7 +321,7 @@ These are the most commonly anonymized fields. When anonymized, include them wit
 | `ProtocolName` | LO | Protocol name |
 | `Laterality` | CS | Laterality of body part |
 
-### 5.4 Equipment Module
+### 5.4 Equipment Module (`equipment`)
 
 | Keyword | VR | Description |
 |---|---|---|
@@ -331,7 +333,7 @@ These are the most commonly anonymized fields. When anonymized, include them wit
 | `InstitutionName` | LO | Institution name |
 | `InstitutionalDepartmentName` | LO | Department |
 
-### 5.5 CT-Specific
+### 5.5 CT-Specific (`ct`)
 
 | Keyword | VR | Description |
 |---|---|---|
@@ -351,7 +353,7 @@ These are the most commonly anonymized fields. When anonymized, include them wit
 | `GantryDetectorTilt` | DS | Gantry tilt in degrees |
 | `SpiralPitchFactor` | FD | Pitch factor |
 
-### 5.6 MR-Specific
+### 5.6 MR-Specific (`mr`)
 
 | Keyword | VR | Description |
 |---|---|---|
@@ -374,7 +376,7 @@ These are the most commonly anonymized fields. When anonymized, include them wit
 | `InPlanePhaseEncodingDirection` | CS | `ROW` or `COL` |
 | `SAR` | DS | Specific absorption rate in W/kg |
 
-### 5.7 PET-Specific
+### 5.7 PET-Specific (`pet`)
 
 | Keyword | VR | Description |
 |---|---|---|
@@ -387,14 +389,14 @@ These are the most commonly anonymized fields. When anonymized, include them wit
 | `ReconstructionMethod` | LO | Reconstruction method |
 | `Units` | CS | `BQML`, `CNTS`, `GML`, etc. |
 
-### 5.8 Frame of Reference
+### 5.8 Frame of Reference (`frame-of-reference`)
 
 | Keyword | VR | Description |
 |---|---|---|
 | `FrameOfReferenceUID` | UI | Frame of reference UID |
 | `PositionReferenceIndicator` | LO | Position reference |
 
-### 5.9 SOP Common
+### 5.9 SOP Common (`sop-common`)
 
 | Keyword | VR | Description |
 |---|---|---|
@@ -403,7 +405,7 @@ These are the most commonly anonymized fields. When anonymized, include them wit
 | `InstanceCreationDate` | DA | Instance creation date |
 | `InstanceCreationTime` | TM | Instance creation time |
 
-### 5.10 Image Quality
+### 5.10 Image Quality (`image-quality`)
 
 | Keyword | VR | Description |
 |---|---|---|
@@ -781,7 +783,7 @@ A CT volume that includes coded anatomy using DICOM's standard sequence pattern:
 | Pixel Value Transformation Sequence | An Enhanced object's rescale: captured by `value_transforms` |
 | Per-frame Functional Groups Sequence, whole | Per-frame geometry the axes state, in the source's frame order (below) |
 
-**Where DICOM states the rescale and the geometry elsewhere.** A rescale that *varies* across instances cannot be one `value_transforms` entry; the array then holds uncalibrated stored values, `sample_units` is not written, and each slice's `RescaleSlope`, `RescaleIntercept` and `RescaleType` stay in its `samples[i].metadata.dicom` — the only statement of its mapping. An Enhanced object's `PerFrameFunctionalGroupsSequence` is left out whole: it restates per-frame geometry the axes state, in the source's frame order, and its other per-frame values would belong in `samples[i].metadata`, which this version does not map. Its `SharedFunctionalGroupsSequence` is kept with the rules of this section applied at every depth — `PixelMeasuresSequence`'s spacing, `PlaneOrientationSequence`'s orientation and the whole `PixelValueTransformationSequence` (the object's rescale) go, and a macro left with nothing is dropped — so a reader cannot apply the rescale a second time.
+**Where DICOM states the rescale and the geometry elsewhere.** A rescale that *varies* across the slices of one volume is an `axis_linear` along the slice axis (convention 1.2: one slope and intercept per slice, an instance with no rescale being the identity), with `sample_units` the `RescaleType` every slice shares; the per-slice `RescaleSlope` and `RescaleIntercept` are then not repeated in `samples`. Where it cannot be stated so — a time series, whose rescale may vary along two axes — no `value_transforms` is written, `sample_units` is not written, and each slice's `RescaleSlope`, `RescaleIntercept` and `RescaleType` stay in its `samples[i].metadata.dicom`, the only statement of its mapping. Either file declares 1.2: in 1.0 and 1.1 an absent `value_transforms` meant identity, which it must not claim (0.5.4 to 0.6.2 declared 1.0). An Enhanced object's `PerFrameFunctionalGroupsSequence` is left out whole: it restates per-frame geometry the axes state, in the source's frame order, and its other per-frame values would belong in `samples[i].metadata`, which this version does not map. Its `SharedFunctionalGroupsSequence` is kept with the rules of this section applied at every depth — `PixelMeasuresSequence`'s spacing, `PlaneOrientationSequence`'s orientation and the whole `PixelValueTransformationSequence` (the object's rescale) go, and a macro left with nothing is dropped — so a reader cannot apply the rescale a second time.
 
 **Writing an Enhanced object back.** A writer states the value mapping where the IOD puts it: for Enhanced CT, MR and PET, the Pixel Value Transformation functional group (PS3.3 C.7.6.16.2.9) — shared when `value_transforms` holds one linear mapping, per frame when the rescale varied and each slice's `samples[i].metadata.dicom` holds its own — never top-level `RescaleSlope`/`RescaleIntercept`, which those IODs do not contain. A reader reads it from there too: a shared group, or per-frame groups that all agree, is the one `value_transforms` entry; per-frame groups that differ leave the array's stored values uncalibrated and are reported (the per-frame mappings are not yet carried into `samples[i].metadata`).
 

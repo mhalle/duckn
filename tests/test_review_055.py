@@ -82,7 +82,7 @@ class TestMeasurementFrame:
     def test_export_writes_the_columns_as_nrrd_vectors(self, tmp_path, zip_):
         z = tmp_path / ("mf.zarr.zip" if zip_ else "mf.zarr")
         m = DucknMetadata(
-            version="1.0", space="LPS", measurement_frame=_frame_from_nrrd_definition().tolist(),
+            version="1.1", space="LPS", measurement_frame=_frame_from_nrrd_definition().tolist(),
             axes=[{"kind": "3-vector"}] + [{"kind": "space", "space_direction": list(r)}
                                            for r in np.eye(3)])
         from duckn.models import duckn_attrs
@@ -93,6 +93,29 @@ class TestMeasurementFrame:
         h = nrrd.read_header(str(out))
         # pynrrd returns the header's vectors as rows, in file order
         np.testing.assert_array_equal(np.array(h["measurement frame"]), np.array(_MF_VECTORS))
+
+    @pytest.mark.parametrize("convert", [nrrd_to_zarr, nrrd_to_zarr_zerocopy])
+    def test_import_declares_the_version_whose_frame_rule_it_follows(self, tmp_path, convert):
+        # Rows are 1.1's form; 1.0 wrote columns. 0.5.5 to 0.6.2 declared 1.0 over rows.
+        z = tmp_path / "mf.zarr"
+        convert(_mf_nrrd(tmp_path), z)
+        assert _meta(z).version in ("1.1", "1.2")
+
+    def test_a_1_0_frame_is_read_by_columns(self, tmp_path):
+        # A genuine 1.0 file stores NRRD's columns; export writes them back as the vectors.
+        z = tmp_path / "mf.zarr"
+        m = DucknMetadata(
+            version="1.0", space="LPS", measurement_frame=_frame_from_nrrd_definition().T.tolist(),
+            axes=[{"kind": "3-vector"}] + [{"kind": "space", "space_direction": list(r)}
+                                           for r in np.eye(3)])
+        assert m.measurement_frame_rows() == _frame_from_nrrd_definition().tolist()
+        from duckn.models import duckn_attrs
+        with open_store(z, mode="w") as s:
+            zarr.create_array(s, data=np.zeros((3, 2, 2, 2), np.float32), attributes=duckn_attrs(m))
+        out = tmp_path / "out.nrrd"
+        zarr_to_nrrd(z, out)
+        np.testing.assert_array_equal(np.array(nrrd.read_header(str(out))["measurement frame"]),
+                                      np.array(_MF_VECTORS))
 
     def test_zero_copy_export_writes_the_file_order_back(self, tmp_path):
         z = tmp_path / "mf.zarr"
@@ -620,10 +643,47 @@ class TestEnhancedRescale:
             ds.Modality = "CT"
             ds.RescaleSlope, ds.RescaleIntercept, ds.RescaleType = [1, 2, 1][i], -1024, "HU"
         z, m = self._series(tmp_path, vary)
-        assert not m.value_transforms
+        assert [t.name for t in m.value_transforms] == ["axis_linear"]  # 0.6.3: stated, in 1.2
         out = tmp_path / "e.dcm"
         zarr_to_dicom(z, out)
         ds = pydicom.dcmread(out)
-        slopes = [float(fg.PixelValueTransformationSequence[0].RescaleSlope)
-                  for fg in ds.PerFrameFunctionalGroupsSequence]
-        assert slopes == [1.0, 2.0, 1.0]
+        pvts = [fg.PixelValueTransformationSequence[0] for fg in ds.PerFrameFunctionalGroupsSequence]
+        assert [float(p.RescaleSlope) for p in pvts] == [1.0, 2.0, 1.0]
+        assert [float(p.RescaleIntercept) for p in pvts] == [-1024.0] * 3
+        assert {str(p.RescaleType) for p in pvts} == {"HU"}
+        assert "PixelValueTransformationSequence" not in ds.SharedFunctionalGroupsSequence[0]
+
+
+# ---------------------------------------------------------------------------
+# 0.6.1: `space units` name one unit per WORLD axis, not per spatial array axis
+# ---------------------------------------------------------------------------
+
+
+class TestSpaceUnitsPerWorldAxis:
+    def _convert(self, tmp_path, header_lines, data):
+        p = tmp_path / "in.nrrd"
+        _write_nrrd_text(p, header_lines, data)
+        z = tmp_path / "x.zarr"
+        out = tmp_path / "out.nrrd"
+        nrrd_to_zarr(p, z)
+        zarr_to_nrrd(z, out)
+        return _meta(z), nrrd.read_header(str(out))
+
+    def test_an_axis_takes_the_unit_of_the_world_axis_it_steps_along(self, tmp_path):
+        # NRRD axis 0 steps along world axis 0 (mm), NRRD axis 1 along world axis 1 (um).
+        # Array order is slowest first, so duckn's axis 0 is NRRD's axis 1.
+        data = np.zeros((5, 4), dtype=np.uint8)
+        m, h = self._convert(tmp_path, ["space dimension: 2",
+                                        "space directions: (2,0) (0,3)",
+                                        'space units: "mm" "um"'], data)
+        assert [ax.unit for ax in m.axes] == ["um", "mm"]
+        assert list(h["space units"]) == ["mm", "um"]
+
+    def test_a_slice_in_3d_writes_a_unit_for_every_world_axis(self, tmp_path):
+        data = np.zeros((6, 5), dtype=np.int16)
+        m, h = self._convert(tmp_path, ["space: left-posterior-superior",
+                                        "space directions: (0,1,0) (0,0,-1)",
+                                        "space origin: (10,-120,90)",
+                                        'space units: "mm" "mm" "mm"'], data)
+        assert [ax.unit for ax in m.axes] == ["mm", "mm"]
+        assert list(h["space units"]) == ["mm", "mm", "mm"]

@@ -60,10 +60,14 @@ from typing import Any
 
 __all__ = [
     "EXCLUDED",
+    "MODULES",
     "RESCALE_TYPE",
     "SLICE_THICKNESS",
     "encode",
     "keyword_of",
+    "keywords_named",
+    "select",
+    "withhold",
     "BULK",
     "STORED_ENCODING",
     "dataset_tags",
@@ -479,3 +483,96 @@ def tags_from_files(paths, *, stored_values: bool = False, binary: bool = True,
             yield pydicom.dcmread(str(p), stop_before_pixels=True, force=True)
     return tags_from_datasets(headers(), stored_values=stored_values, binary=binary,
                               private=private)
+
+
+#: dicom-spec §5's modules, by the name a caller selects them with: the tags most useful for
+#: provenance, grouped as the spec's tables group them. Guidance, not the whole of each DICOM
+#: module (PS3.3 lists more) - a reader asking for a module gets these keywords. The spec's
+#: tables are the one statement of this; ``tests/test_docs.py`` holds the two equal (2026-09-27).
+MODULES: dict[str, tuple[str, ...]] = {
+    "patient": ("PatientName", "PatientID", "PatientBirthDate", "PatientSex", "PatientAge",
+                "PatientWeight"),
+    "study": ("StudyInstanceUID", "StudyDate", "StudyTime", "StudyDescription",
+              "AccessionNumber", "ReferringPhysicianName", "StudyID"),
+    "series": ("SeriesInstanceUID", "SeriesNumber", "SeriesDescription", "SeriesDate",
+               "Modality", "BodyPartExamined", "ProtocolName", "Laterality"),
+    "equipment": ("Manufacturer", "ManufacturerModelName", "StationName", "DeviceSerialNumber",
+                  "SoftwareVersions", "InstitutionName", "InstitutionalDepartmentName"),
+    "ct": ("KVP", "XRayTubeCurrent", "ExposureTime", "Exposure", "CTDIvol", "ConvolutionKernel",
+           "ReconstructionDiameter", "DataCollectionDiameter", "FilterType", "FocalSpots",
+           "SingleCollimationWidth", "TotalCollimationWidth", "TableHeight",
+           "GantryDetectorTilt", "SpiralPitchFactor"),
+    "mr": ("MagneticFieldStrength", "MRAcquisitionType", "RepetitionTime", "EchoTime",
+           "InversionTime", "FlipAngle", "SequenceName", "ScanningSequence", "SequenceVariant",
+           "ImagingFrequency", "EchoNumbers", "EchoTrainLength", "PixelBandwidth",
+           "NumberOfAverages", "ReceiveCoilName", "TransmitCoilName",
+           "InPlanePhaseEncodingDirection", "SAR"),
+    "pet": ("Radiopharmaceutical", "RadionuclideTotalDose", "RadiopharmaceuticalStartTime",
+            "DecayCorrection", "AttenuationCorrectionMethod", "ScatterCorrectionMethod",
+            "ReconstructionMethod", "Units"),
+    "frame-of-reference": ("FrameOfReferenceUID", "PositionReferenceIndicator"),
+    "sop-common": ("SOPClassUID", "SOPInstanceUID", "InstanceCreationDate",
+                   "InstanceCreationTime"),
+    "image-quality": ("LossyImageCompressionRatio", "LossyImageCompressionMethod"),
+}
+
+
+def keywords_named(names) -> frozenset[str]:
+    """The keys ``names`` stand for: a module name (§5, :data:`MODULES`, any case) is its
+    keywords, a PS3.6 keyword is itself, and an 8-digit hex code is a private or unknown tag's
+    key (§4.1, uppercased). Anything else is a ValueError naming the modules - a misspelled
+    keyword would otherwise select nothing and say nothing."""
+    out: set[str] = set()
+    for raw in names:
+        name = str(raw).strip()
+        module = MODULES.get(name.lower())
+        if module is not None:
+            out.update(module)
+            continue
+        if len(name) == 8:
+            try:
+                int(name, 16)
+                out.add(name.upper())
+                continue
+            except ValueError:
+                pass
+        if _dictionary().tag_for_keyword(name) is None:
+            raise ValueError(f"{name!r} is neither a module ({', '.join(MODULES)}) nor a "
+                             "DICOM keyword (PS3.6, e.g. 'KVP') or an 8-digit tag code")
+        out.add(name)
+    return frozenset(out)
+
+
+def select(tags: dict[str, Any], names) -> dict[str, Any]:
+    """The part of ``tags`` (one level of the extension's ``tags``, or one slice's) that
+    ``names`` ask for (:func:`keywords_named`). A value is kept whole, sequences included; a
+    key the tags do not hold is simply not there - absence stays "not stated" (§4.3)."""
+    wanted = keywords_named(names)
+    return {k: v for k, v in tags.items() if k in wanted}
+
+
+def withhold(tags: dict[str, Any], names) -> tuple[dict[str, Any], bool]:
+    """``tags`` with every value ``names`` stand for replaced by ``null``, at every depth
+    (inside sequence items too), and whether anything was: the redaction of §4.3, where
+    ``null`` says the value existed and was removed. A withheld key the tags do not hold stays
+    absent - ``null`` would claim a value that never was. A writer that withheld something
+    also says so with the extension's ``anonymized: true`` (§3.1)."""
+    names = keywords_named(names)
+    removed = False
+
+    def walk(value):
+        nonlocal removed
+        if isinstance(value, dict):
+            out = {}
+            for k, v in value.items():
+                if k in names:
+                    out[k] = None
+                    removed = removed or v is not None
+                else:
+                    out[k] = walk(v)
+            return out
+        if isinstance(value, list):
+            return [walk(v) for v in value]
+        return value
+
+    return walk(tags), removed
