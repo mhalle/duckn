@@ -29,14 +29,18 @@ def upgrade(duckn1: dict, shape: tuple[int, ...], data_type: str | None = None, 
             what: str, source_format: str | None = None,
             software: tuple[str, str] | None = None,
             domain_axes: str | None = None, time_tag: str | None = None,
-            missing: list[float] | None = None) -> dict:
+            record_times: bool = True, missing: list[float] | None = None,
+            source_name: str | None = None) -> dict:
     """A converter's 1.x ``duckn`` object as the 2.0 object a 2.0 converter writes.
 
     ``what`` names the conversion for the provenance step (§9); ``source_format`` selects the
     format's finishing and is recorded as the source. ``domain_axes="space"`` is the caller's
     assertion that a no-space NRRD's ``domain`` axes are spatial (§19 item 15), recorded in the
     step. ``time_tag`` is the DICOM attribute a series' time positions came from
-    (``"TriggerTime"`` or ``"AcquisitionTime"``), which the 1.x metadata does not record.
+    (``"TriggerTime"`` or ``"AcquisitionTime"``), which the 1.x metadata does not record;
+    ``record_times`` False when those times vary across a phase's slices, so that no one
+    phase record can hold them (dicom 1.0 §6.1). ``source_name`` is the source's file name,
+    recorded as the source's ``path`` (provenance 1.1 §1.1).
     ``missing`` is the caller's ``values.missing``, in the quantity's units: a writer that
     materialized a source knows what its padding became (a CT's Pixel Padding Value through the
     rescale it applied), and by then the 1.x record has dropped it; refused where §6 forbids one.
@@ -48,7 +52,7 @@ def upgrade(duckn1: dict, shape: tuple[int, ...], data_type: str | None = None, 
     if source_format == "NRRD":
         _finish_nrrd(d, duckn1, shape, domain_axes, parameters)
     elif source_format == "DICOM":
-        _finish_dicom(d, time_tag)
+        _finish_dicom(d, time_tag, record_times)
     elif source_format == "NIfTI":
         _finish_nifti(d, shape)
     _finish_dwmri(d, mapped.gradient_frame)
@@ -61,7 +65,7 @@ def upgrade(duckn1: dict, shape: tuple[int, ...], data_type: str | None = None, 
             raise ValueError("values.missing is stated only under transforms [] or one linear "
                              "of non-zero slope (§6)")
         values["missing"] = [int(m) if float(m).is_integer() else float(m) for m in missing]
-    _record(d, what, source_format, software, parameters)
+    _record(d, what, source_format, software, parameters, _source_identity(d, source_name))
     read(d, shape, data_type)  # refuses what §10 refuses: never write it
     return d
 
@@ -70,9 +74,27 @@ def upgrade(duckn1: dict, shape: tuple[int, ...], data_type: str | None = None, 
 
 
 def _one_encoding(d: dict) -> None:
-    """Samples evenly spaced along their dimension take a step, never positions (§5.4)."""
+    """One encoding per geometry (§5.4): samples evenly spaced along their dimension take a step,
+    never positions or origins - a uniform gantry tilt is a sheared step, not an origin per
+    slice - and samples that are not take a step one unit long (spatial part, or its one axis)
+    and positions in that unit."""
     origin = d.get("origin")
+    axes = (d.get("world") or {}).get("axes") or []
     for dim in d.get("dimensions", []):
+        samples = dim.get("samples")
+        if (samples and "step" in dim and len(samples) >= 2 and origin is not None
+                and all("origin" in s and "steps" not in s and "position" not in s for s in samples)):
+            points = np.array([s["origin"] for s in samples], float)
+            diffs = np.diff(points, axis=0)
+            if np.allclose(diffs, diffs[0], rtol=0, atol=1e-9) and np.any(diffs[0] != 0) \
+                    and np.allclose(points[0], origin, rtol=0, atol=1e-9):
+                dim["step"] = diffs[0].tolist()
+                rest = [{k: v for k, v in s.items() if k != "origin"} for s in samples]
+                if any(rest):
+                    dim["samples"] = rest
+                else:
+                    del dim["samples"]
+                continue
         samples = dim.get("samples")
         if not samples or "step" not in dim or not all("position" in s for s in samples):
             continue
@@ -81,6 +103,7 @@ def _one_encoding(d: dict) -> None:
             continue
         diffs = np.diff(pos)
         if not np.allclose(diffs, diffs[0], rtol=1e-12, atol=0) or diffs[0] == 0:
+            _unit_step(dim, axes)
             continue
         step = np.array(dim["step"], float)
         if pos[0] != 0:
@@ -95,10 +118,39 @@ def _one_encoding(d: dict) -> None:
             del dim["samples"]
 
 
+def _unit_step(dim: dict, axes: list) -> None:
+    """Positions on a step one unit of its axis long (§5.4): the spatial part's length, or the
+    step's one component, becomes 1, and the positions are scaled to match."""
+    step = np.array(dim["step"], float)
+    along = [j for j, v in enumerate(step) if v != 0]
+    spatial = [j for j in along if (axes[j] if j < len(axes) else {}).get("type") == "space"]
+    if spatial and len(spatial) == len(along):
+        length = float(np.linalg.norm(step[spatial]))
+    elif len(along) == 1:
+        length = abs(float(step[along[0]]))
+    else:
+        return  # a step through space and time: no one unit
+    if length == 0 or length == 1:
+        return
+    dim["step"] = (step / length).tolist()
+    for s in dim["samples"]:
+        s["position"] = s["position"] * length
+
+
 # ---- §9: a writer records itself ---------------------------------------------------------------
 
 
-def _record(d, what, source_format, software, parameters) -> None:
+def _source_identity(d, source_name) -> dict:
+    """What identifies the source (provenance 1.1 §1.1): a DICOM series' Series Instance UID,
+    otherwise the file's name - never a local directory, which says nothing to another reader."""
+    tags = (((d.get("extensions") or {}).get("dicom") or {}).get("tags") or {})
+    uid = tags.get("SeriesInstanceUID")
+    if isinstance(uid, str) and uid:
+        return {"identifier": uid}
+    return {"path": source_name} if source_name else {}
+
+
+def _record(d, what, source_format, software, parameters, identity=None) -> None:
     if software is None:
         from importlib.metadata import PackageNotFoundError, version
         try:
@@ -109,7 +161,13 @@ def _record(d, what, source_format, software, parameters) -> None:
     prov = ext.get("provenance") or {}
     prov["version"] = "1.1"
     if source_format is not None:
-        prov.setdefault("sources", []).append({"format": source_format})
+        sources = prov.setdefault("sources", [])
+        # An earlier first step with no inputs took every source then present (provenance 1.0
+        # §5.1); name them, so that the source appended here does not join it.
+        steps = prov.get("processing") or []
+        if steps and "inputs" not in steps[0] and sources:
+            steps[0]["inputs"] = list(range(len(sources)))
+        sources.append({"format": source_format, **(identity or {})})
     step: dict[str, Any] = {"name": what, "software": {"name": software[0], "version": software[1]}}
     if parameters:
         step["parameters"] = parameters
@@ -133,6 +191,8 @@ def _finish_nrrd(d, duckn1, shape, domain_axes, parameters) -> None:
                   "axis_min" in a["extensions"]["nrrd"] and "axis_max" in a["extensions"]["nrrd"]))]
     if no_space and placed:
         _nrrd_world(d, axes1, placed, shape, domain_axes, parameters)
+    elif placed and d.get("world"):
+        _nrrd_extra_axes(d, axes1, placed, shape)
     if no_space and (placed or nrrd is not None):
         nrrd = ext.setdefault("nrrd", {})
         nrrd["no_space"] = True
@@ -141,8 +201,9 @@ def _finish_nrrd(d, duckn1, shape, domain_axes, parameters) -> None:
     for k, a in enumerate(axes1):
         dim = d["dimensions"][k] if k < len(d["dimensions"]) else {}
         keep = {}
-        if "components" in dim and a.get("unit") is not None:
-            keep["unit"] = a["unit"]
+        if a.get("unit") is not None and "step" not in dim and (
+                "components" in dim or a.get("kind") not in ("domain", "space", "time")):
+            keep["unit"] = a["unit"]  # a range axis: one with a range kind, or no kind
         if a.get("kind") in ("domain", "space", "time") and "step" not in dim:
             keep["kind"] = a["kind"]
         if keep:
@@ -231,7 +292,7 @@ def _nrrd_world(d, axes1, placed, shape, domain_axes, parameters) -> None:
 # ---- DICOM (§3.2, §17's dicom row) -------------------------------------------------------------
 
 
-def _finish_dicom(d: dict, time_tag: str | None) -> None:
+def _finish_dicom(d: dict, time_tag: str | None, record_times: bool = True) -> None:
     dicom = (d.get("extensions") or {}).get("dicom")
     if not isinstance(dicom, dict):
         return
@@ -245,11 +306,12 @@ def _finish_dicom(d: dict, time_tag: str | None) -> None:
     if world is not None and isinstance(uid, str) and uid:
         world["reference"] = f"dicom:{uid}"
         world["axes"] = world.pop("axes")  # reference first, as the draft writes it
-    _dicom_times(d, time_tag)
+    _dicom_times(d, time_tag, record_times)
     _dicom_padding(d, dicom, tags)
+    _dicom_units(d, tags)
 
 
-def _dicom_times(d: dict, time_tag: str | None) -> None:
+def _dicom_times(d: dict, time_tag: str | None, record_times: bool = True) -> None:
     """A time axis from Trigger Time is instants after the R wave, in ms; one from a time of
     day (Acquisition Time, measured from the first frame) is in s, with no centering: when in
     its acquisition a frame was stamped is not stated without a duration (§5.1, §17)."""
@@ -266,7 +328,7 @@ def _dicom_times(d: dict, time_tag: str | None) -> None:
         if time_tag == "TriggerTime":
             axis["name"] = "time after R wave"
             dim["centering"] = "node"
-            for s in samples:  # the record keeps each phase's Trigger Time (§2.3)
+            for s in samples if record_times else ():  # each phase's Trigger Time (§2.3)
                 if "position" in s:
                     t = s["position"]
                     s.setdefault("metadata", {}).setdefault("dicom", {})["TriggerTime"] = (
@@ -336,14 +398,13 @@ def _finish_nifti(d: dict, shape: tuple[int, ...]) -> None:
     if world is None:
         return
     axes = world["axes"]
-    code = tags.get("sform_code") or tags.get("qform_code")
-    if code in _XFORM_REFERENCE and "reference" not in world:
-        world["reference"] = _XFORM_REFERENCE[code]
-    # The core states the affine the world was taken from: the record leaves it out (§2.3).
-    legacy_tags = (nifti.get("legacy") or {}).get("tags") or {}
-    legacy_tags.pop("sform" if tags.get("sform_code") else "qform", None)
-    if "legacy" in nifti and not legacy_tags:
-        del nifti["legacy"]
+    _nifti_frames(d, nifti, tags, world)
+    # A 4th dimension whose unit the header leaves unknown (xyzt_units' temporal code 0) states
+    # no type: nothing says it is time (duckn 2.0 §3.1).
+    for j, a in enumerate(axes):
+        if a.get("type") == "time" and "unit" not in a:
+            del a["type"]
+            a["id"] = f"a{j}"
 
     t = next((j for j, a in enumerate(axes) if a.get("type") == "time"), None)
     origin = d.get("origin")
@@ -354,6 +415,9 @@ def _finish_nifti(d: dict, shape: tuple[int, ...]) -> None:
             dim["centering"] = "node"  # NIfTI's time points are instants; slice times add to them
     if t is not None and origin is not None and "toffset" in tags:
         origin[t] = tags.pop("toffset")
+    freq = next((j for j, a in enumerate(axes) if a.get("type") == "frequency"), None)
+    if freq is not None and origin is not None and "toffset" in tags:
+        origin[freq] = tags.pop("toffset")  # toffset is the 4th axis's origin, whatever its type
     # A spectrum in ppm is a chemical shift only where toffset places its first bin (nifti 2.0
     # §2): duckn 1.x placed the first bin at 0 whatever the header said.
     ppm = next((j for j, a in enumerate(axes) if a.get("unit") == "[ppm]" and "type" not in a), None)
@@ -418,3 +482,115 @@ def _finish_dwmri(d: dict, gradient_frame) -> None:
         # 1.0 named an image axis ("j-") in a layout the file does not fix: not carried
         acq.pop("phase_encoding_direction", None)
     d.setdefault("intent", "diffusion-weighted")
+
+
+def _dicom_units(d: dict, tags: dict) -> None:
+    """The quantity's unit (dicom 2.0 §4): Rescale Type; for CT, HU where it is absent (PS3.3
+    C.8.2.1: Rescale Type is required only when it is not HU); for PET, Units (0054,1001) BQML;
+    and never "US" (unspecified), which states no unit."""
+    values = d.get("values")
+    if not isinstance(values, dict):
+        return
+    if values.get("unit") == "US":
+        del values["unit"]
+    if "unit" in values or not isinstance(values.get("transforms"), list):
+        return
+    names = {t.get("name") for t in values["transforms"]}
+    if tags.get("Modality") == "CT" and names & {"linear", "axis_linear"}:
+        values["unit"] = {"symbol": "HU", "scheme": "UCUM", "code": "[hnsf'U]"}
+    elif tags.get("Modality") == "PT" and tags.get("Units") == "BQML":
+        values["unit"] = "Bq/mL"
+
+
+def _nifti_frames(d: dict, nifti: dict, tags: dict, world: dict) -> None:
+    """The frame the world is in, by the affine it came from (nifti 2.0 §1): duckn's import takes
+    the qform when the sform's spacing disagrees with pixdim, so the frame is named by whichever
+    affine the core states, compared with the header's own (``legacy``). The other one, where it
+    differs, is a transform: to its template frame, or to the bare reference ``sform`` or
+    ``qform``. The records of both then go (§5)."""
+    legacy = (nifti.get("legacy") or {}).get("tags") or {}
+    dims = d.get("dimensions") or []
+    core = np.eye(4)
+    for i in range(min(3, len(dims))):
+        if "step" in dims[i]:
+            core[:3, i] = dims[i]["step"][:3]
+    if d.get("origin") is not None:
+        core[:3, 3] = d["origin"][:3]
+    codes = {"sform": tags.get("sform_code") or 0, "qform": tags.get("qform_code") or 0}
+    mats = {k: np.array(legacy[k], float) for k in ("sform", "qform")
+            if k in legacy and codes[k] > 0}
+    used = next((k for k in ("sform", "qform") if k in mats
+                 and np.allclose(mats[k], core, rtol=0, atol=1e-5)), None)
+    if used is None:  # no records to compare: the code the import prefers
+        used = "sform" if codes["sform"] > 0 else ("qform" if codes["qform"] > 0 else None)
+    if used is not None and codes[used] in _XFORM_REFERENCE and "reference" not in world:
+        world["reference"] = _XFORM_REFERENCE[codes[used]]
+    other = "qform" if used == "sform" else "sform"
+    if used in mats and other in mats and not np.allclose(mats[other], mats[used], rtol=0, atol=1e-5):
+        m = mats[other] @ np.linalg.inv(mats[used])
+        ras = [{"id": i, "type": "space", "unit": world["axes"][0].get("unit", "mm"), "positive": p}
+               for i, p in zip("xyz", ("right", "anterior", "superior"))]
+        world.setdefault("transforms", []).append({
+            "to": {"reference": _XFORM_REFERENCE.get(codes[other], other), "axes": ras},
+            "on": ["x", "y", "z"], "forward": {"affine": m[:3].tolist()}})
+    nifti.pop("legacy", None)
+
+
+def _nrrd_extra_axes(d, axes1, placed, shape) -> None:
+    """A file with `space` and an axis outside `space directions` that has `spacings` (a time
+    axis beside a volume): its own world axis after the spatial ones (duckn 2.0 §15.1), typed by
+    its kind, and 0.1's per-axis geometry gone from the block (nrrd 0.2 §2)."""
+    axes = d["world"]["axes"]
+    origin = d.get("origin")
+    taken = {a.get("id") for a in axes}
+    for k in placed:
+        a, dim = axes1[k], d["dimensions"][k]
+        if "step" in dim:
+            continue
+        info = a["extensions"]["nrrd"]
+        kind = a.get("kind")
+        if kind == "time":
+            ident, axis = "t", {"type": "time"}
+        elif kind == "space":
+            ident, axis = f"a{len(axes)}", {"type": "space"}
+        else:
+            ident, axis = f"a{len(axes)}", {}
+        n = 1
+        while ident in taken:
+            ident = f"{ident.rstrip('0123456789')}{n}"
+            n += 1
+        taken.add(ident)
+        if a.get("unit") is not None:
+            u = a["unit"]
+            axis["unit"] = _UNIT_SPELLINGS.get(u, u) if isinstance(u, str) else u
+        axes.append({"id": ident, **axis})
+        for other in d["dimensions"]:
+            if "step" in other:
+                other["step"] = list(other["step"]) + [0.0]
+            for smp in other.get("samples") or []:
+                if "origin" in smp:
+                    smp["origin"] = list(smp["origin"]) + [0.0]
+        centering = a.get("centering") or "cell"
+        size = shape[k]
+        spacing = info.get("spacing")
+        if spacing is None:
+            span = info["axis_max"] - info["axis_min"]
+            spacing = span / size if centering == "cell" else span / (size - 1)
+        step = [0.0] * len(axes)
+        step[-1] = float(spacing)
+        dim["step"] = step
+        if size > 1:
+            dim["centering"] = centering
+        if origin is not None:
+            origin.append(info["axis_min"] + (spacing / 2 if centering == "cell" else 0.0)
+                          if "axis_min" in info else 0.0)
+        rest = {kk: v for kk, v in info.items() if kk not in ("spacing", "axis_min", "axis_max")}
+        dim_ext = dim.get("extensions") or {}
+        if rest:
+            dim_ext["nrrd"] = rest
+        else:
+            dim_ext.pop("nrrd", None)
+        if dim_ext:
+            dim["extensions"] = dim_ext
+        else:
+            dim.pop("extensions", None)

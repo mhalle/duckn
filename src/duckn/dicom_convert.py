@@ -576,6 +576,30 @@ def _tm_seconds(value: Any) -> float | None:
         return None
 
 
+def _time_source(datasets: list[Any], shape) -> tuple[str | None, bool]:
+    """Which attribute a 4D series' time positions came from - the same rule as
+    :func:`_real_times_ms`, over the same instances (each time point's first slice) - and
+    whether Trigger Time is one value across each time point's slices (else no one phase
+    record can hold it: it varies along both dimensions, dicom 1.0 §6.1)."""
+    if len(shape) != 4:
+        return None, True
+    n_t, n_z = shape[0], shape[1]
+    if len(datasets) < n_t * n_z:
+        return None, True
+    first = [datasets[t * n_z] for t in range(n_t)]
+    trigger = [getattr(ds, "TriggerTime", None) for ds in first]
+    try:
+        if all(t is not None and str(t).strip() != "" for t in trigger):
+            [float(t) for t in trigger]
+            uniform = all(len({str(getattr(ds, "TriggerTime", "")).strip()
+                               for ds in datasets[t * n_z:(t + 1) * n_z]}) == 1
+                          for t in range(n_t))
+            return "TriggerTime", uniform
+    except (TypeError, ValueError):
+        pass
+    return ("AcquisitionTime" if _real_times_ms(first) is not None else None), True
+
+
 def _real_times_ms(datasets: list[Any]) -> list[float] | None:
     """The times of these instances in ms, only where the files state real times.
 
@@ -1931,10 +1955,10 @@ def dicom_to_zarr(
     attrs = duckn_attrs(meta)
     if convention == "2.0":  # EXPERIMENTAL: the draft convention (duckn.convention2_write)
         from duckn.convention2_write import upgrade
-        trigger = all(getattr(ds, "TriggerTime", None) not in (None, "") for ds in datasets)
+        time_tag, uniform = _time_source(datasets, volume.shape)
         attrs = {"duckn": upgrade(attrs["duckn"], volume.shape, str(volume.dtype),
                                   what="convert DICOM", source_format="DICOM",
-                                  time_tag="TriggerTime" if trigger else "AcquisitionTime")}
+                                  time_tag=time_tag, record_times=uniform)}
     elif convention != "1.x":
         raise ValueError(f"convention {convention!r}: \"1.x\" or \"2.0\"")
 

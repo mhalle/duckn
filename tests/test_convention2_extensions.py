@@ -174,3 +174,117 @@ class TestNifti20Spectra(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestReviewFixes(unittest.TestCase):
+    """The review of the revisions (2026-09-30): each case is one finding, fixed."""
+
+    def _nifti(self, img):
+        from duckn.nifti_convert import nifti_to_zarr
+        tmp = tempfile.mkdtemp()
+        import nibabel as nib
+        nib.save(img, str(Path(tmp) / "a.nii"))
+        nifti_to_zarr(Path(tmp) / "a.nii", Path(tmp) / "o.zarr", convention="2.0")
+        return dict(zarr.open_array(str(Path(tmp) / "o.zarr"), mode="r").attrs)["duckn"]
+
+    def test_a_world_from_the_qform_is_not_named_by_the_sforms_code(self):
+        import nibabel as nib
+        img = nib.Nifti1Image(np.zeros((2, 2, 2), np.int16), np.diag([2.0, 2, 2, 1]))
+        img.set_qform(np.diag([2.0, 2, 2, 1]), code=1)
+        img.set_sform(np.diag([2.5, 2.5, 2.5, 1]), code=4)  # disagrees with pixdim 2
+        d = self._nifti(img)
+        self.assertNotIn("reference", d["world"])                    # the qform: scanner, code 1
+        (t,) = d["world"]["transforms"]
+        self.assertEqual(t["to"]["reference"], "nifti:mni152")        # the sform, a transform
+        np.testing.assert_allclose(np.array(t["forward"]["affine"])[:, :3], np.eye(3) * 1.25)
+        self.assertNotIn("legacy", d["extensions"]["nifti"])
+
+    def test_a_qform_that_differs_is_a_transform_to_qform(self):
+        import nibabel as nib
+        s = np.diag([2.0, 2, 2, 1])
+        q = s.copy()
+        q[:3, 3] = [1.0, 0, 0]
+        img = nib.Nifti1Image(np.zeros((2, 2, 2), np.int16), s)
+        img.set_sform(s, code=1)
+        img.set_qform(q, code=1)
+        d = self._nifti(img)
+        (t,) = d["world"]["transforms"]
+        self.assertEqual(t["to"]["reference"], "qform")
+        np.testing.assert_allclose(np.array(t["forward"]["affine"])[:, 3], [1.0, 0, 0])
+
+    def test_a_4d_file_with_no_temporal_unit_states_no_time(self):
+        import nibabel as nib
+        img = nib.Nifti1Image(np.zeros((2, 2, 2, 3), np.int16), np.eye(4))
+        img.header.set_xyzt_units("mm", "unknown")
+        img.header["pixdim"][4] = 2.0
+        d = self._nifti(img)
+        self.assertEqual(d["world"]["axes"][3], {"id": "a3"})
+        self.assertNotIn("centering", d["dimensions"][3])
+
+    def test_toffset_places_a_frequency_axis(self):
+        import nibabel as nib
+        img = nib.Nifti1Image(np.zeros((2, 2, 2, 4), np.float32), np.eye(4))
+        img.header.set_xyzt_units("mm", "hz")
+        img.header["pixdim"][4] = 10.0
+        img.header["toffset"] = -20.0
+        d = self._nifti(img)
+        self.assertEqual(d["world"]["axes"][3]["type"], "frequency")
+        self.assertEqual(d["origin"][3], -20.0)
+
+    def test_a_spaced_axis_beside_a_space_is_a_world_axis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            header = {"space": "left-posterior-superior",
+                      "space directions": [[np.nan] * 3, [1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0]],
+                      "space origin": [0.0, 0.0, 0.0], "kinds": ["time", "domain", "domain", "domain"],
+                      "spacings": [2.5, np.nan, np.nan, np.nan], "axis mins": [10.0, np.nan, np.nan, np.nan],
+                      "units": ["s", "", "", ""], "centerings": ["node", "cell", "cell", "cell"]}
+            d, arr = _nrrd(tmp, np.zeros((2, 2, 2, 4), np.float32), header)
+        self.assertEqual(d["world"]["axes"][3], {"id": "t", "type": "time", "unit": "s"})
+        self.assertEqual(d["dimensions"][3]["step"], [0.0, 0.0, 0.0, 2.5])
+        self.assertEqual(d["origin"][3], 10.0)                       # node: the min itself
+        self.assertNotIn("extensions", d["dimensions"][3])           # no 0.1 geometry in 0.2
+
+    def test_a_no_kind_axis_keeps_its_units(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            header = {"space": "left-posterior-superior",
+                      "space directions": [[np.nan] * 3, [1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0]],
+                      "space origin": [0.0, 0.0, 0.0], "units": ["kPa", "", "", ""]}
+            d, _ = _nrrd(tmp, np.zeros((2, 2, 2, 3), np.float32), header)
+        self.assertEqual(d["dimensions"][3], {"extensions": {"nrrd": {"unit": "kPa"}}})
+
+    def _dicom_units(self, **tags):
+        d1 = {"version": "1.0", "space": "LPS", "space_origin": [0.0, 0.0, 0.0],
+              "axes": [{"kind": "space", "space_direction": [0, 0, 1.0], "unit": "mm"},
+                       {"kind": "space", "space_direction": [0, 1.0, 0], "unit": "mm"},
+                       {"kind": "space", "space_direction": [1.0, 0, 0], "unit": "mm"}],
+              "value_transforms": [{"name": "linear", "parameters": {"slope": 1, "intercept": -1024}}],
+              "extensions": {"dicom": {"version": "1.0", "stored_values": True, "tags": tags}}}
+        if "sample_units" in tags:
+            d1["sample_units"] = tags.pop("sample_units")
+        return upgrade(d1, (2, 2, 2), what="convert", source_format="DICOM")["values"]
+
+    def test_dicom_units(self):
+        self.assertEqual(self._dicom_units(Modality="CT")["unit"]["code"], "[hnsf'U]")  # C.8.2.1
+        self.assertNotIn("unit", self._dicom_units(Modality="MR", sample_units="US"))
+        self.assertEqual(self._dicom_units(Modality="PT", Units="BQML")["unit"], "Bq/mL")
+
+    def test_trigger_times_that_vary_within_a_phase_are_not_a_phase_record(self):
+        from duckn.dicom_convert import _time_source
+
+        class DS:
+            def __init__(self, t):
+                self.TriggerTime = t
+        same = [DS(0), DS(0), DS(80), DS(80)]
+        varied = [DS(0), DS(5), DS(80), DS(85)]
+        self.assertEqual(_time_source(same, (2, 2, 4, 4)), ("TriggerTime", True))
+        self.assertEqual(_time_source(varied, (2, 2, 4, 4)), ("TriggerTime", False))
+        self.assertEqual(_time_source([DS("x")] * 4, (2, 2, 4, 4))[0], None)
+
+    def test_an_earlier_first_step_names_its_sources_before_one_is_appended(self):
+        d1 = {"version": "1.2", "space": "LPS", "space_origin": [0.0, 0.0, 0.0], "value_transforms": [],
+              "axes": [{"kind": "space", "space_direction": [0, 0, 1.0], "unit": "mm"}],
+              "extensions": {"provenance": {"version": "1.0", "sources": [{"format": "DICOM"}],
+                                            "processing": [{"name": "convert"}]}}}
+        prov = upgrade(d1, (2,), what="resample", source_format="NRRD")["extensions"]["provenance"]
+        self.assertEqual(prov["processing"][0]["inputs"], [0])
+        self.assertEqual(len(prov["sources"]), 2)

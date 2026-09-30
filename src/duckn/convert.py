@@ -792,7 +792,8 @@ def nrrd_to_zarr(
     if convention == "2.0":
         from duckn.convention2_write import upgrade
         attrs = {"duckn": upgrade(attrs["duckn"], shape, str(data.dtype), what="convert NRRD",
-                                  source_format="NRRD", domain_axes=domain_axes)}
+                                  source_format="NRRD", domain_axes=domain_axes,
+                                  source_name=Path(nrrd_path).name)}
     elif convention != "1.x":
         raise ValueError(f"convention {convention!r}: \"1.x\" or \"2.0\"")
 

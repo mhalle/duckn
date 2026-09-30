@@ -78,6 +78,10 @@ def _dicom(tmp, instances, **kw):
     return dict(arr.attrs)["duckn"], arr
 
 
+def instances_uid(instances):
+    return str(instances[0].SeriesInstanceUID)
+
+
 def _core(d):
     """The core metadata, per-sample records cut to the keys the reference keeps."""
     return {k: d.get(k) for k in ("version", "world", "origin", "dimensions", "values")}
@@ -132,6 +136,7 @@ class TestDicomAgainstTheReferenceHeaders(unittest.TestCase):
 
     def _check(self, name, instances):
         import tempfile
+        self._last = instances
         ref = _reference(name)
         with tempfile.TemporaryDirectory() as tmp:
             d, arr = _dicom(tmp, instances)
@@ -140,7 +145,10 @@ class TestDicomAgainstTheReferenceHeaders(unittest.TestCase):
         self.assertEqual(d["extensions"]["dicom"]["version"], "2.0")
         self.assertEqual(d["extensions"]["dicom"]["stored_values"], ref["extensions"]["dicom"]["stored_values"])
         self.assertEqual(d["extensions"]["dicom"]["tags"], ref["extensions"]["dicom"]["tags"])
-        self.assertEqual(d["extensions"]["provenance"]["sources"], [{"format": "DICOM"}])
+        uid = d["extensions"]["dicom"].get("tags", {}).get("SeriesInstanceUID") or \
+            instances_uid(self._last)
+        self.assertEqual(d["extensions"]["provenance"]["sources"],
+                         [{"format": "DICOM", "identifier": uid}])  # provenance 1.1 §1.1
         return d
 
     def test_s17_a_ct_with_its_stored_values(self):
@@ -291,9 +299,26 @@ class TestOneEncoding(unittest.TestCase):
         self.assertEqual(d["origin"], [0.0, 0.0, 13.0])
         np.testing.assert_allclose(read(d, (3, 2, 2)).position([2, 0, 0]), [0, 0, 23.0])
 
-    def test_uneven_positions_stay_positions(self):
+    def test_uneven_positions_stay_positions_on_a_step_one_unit_long(self):
         d = upgrade(self._file([0.0, 2.0, 5.0]), (3, 2, 2), what="convert")
-        self.assertEqual([s["position"] for s in d["dimensions"][0]["samples"]], [0.0, 1.0, 2.5])
+        self.assertEqual(d["dimensions"][0]["step"], [0.0, 0.0, 1.0])  # one mm (§5.4)
+        self.assertEqual([s["position"] for s in d["dimensions"][0]["samples"]], [0.0, 2.0, 5.0])
+        np.testing.assert_allclose(read(d, (3, 2, 2)).position([2, 0, 0]), [0, 0, 15.0])
+
+    def test_a_uniform_gantry_tilt_is_a_sheared_step(self):
+        d1 = self._file([0.0, 2.0, 4.0])
+        del d1["axes"][0]["samples"]
+        d1["axes"][0]["samples"] = [{"origin": [0.0, 0.44 * i, 10.0 + 1.25 * i]} for i in range(3)]
+        d = upgrade(d1, (3, 2, 2), what="convert")
+        np.testing.assert_allclose(d["dimensions"][0]["step"], [0.0, 0.44, 1.25])
+        self.assertNotIn("samples", d["dimensions"][0])
+
+    def test_an_uneven_tilt_keeps_its_origins(self):
+        d1 = self._file([0.0, 2.0, 4.0])
+        d1["axes"][0]["samples"] = [{"origin": [0.0, y, 10.0 + 1.25 * i]}
+                                    for i, y in enumerate((0.0, 0.44, 1.2))]
+        d = upgrade(d1, (3, 2, 2), what="convert")
+        self.assertEqual([s["origin"][1] for s in d["dimensions"][0]["samples"]], [0.0, 0.44, 1.2])
 
 
 class TestCallersMissing(unittest.TestCase):
