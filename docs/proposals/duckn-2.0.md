@@ -1,13 +1,14 @@
 # duckn convention 2.0 — draft specification
 
-**Status:** release candidate, revision 15, 2026-09-30. Not implemented; the next edits come
+**Status:** release candidate, revision 16, 2026-09-30. Not implemented; the next edits come
 from implementing it (a reader of 2.0 and 1.x, then writers). Supersedes the two
 world-frame proposals of 2026-09-26/27, whose decisions it records in §16. Revisions 2–4 answer
 three adversarial rounds and a study of every extension; revision 5 follows duckn 0.6.1's
 converter fixes; revision 6 settles the open decisions (§19) and carries over what 1.x settled
 since; revisions 7 to 13 answer review rounds 4 to 10 (§18); revision 14 records the owner's
 answers to the choices they made (§19), which settles every open decision; revision 15 states
-each rule once and points to it elsewhere. It folds in the units specification (§3.4) and, for
+each rule once and points to it elsewhere; revision 16 records the decisions of an adversarial
+round on NIfTI (§19 items 6, 25-27). It folds in the units specification (§3.4) and, for
 2.0 files, the transform specification (§7). Test fixtures: `tests/data/convention-2.0/`.
 
 2.0 keeps NRRD's principles and replaces the vocabulary that made them hard to read. It is a
@@ -301,7 +302,7 @@ the target axes `to.axes` describes; without `to.axes`, their coordinates do not
 `id`. A time axis is in a shared frame only when a transform says so (below); otherwise it has
 a **local zero**, and so has every spatial axis of a world with no `reference` or a bare one:
 its coordinates compare only within the array. A reference is
-`<extension>:<value>` (`dicom:1.2.826.0.1.3680043.8.498.10033451`, `nifti:mni152`), the value in
+`<extension>:<value>` (`dicom:1.2.826.0.1.3680043.8.498.10033451`), the value in
 the grammar the extension defines, or a bare token that is local to the array (§1). It stays one
 string with a colon (the owner's decision, 2026-09-27): a reference must work as a key — in a
 JSON object, a lookup table, a URL — and its one parse, the prefix, happens in one resolver.
@@ -686,7 +687,7 @@ those an extension defines, so one fact has one place.
 
 ```json
 "transforms": [
-  { "to": { "reference": "nifti:mni152", "axes": [ { "id": "x", "type": "space", "unit": "mm", "positive": "right" }, ... ] },
+  { "to": { "reference": "template", "name": "MNI152NLin2009cAsym", "axes": [ { "id": "x", "type": "space", "unit": "mm", "positive": "right" }, ... ] },
     "on": ["x", "y", "z"],
     "forward": { "affine": [[1.02, 0, 0, -2.5], [0, 0.98, 0, 4.0], [0, 0, 1.01, 1.2]] },
     "metadata": { "software": "ANTs 2.5", "method": "affine" } },
@@ -925,7 +926,7 @@ reserved, not defined.
 
 ### 13.2 fMRI with slice timing
 
-Volumes are instants (node); each slice is 3 mm higher and 0.055 s later than the one below. The
+Volumes are instants (`node`: here the source states that each volume's time is an instant, which a NIfTI header does not, so a NIfTI converter writes no `centering` there, §17); each slice is 3 mm higher and 0.055 s later than the one below. The
 source states the signal in arbitrary units, so `[arb'U]` is written (§6). This and the
 examples after it are fragments: `version` is as in §13.1, and so is `world` where a fragment
 shows none.
@@ -1229,7 +1230,7 @@ document: `nrrd-extension-0.2.md`, `provenance-extension-1.1.md`, `dicom-spec-2.
 | `dwmri` | 2.0, revision required | A `frame` beside `gradients`/`b_matrices`, defined as in §5.3 (gradients F·g, b-matrices F·B·Fᵀ; absent means unknown), replacing `gradient_frame`; the `vector` DWI dimension becomes `list`; phase-encoding directions name a dimension; the §3 interleaving table (which read axis order fastest-first) is withdrawn. Required before any 2.0 DWI file: an unrevised 1.0 block would read a lost measurement frame as identity. |
 | `seg` | 0.9 for an array's block and 0.10 for a group's, unchanged in version (a 0.x version is read only as itself, §2.3, so a wording revision takes no new number); compatible | "a `list` axis" → "a dimension with `components: \"list\"`"; binary labelmaps write `values.transforms: []`; no field changes. |
 | `microscopy` | 2.0, revision required | `timestamps` and `z_positions` move to the core, as a step when evenly spaced and otherwise as `samples[i].position` (§5.4; they are absolute stage positions and acquisition times: the origin's component is subtracted and the step divided out, and times take a local zero); channel `color` becomes a CSS string (as `seg`); §1 against OME 0.6; spectral bins are a world axis (a wavelength in `nm`, each bin at its stated center) when every bin states its wavelength, and a `list` otherwise; FLIM microtime bins are a `list` (decision 4: `type` could now tell a microtime axis from acquisition time, but microscopy 2.0 keeps them a list until an application needs them as an axis). |
-| `nifti` | 2.0, revision required | the world from sform/qform (codes 1–5 are RAS), a differing qform as a `world.transforms` entry to a local reference (`qform`), `xyzt_units` onto world axes, `toffset` onto the origin of the 4th dimension's axis (with slice timing, the origin's time is `toffset` plus slice 0's offset), a 4th dimension that is time only when its unit is a time (a `ppm` unit makes it a `chemical-shift` axis only when `toffset` is set, placing the first bin, and otherwise an axis of no type, since an unset `toffset` of 0 does not say the first bin is at 0 ppm; a `Hz` or `rad/s` unit a `frequency` axis, which has a local zero, §3.1), `dim_info` kept in the record, spatial dimensions `cell` and volumes `node` (NIfTI's voxels and time points; slice times are measured from the volume's time), intent codes onto `intent` and `components`: a vector or matrix intent's components are the 5th dimension, as nifti1.h lays them out, with a length-1 4th dimension that states nothing, or the 4th dimension in the four-dimensional layout some tools write. **Slice timing lives in the geometry, not also in the extension:** a regular order (`slice_code` sequential or interleaved, with `slice_duration`) becomes per-slice time origins on the slice dimension (or, when sequential, a step through space and time, §5.1), and irregular times (a BIDS `SliceTiming` list) become per-slice time origins, each slice at its acquisition instant (§5.1); the header's `slice_code`, `slice_start`, `slice_end` and `slice_duration` are then not repeated. A 3D file with a time unit keeps the unit in the extension and adds no time axis (an axis would claim one time point, §1). References: xform codes 3 and 4 name `nifti:talairach` and `nifti:mni152` (codes 1, 2 and 5 name no shared frame - a scanner, another file, some template - and write no `reference`); `nifti:mni152` means only "the header says an MNI 152 template", and finer names (`nifti:mni152nlin2009casym`) are optional, for a writer that knows the variant. |
+| `nifti` | 2.0, revision required | the world from the sform or the qform, as written (codes 1–5 are RAS); which one is the converter's caller's choice, since nifti1.h leaves it to the reader (the default is nibabel's, FSL's and SPM's: the sform when its code is not 0), recorded in the provenance step when the file had both; the other, where it places the grid differently, is a `world.transforms` entry to the bare reference `sform` or `qform` (§1). **No transform code names a shared frame**: code 4 says "an MNI 152 template" without saying which, and the codes stay in the record (§19 item 6). `xyzt_units` onto world axes; nifti1.h's time of volume k, `toffset` + k·`pixdim[4]`, onto the 4th dimension (with slice timing, the origin's time is `toffset` plus slice 0's offset); volumes state no `centering` (nifti1.h gives a volume a time, not an extent or an instant within one, §19 item 26); a 4th dimension that is time only when its unit is a time (a `ppm` unit makes it a `chemical-shift` axis only when `toffset` is set, placing the first bin, and otherwise an axis of no type, since an unset `toffset` of 0 does not say the first bin is at 0 ppm; a `Hz` or `rad/s` unit a `frequency` axis, which has a local zero, §3.1), `dim_info` kept in the record, spatial dimensions `cell`, intent codes onto `intent` and `components`: a vector or matrix intent's components are the 5th dimension, as nifti1.h lays them out, with a length-1 4th dimension that states nothing, or the 4th dimension in the four-dimensional layout some tools write; RGB24 / RGBA32 a trailing color dimension. **Slice timing lives in the geometry, not also in the extension:** a regular order (`slice_code` sequential or interleaved, with `slice_duration`) becomes per-slice time origins on the slice dimension (or, when sequential, a step through space and time, §5.1), and irregular times (a BIDS `SliceTiming` list) become per-slice time origins, each slice at its acquisition instant (§5.1); the header's `slice_code`, `slice_start`, `slice_end` and `slice_duration` are then not repeated. A 3D file with a time unit keeps the unit in the extension and adds no time axis (an axis would claim one time point, §1). Header extensions are kept whole in the record; CIFTI-2 and NIfTI-MRS are refused, their meaning being in an extension the converter does not read (§19 item 27). |
 | `dicom` | 2.0, revision required (it defines the `dicom:` reference, and moves what 1.0 readers look for — a varying rescale from `samples` onto `axis_linear` — so it is a new major, which a 1.0 reader ignores and reports rather than misreads, §2.3) | Frame of Reference UID → `world.reference` (`dicom:<UID>`), and it stays in `tags` as the source record (§2.3; the `frame-of-reference` group keeps both its keywords); the Synchronization Frame of Reference UID stays in `tags` only, and becomes an identity transform on the time axis to `dicom:<UID>` only when that axis is measured from that frame's zero (§3.2); a new section defining the `dicom:` reference (a UID, digits and dots, at most 64 characters; it covers the spatial axes as `world.reference` and the axes `on` names in a transform); a single Pixel Padding Value restated as `values.missing` under either policy where §6 allows it (so not with a Pixel Padding Range Limit, a rescale that varies by slice or frame, or a Modality LUT; left out then, not written `[]`), and kept in `tags` only while `stored_values` is true; Slice Location kept per slice as 1.0 §6.1 keeps it (its zero is unstated, so the core does not state it); Acquisition Time is when an acquisition started: a converter that knows the duration (PET's Actual Frame Duration) places the frame at its middle with that `thickness`, as a step or as positions by §5.4's rule (§13.6), and otherwise writes the time with no `centering` (§5.1); times in the source's unit (`ms` for Trigger Time, an instant, so a dimension of trigger times is `node`; `s` for times of day converted from their first frame); per-slice tags may sit in `samples` on a regular dimension (1.0 §6.2 said `samples` are omitted there); per-frame geometry onto `samples`; time only from real times; varying rescale onto `axis_linear`. **Unchanged from 1.x:** tags describe the source, not the array (§10.1); the §5 groups by name (0.6.2) and redaction as `null` with `anonymized: true` (§4.3); `stored_values` (true: the array holds the source's stored values, the mapping in `values.transforms`; false: the array holds the Modality stage's output, the quantity, encoded as `values.transforms` says) and the rule that nothing in stored-value units is written of values that are not stored values (§5.10); per-slice tags in `dimensions[i].samples[j].metadata.dicom`. The §2 table of excluded attributes names 2.0's fields: `origin`, `step`, `thickness`, `values.transforms`, `values.unit`, a dimension's `color_space`. |
 | `fits` | 2.0, revision required | the world is FITS's *intermediate* world coordinates (exact, linear; zero at the reference point, and for celestial axes coordinates in the projection plane, not offsets in right ascension), its axes of no type (being offsets, never `wavelength` or `chemical-shift`, §3.1), with local zeros; CTYPE/CUNIT/CRVAL/PV on world axes, and the CDELT/PC split and CRPIX kept for export only (the core states their product and the origin, and a reader never takes geometry from them); the celestial projection as an extension-defined transform type to `fits:icrs`; a unit table to UCUM. |
 | `nrrd` | 0.2, revision required | `spacings` of a no-space file become world axes (§15.1), reversing 0.1's rule that no world is inferred (untyped for `domain` kinds; a converter may take its caller's assertion that they are spatial, and records that in its provenance step, §19 item 15), and the extension records that the source had no `space` (`"no_space": true` in its top-level block, and no per-axis spacing or minimum, which the core states), so an export writes `spacings` and `axis mins` again; `space units` map one per world axis (export writes one entry for every world axis, including one no dimension steps along, as NRRD requires); range-axis `units` and a scalar file's measurement frame stay in the extension. |
@@ -1389,6 +1390,15 @@ axes without `positive` matched when both worlds agree on ids and units (a slide
 Reference); matching through a shared transform target; what a reader checks of `missing`;
 `lut` on non-integer values; OME names; 1.x `-time` and approximate transforms.
 
+**Round 11, on NIfTI (revision 16).** Four reviewers against nifti1.h, nifti1_io and nibabel,
+duckn's converter, the 2.0 writer, and mutation testing. They found that nifti1.h defines no
+precedence between the qform and the sform (revision 15 said it did), that no transform code
+identifies a template, and that `node` claimed an instant the header does not state (§19 items
+6, 25, 26); the rest were converter defects, fixed in duckn 0.6.4 (1D and 2D files, pairs, gzip
+by content, header extensions dropped, `toffset` left out of time positions, intents, RGB,
+LPS components written into an RAS file) and in the 2.0 writer (the other transform compared at
+the precision the header holds, the slice range, NIfTI-2's doubles).
+
 ## 19. Decisions
 
 Settled 2026-09-29, the owner agreeing to each recommendation:
@@ -1401,7 +1411,11 @@ Settled 2026-09-29, the owner agreeing to each recommendation:
 4. **FLIM microtime** is a `list` (§17).
 5. **NIfTI slice timing** lives in the geometry only; a 3D file's time unit stays in the
    extension (§17).
-6. **Template names**: `nifti:mni152` is generic; finer names are optional (§17).
+6. **Template names**: ~~`nifti:mni152` is generic; finer names are optional (§17).~~
+   **Reversed 2026-09-30:** no NIfTI transform code names a shared frame. Code 4 says "an MNI
+   152 template" and not which (there are several, millimeters apart), and code 3 Talairach
+   without a version, so two files stating one reference could be in different frames. The codes
+   stay in the extension's record; a writer that knows the frame may state a reference for it.
 7. **The units and transform specifications** are folded in (§3.4, §7).
 8. **The writing software** is recorded in the `provenance` extension, as 1.2 decided, by every
    2.0 writer (§9).
@@ -1457,6 +1471,23 @@ made to answer review findings; items 15 and 18 were amended in the answering, a
     (§4). Not adopted: `null` components.
 24. **A provenance step taking the previous output and a new source** says `"previous": true`
     beside its `inputs` (provenance 1.1, §9, §17).
+
+**Settled 2026-09-30, from an adversarial round on NIfTI** (four reviewers: the NIfTI standard
+and its reference library, the converter, the 2.0 writer, and mutation testing):
+
+25. **Which NIfTI transform is the world is the converter's caller's choice** (§17): nifti1.h
+    defines the qform and the sform and leaves the choice to the reader, and readers differ
+    (nibabel, FSL and SPM take the sform when its code is not 0; SimpleITK takes the qform for
+    an MNI sform beside a scanner qform, and for a sheared sform). The default is the first
+    rule; the choice is recorded in the provenance step when the file had both. Not adopted:
+    emulating one toolkit's rules exactly.
+26. **A NIfTI volume states no `centering`** (§17): nifti1.h gives volume k a time, `toffset` +
+    k·`pixdim[4]`, and no extent, and does not say which instant of the acquisition that time is.
+    NIfTI-2 keeps the same time fields; NIfTI-MRS and BIDS sidecars say more, and a converter
+    that reads them may state it. Not adopted: `node` (revision 6 to 15), which claimed instants.
+27. **NIfTI header extensions are kept opaque**, code and bytes, in the extension's record;
+    **CIFTI-2 and NIfTI-MRS are refused** (§17). Not adopted: interpreting the common extensions
+    (AFNI, DICOM, JSON), each a format of its own.
 
 Nothing is open.
 
