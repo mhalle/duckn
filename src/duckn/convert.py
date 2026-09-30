@@ -30,7 +30,7 @@ _NRRD_SPEC_FIELDS: frozenset[str] = frozenset({
     "min", "max", "oldmin", "old min", "oldmax", "old max",
     "content", "sample units", "spacings", "thicknesses",
     "axis mins", "axismins", "axis maxs", "axismaxs",
-    "centerings", "labels", "units", "space units",
+    "centerings", "centers", "labels", "units", "space units",
     "space origin", "measurement frame",
     "data file", "datafile",
     "lineskip", "line skip", "byteskip", "byte skip",
@@ -79,7 +79,7 @@ _NRRD_EXT_AXIS: dict[str, str] = {
 #: NRRD fields the convention models directly
 _NRRD_MODELED: frozenset[str] = frozenset({
     "space dimension", "space", "space directions", "space origin", "space units",
-    "kinds", "centerings", "thicknesses", "labels", "units", "measurement frame",
+    "kinds", "centerings", "centers", "thicknesses", "labels", "units", "measurement frame",
     "sample units",
 })
 #: NRRD fields that describe the file, not the array: Zarr's own metadata replaces them
@@ -227,7 +227,14 @@ def _header_to_metadata(
 
     # --- Per-axis fields from NRRD header ---
     kinds_raw = header.get("kinds")
+    # NRRD's own field is `centers`; `centerings` is its synonym. pynrrd parses only the
+    # synonym and hands `centers` back as the raw string, which 0.6.3 and earlier ignored: a
+    # node-centered file was read as cell-centered, its origin half a spacing off, and the field
+    # landed in keyvalues.
     centerings_raw = header.get("centerings")
+    if centerings_raw is None and isinstance(header.get("centers"), str):
+        centerings_raw = [None if c in ("???", "none") else c
+                          for c in header["centers"].split()]
     space_dirs_raw = header.get("space directions")
     thicknesses_raw = header.get("thicknesses")
     labels_raw = header.get("labels")
