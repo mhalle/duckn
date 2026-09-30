@@ -1216,7 +1216,10 @@ Each extension is revised separately; this is what 2.0 asks of each (from the st
 
 Each row says whether the 1.x version may be carried unrevised in a 2.0 file (*compatible*) or
 must be revised first (*revision required*, §2.3). No 2.0 file is written until the required
-revisions exist as documents; this table is what each must say.
+revisions exist as documents; this table is what each must say. Drafts of the five the medical
+converters need exist beside this one (2026-09-30), each stating what it changes in its 1.x
+document: `nrrd-extension-0.2.md`, `provenance-extension-1.1.md`, `dicom-spec-2.0.md`,
+`nifti-spec-2.0.md`, `dwi-extension-2.0.md`. `microscopy` 2.0 and `fits` 2.0 are not yet written.
 
 | Extension | Revision | What changes |
 |---|---|---|
