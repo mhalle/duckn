@@ -443,6 +443,12 @@ def _transform_problem(k, t, dims, lengths, data_type) -> str | None:
 # ---------------------------------------------------------------------------------------------
 
 
+def _wide(x: np.ndarray) -> np.ndarray:
+    """Values widened for a transform: float64, or complex128 for complex values (a scale
+    applies to both parts; float64 would drop the imaginary one)."""
+    return x.astype(np.complex128 if np.iscomplexobj(x) else np.float64)
+
+
 @dataclass
 class Header:
     """A valid 2.0 header, and what §11 says a reader derives from it."""
@@ -576,7 +582,7 @@ class Header:
         for t in transforms:
             p = t.get("parameters") or {}
             if t["name"] == "linear":
-                x = (x.astype(np.float64) * p["slope"]) + p["intercept"]
+                x = (_wide(x) * p["slope"]) + p["intercept"]
             elif t["name"] == "lut":
                 table = np.asarray(p["values"])
                 i = np.clip(x.astype(np.int64) - p.get("first_value", 0), 0, len(table) - 1)
@@ -588,11 +594,11 @@ class Header:
                     i = index[d]
                     s = slope[i] if slope.ndim else slope
                     c = intercept[i] if intercept.ndim else intercept
-                    x = x.astype(np.float64) * s + c
+                    x = _wide(x) * s + c
                 else:
                     shape = [1] * x.ndim
                     shape[d] = -1
-                    x = (x.astype(np.float64) * (slope.reshape(shape) if slope.ndim else slope)
+                    x = (_wide(x) * (slope.reshape(shape) if slope.ndim else slope)
                          + (intercept.reshape(shape) if intercept.ndim else intercept))
         return x
 

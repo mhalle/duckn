@@ -30,7 +30,7 @@ def upgrade(duckn1: dict, shape: tuple[int, ...], data_type: str | None = None, 
             software: tuple[str, str] | None = None,
             domain_axes: str | None = None, time_tag: str | None = None,
             record_times: bool = True, missing: list[float] | None = None,
-            source_name: str | None = None) -> dict:
+            source_name: str | None = None, affine: str | None = None) -> dict:
     """A converter's 1.x ``duckn`` object as the 2.0 object a 2.0 converter writes.
 
     ``what`` names the conversion for the provenance step (§9); ``source_format`` selects the
@@ -40,7 +40,9 @@ def upgrade(duckn1: dict, shape: tuple[int, ...], data_type: str | None = None, 
     (``"TriggerTime"`` or ``"AcquisitionTime"``), which the 1.x metadata does not record;
     ``record_times`` False when those times vary across a phase's slices, so that no one
     phase record can hold them (dicom 1.0 §6.1). ``source_name`` is the source's file name,
-    recorded as the source's ``path`` (provenance 1.1 §1.1).
+    recorded as the source's ``path`` (provenance 1.1 §1.1). ``affine`` is the NIfTI transform
+    the converter was asked to prefer (``"sform"`` or ``"qform"``), recorded in the step when the
+    file had both, since only then did the choice decide the world (nifti 2.0 §1).
     ``missing`` is the caller's ``values.missing``, in the quantity's units: a writer that
     materialized a source knows what its padding became (a CT's Pixel Padding Value through the
     rescale it applied), and by then the 1.x record has dropped it; refused where §6 forbids one.
@@ -54,7 +56,7 @@ def upgrade(duckn1: dict, shape: tuple[int, ...], data_type: str | None = None, 
     elif source_format == "DICOM":
         _finish_dicom(d, time_tag, record_times)
     elif source_format == "NIfTI":
-        _finish_nifti(d, shape)
+        _finish_nifti(d, shape, affine or "sform", parameters)
     _finish_dwmri(d, mapped.gradient_frame)
     _one_encoding(d)
     if missing is not None:
@@ -99,23 +101,42 @@ def _one_encoding(d: dict) -> None:
         if not samples or "step" not in dim or not all("position" in s for s in samples):
             continue
         pos = np.array([s["position"] for s in samples], float)
-        if len(pos) < 2:
-            continue
-        diffs = np.diff(pos)
-        if not np.allclose(diffs, diffs[0], rtol=1e-12, atol=0) or diffs[0] == 0:
-            _unit_step(dim, axes)
-            continue
         step = np.array(dim["step"], float)
-        if pos[0] != 0:
+        if len(pos) == 1:
+            # one sample: its position is where the grid starts, and needs no list (§5.4)
             if origin is None:
-                continue  # no origin to move: the positions are all the file has
-            origin[:] = (np.array(origin, float) + pos[0] * step).tolist()
-        dim["step"] = (step * diffs[0]).tolist()
+                continue
+            _move_origin(d, pos[0] * step, dim)
+        else:
+            diffs = np.diff(pos)
+            if not np.allclose(diffs, diffs[0], rtol=1e-12, atol=0) or diffs[0] == 0:
+                _unit_step(dim, axes)
+                continue
+            if pos[0] != 0:
+                if origin is None:
+                    continue  # no origin to move: the positions are all the file has
+                _move_origin(d, pos[0] * step, dim)
+            dim["step"] = (step * diffs[0]).tolist()
         rest = [{k: v for k, v in s.items() if k != "position"} for s in samples]
         if any(rest):
             dim["samples"] = rest
         else:
             del dim["samples"]
+
+
+def _move_origin(d: dict, delta: np.ndarray, moved: dict) -> None:
+    """Move ``origin`` by ``delta`` (a dimension's first position folded into it), and with it
+    every other dimension's sample origins, which are points of the same grid (§5.4: a sample's
+    origin is where that sample's grid starts, and ``samples[0].origin`` equals ``origin``)."""
+    if not np.any(delta):
+        return
+    d["origin"][:] = (np.array(d["origin"], float) + delta).tolist()
+    for other in d.get("dimensions", []):
+        if other is moved:
+            continue
+        for smp in other.get("samples") or []:
+            if "origin" in smp:
+                smp["origin"] = (np.array(smp["origin"], float) + delta).tolist()
 
 
 def _unit_step(dim: dict, axes: list) -> None:
@@ -364,7 +385,9 @@ def _dicom_padding(d: dict, dicom: dict, tags: dict) -> None:
 
 # ---- NIfTI (§5.1, §17's nifti row) -------------------------------------------------------------
 
-_XFORM_REFERENCE = {3: "nifti:talairach", 4: "nifti:mni152"}  # codes 1, 2, 5 name no shared frame
+# No transform code names a frame another file can share (nifti 2.0 §1, §19 item 6 as decided
+# 2026-09-30): code 4 says "an MNI 152 template" without saying which, and code 3 Talairach
+# without a version. The codes stay in the record; a writer that knows the frame may state it.
 
 
 def _slice_ranks(code: str, n: int) -> list[int] | None:
@@ -386,7 +409,8 @@ def _slice_ranks(code: str, n: int) -> list[int] | None:
     return ranks
 
 
-def _finish_nifti(d: dict, shape: tuple[int, ...]) -> None:
+def _finish_nifti(d: dict, shape: tuple[int, ...], affine: str = "sform",
+                  parameters: dict | None = None) -> None:
     from decimal import Decimal
 
     nifti = (d.get("extensions") or {}).get("nifti")
@@ -398,7 +422,20 @@ def _finish_nifti(d: dict, shape: tuple[int, ...]) -> None:
     if world is None:
         return
     axes = world["axes"]
-    _nifti_frames(d, nifti, tags, world)
+    if (tags.get("sform_code") or 0) > 0 and (tags.get("qform_code") or 0) > 0 \
+            and parameters is not None:
+        parameters["affine"] = affine  # the choice decided the world (nifti 2.0 §1)
+    _nifti_frames(d, nifti, tags, world, affine)
+    # A spatial dimension of length 1 has no cell and no spacing (§5.1): its extent is stated by
+    # `thickness` alone. A NIfTI voxel is pixdim thick along it - the step's length, which is
+    # the thickness as §5.1 asks - so the extent is known and is stated.
+    for k, dim in enumerate(d["dimensions"][:3]):
+        step = dim.get("step")
+        if k < len(shape) and shape[k] == 1 and step is not None and "thickness" not in dim:
+            length = float(np.linalg.norm([v for j, v in enumerate(step)
+                                           if axes[j].get("type") == "space"]))
+            if length > 0:
+                dim["thickness"] = length
     # A 4th dimension whose unit the header leaves unknown (xyzt_units' temporal code 0) states
     # no type: nothing says it is time (duckn 2.0 §3.1).
     for j, a in enumerate(axes):
@@ -408,23 +445,22 @@ def _finish_nifti(d: dict, shape: tuple[int, ...]) -> None:
 
     t = next((j for j, a in enumerate(axes) if a.get("type") == "time"), None)
     origin = d.get("origin")
-    for k, dim in enumerate(d["dimensions"]):
+    # A volume states no centering: nifti1.h gives each a time (toffset + k * pixdim[4]) and no
+    # extent, and that time is not said to be the volume's start, middle or any instant within
+    # its acquisition (nifti 2.0 §2, decided 2026-09-30). duckn 1.x (0.6.4) puts toffset in the
+    # 4th dimension's positions, so the origin carries it and the tag goes.
+    for dim in d["dimensions"][3:4]:
         step = dim.get("step")
-        if step is not None and t is not None and step[t] != 0 and all(
-                v == 0 for j, v in enumerate(step) if j != t) and shape[k] > 1:
-            dim["centering"] = "node"  # NIfTI's time points are instants; slice times add to them
-    if t is not None and origin is not None and "toffset" in tags:
-        origin[t] = tags.pop("toffset")
-    freq = next((j for j, a in enumerate(axes) if a.get("type") == "frequency"), None)
-    if freq is not None and origin is not None and "toffset" in tags:
-        origin[freq] = tags.pop("toffset")  # toffset is the 4th axis's origin, whatever its type
+        if step is not None and t is not None and step[t] != 0:
+            dim.pop("centering", None)
     # A spectrum in ppm is a chemical shift only where toffset places its first bin (nifti 2.0
-    # §2): duckn 1.x placed the first bin at 0 whatever the header said.
+    # §2): 0 does not say the first bin is at 0 ppm.
     ppm = next((j for j, a in enumerate(axes) if a.get("unit") == "[ppm]" and "type" not in a), None)
-    if ppm is not None and origin is not None and "toffset" in tags:
+    if ppm is not None and "toffset" in tags:
         axes[ppm]["type"] = "chemical-shift"
         axes[ppm]["id"] = "chemical-shift"
-        origin[ppm] = tags.pop("toffset")
+    if t is not None or ppm is not None or any(a.get("type") == "frequency" for a in axes):
+        tags.pop("toffset", None)
 
     timing = tags.get("slice_timing")
     slice_dim = (tags.get("dim_info") or {}).get("slice_dim")
@@ -434,11 +470,16 @@ def _finish_nifti(d: dict, shape: tuple[int, ...]) -> None:
     n = shape[k]
     ranks = _slice_ranks(timing.get("code"), n)
     duration = timing.get("duration")
-    if ranks is None or not duration or timing.get("start", 0) != 0 or timing.get("end", n - 1) != n - 1:
+    start, end = timing.get("start", 0), timing.get("end", n - 1)
+    if end <= start:
+        start, end = 0, n - 1  # nifti1_io: a range that is empty states none - every slice
+    if ranks is None or not duration or start != 0 or end != n - 1:
         return  # a partial or unknown order has no geometry: the record keeps what the source said
-    # The header states the duration as a float32: compute in its shortest decimal, so that
-    # three slices of 0.1 s are 0.3 s and not 0.30000000447 (§9: as the source states it).
-    unit = Decimal(str(np.float32(duration)))
+    # A NIfTI-1 header states the duration as a float32: compute in its shortest decimal, so
+    # that three slices of 0.1 s are 0.3 s and not 0.30000000447 (§9: as the source states it).
+    # NIfTI-2's is a float64, already the number the file holds.
+    unit = Decimal(str(np.float32(duration) if nifti.get("nifti_version", 1) == 1
+                       else float(duration)))
     times = [float(unit * r) for r in ranks]
     dim = d["dimensions"][k]
     step = [float(v) for v in dim["step"]]
@@ -502,12 +543,13 @@ def _dicom_units(d: dict, tags: dict) -> None:
         values["unit"] = "Bq/mL"
 
 
-def _nifti_frames(d: dict, nifti: dict, tags: dict, world: dict) -> None:
-    """The frame the world is in, by the affine it came from (nifti 2.0 §1): duckn's import takes
-    the qform when the sform's spacing disagrees with pixdim, so the frame is named by whichever
-    affine the core states, compared with the header's own (``legacy``). The other one, where it
-    differs, is a transform: to its template frame, or to the bare reference ``sform`` or
-    ``qform``. The records of both then go (§5)."""
+def _nifti_frames(d: dict, nifti: dict, tags: dict, world: dict, affine: str = "sform") -> None:
+    """The transform the core does not state, as a transform (nifti 2.0 §1). duckn's import
+    places the array by one of the header's two, as written (``affine``: the one preferred, the
+    other when the preferred one's code is 0 or its matrix singular); ``legacy`` holds both as
+    the header had them. Where the other one places the grid differently it is a
+    ``world.transforms`` entry to the bare reference ``sform`` or ``qform`` (local to the array,
+    duckn 2.0 §1), naming no template: the codes stay in the record. The records then go (§5)."""
     legacy = (nifti.get("legacy") or {}).get("tags") or {}
     dims = d.get("dimensions") or []
     core = np.eye(4)
@@ -519,21 +561,39 @@ def _nifti_frames(d: dict, nifti: dict, tags: dict, world: dict) -> None:
     codes = {"sform": tags.get("sform_code") or 0, "qform": tags.get("qform_code") or 0}
     mats = {k: np.array(legacy[k], float) for k in ("sform", "qform")
             if k in legacy and codes[k] > 0}
-    used = next((k for k in ("sform", "qform") if k in mats
-                 and np.allclose(mats[k], core, rtol=0, atol=1e-5)), None)
-    if used is None:  # no records to compare: the code the import prefers
-        used = "sform" if codes["sform"] > 0 else ("qform" if codes["qform"] > 0 else None)
-    if used is not None and codes[used] in _XFORM_REFERENCE and "reference" not in world:
-        world["reference"] = _XFORM_REFERENCE[codes[used]]
+    # the one the core was built from: exactly equal (the import copies it), the preferred first
+    order = (affine, "qform" if affine == "sform" else "sform")
+    used = next((k for k in order if k in mats and np.array_equal(mats[k], core)), None)
     other = "qform" if used == "sform" else "sform"
-    if used in mats and other in mats and not np.allclose(mats[other], mats[used], rtol=0, atol=1e-5):
+    if used is not None and other in mats and not _same_placement(mats[used], mats[other]):
         m = mats[other] @ np.linalg.inv(mats[used])
-        ras = [{"id": i, "type": "space", "unit": world["axes"][0].get("unit", "mm"), "positive": p}
-               for i, p in zip("xyz", ("right", "anterior", "superior"))]
+        unit = world["axes"][0].get("unit")
+        ras = [{"id": i, "type": "space", **({"unit": unit} if unit is not None else {}),
+                "positive": p} for i, p in zip("xyz", ("right", "anterior", "superior"))]
         world.setdefault("transforms", []).append({
-            "to": {"reference": _XFORM_REFERENCE.get(codes[other], other), "axes": ras},
+            "to": {"reference": other, "axes": ras},
             "on": ["x", "y", "z"], "forward": {"affine": m[:3].tolist()}})
     nifti.pop("legacy", None)
+
+
+def _same_placement(a: np.ndarray, b: np.ndarray) -> bool:
+    """Whether two NIfTI transforms place the grid alike, to the precision the header holds
+    them: a qform is a float32 quaternion, offsets and pixdim, so one written from an sform (as
+    every scanner converter does) agrees with it only to float32. Equal within a few float32
+    ulps of the larger entry, or equal to the qform the sform would have been written as."""
+    if not (np.all(np.isfinite(b)) and abs(np.linalg.det(b[:3, :3])) > 1e-12):
+        return True  # a singular transform places nothing: no second placement to state
+    scale = max(1.0, float(np.max(np.abs(a))), float(np.max(np.abs(b))))
+    tol = 8 * float(np.finfo(np.float32).eps) * scale
+    if np.allclose(a, b, rtol=0, atol=tol):
+        return True
+    try:
+        import nibabel as nib
+        h = nib.Nifti1Header()
+        h.set_qform(a)                    # a quaternion, float32, as a writer would store it
+        return bool(np.allclose(h.get_qform(), b, rtol=0, atol=tol))
+    except Exception:                     # noqa: BLE001 - a shear no qform can hold
+        return False
 
 
 def _nrrd_extra_axes(d, axes1, placed, shape) -> None:

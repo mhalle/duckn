@@ -263,11 +263,12 @@ class TestNiftiAgainstTheReferenceHeader(unittest.TestCase):
         self.assertEqual(times, [0.3, 0.0, 0.4, 0.1, 0.5, 0.2])
         self.assertEqual(d["origin"], d["dimensions"][2]["samples"][0]["origin"])
 
-    def test_a_template_code_names_the_frame_and_others_do_not(self):
-        d, _ = _nifti(self.tmp.name, sform_code=4, slice_code=0)
-        self.assertEqual(d["world"]["reference"], "nifti:mni152")
-        d, _ = _nifti(self.tmp.name, sform_code=2, slice_code=0)
-        self.assertNotIn("reference", d["world"])
+    def test_no_code_names_a_shared_frame(self):
+        # code 4 says "an MNI 152 template", not which: the code stays in the record (nifti 2.0 §1)
+        for code in (1, 2, 3, 4, 5):
+            d, _ = _nifti(self.tmp.name, sform_code=code, slice_code=0)
+            self.assertNotIn("reference", d["world"])
+            self.assertEqual(d["extensions"]["nifti"]["tags"]["sform_code"], code)
 
     def test_a_partial_slice_range_stays_in_the_record(self):
         d, _ = _nifti(self.tmp.name, edit=lambda h: h.__setitem__("slice_end", 4))
@@ -279,9 +280,11 @@ class TestNiftiAgainstTheReferenceHeader(unittest.TestCase):
         self.assertEqual(d["origin"][3], 7.5)
         self.assertNotIn("toffset", d["extensions"]["nifti"].get("tags", {}))
 
-    def test_volumes_are_instants(self):
+    def test_volumes_state_no_centering(self):
+        # nifti1.h gives a volume a time and no extent, and does not say which instant of its
+        # acquisition that time is (nifti 2.0 §2)
         d, _ = _nifti(self.tmp.name, slice_code=0)
-        self.assertEqual(d["dimensions"][3], {"step": [0.0, 0.0, 0.0, 2.0], "centering": "node"})
+        self.assertEqual(d["dimensions"][3], {"step": [0.0, 0.0, 0.0, 2.0]})
 
 
 class TestOneEncoding(unittest.TestCase):

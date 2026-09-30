@@ -9,7 +9,7 @@ files to each other now; the reader's tests will hold the reader to them.
 | `scenarios.md` | S1-S26: a dataset's source facts, as a converter author has them. S1-S16 are rounds 1-3's; S17-S26 rounds 4-10's. |
 | `questionnaire.md` | Q1-Q16: what a reader must recover from a header. |
 | `truth.py`, `truth.json` | What a reader must recover, computed from the scenarios' facts alone, never from a header (positions, extents, values, times). Regenerate with `python truth.py`. |
-| `headers/S17.json` … `S26.json` | Reference 2.0 headers under revision 14. Two writers in rounds 4-8 wrote the same core headers independently; these are those, updated to revision 14 (`dicom` 2.0, `provenance` `sources`, S20's untyped `domain` axes and `nrrd` `no_space`, S21 without an unstated unit, S23's axis id `wavelength`). S25 equals S18: the draft now requires a materializing converter to restate padding. |
+| `headers/S17.json` … `S26.json` | Reference 2.0 headers under revision 14. Two writers in rounds 4-8 wrote the same core headers independently; these are those, updated to revision 14 (`dicom` 2.0, `provenance` `sources`, S20's untyped `domain` axes and `nrrd` `no_space`, S21 without an unstated unit and, since 2026-09-30, without a centering on its volumes (nifti 2.0 §2: a NIfTI volume has a time, not an extent or an instant within one), S23's axis id `wavelength`). S25 equals S18: the draft now requires a materializing converter to restate padding. |
 | `faults/` | 2.0 files with a planted fault, and the verdict below. |
 | `legacy/` | 1.x files for the §14 mapping, and the verdict below. |
 

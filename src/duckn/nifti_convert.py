@@ -665,7 +665,7 @@ def nifti_to_zarr(
         from duckn.convention2_write import upgrade
         attrs = {"duckn": upgrade(meta.model_dump(exclude_none=True, mode="json"), tuple(shape),
                                   str(data.dtype), what="convert NIfTI", source_format="NIfTI",
-                                  source_name=Path(input_path).name, affine=affine)}
+                                  source_name=Path(input_path).name, affine=prefer)}
     elif convention != "1.x":
         raise ValueError(f"convention {convention!r}: \"1.x\" or \"2.0\"")
 
