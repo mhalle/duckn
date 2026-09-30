@@ -6,8 +6,8 @@ one means unknown, where 1.0 read it as the identity; a 1.0 reader ignores and r
 block, duckn 2.0 §2.3)
 **For:** duckn convention 2.0 (draft, `docs/proposals/duckn-2.0.md`). 1.x files keep 1.0
 (`docs/dwi-extension.md`).
-**Status:** Draft, 2026-09-30. Not yet written by duckn: its NRRD DWI import writes 1.0, and
-a 2.0 DWI file waits on this revision (duckn 2.0 §17).
+**Status:** Draft, 2026-09-30. Written by `duckn.convention2_write` from its NRRD DWI import
+(`nrrd_to_zarr(convention="2.0")`, experimental).
 
 This document states what 2.0 changes in dwmri 1.0. Everything it does not mention - `b_value`,
 `b_value_units`, the per-volume `gradients`, `b_matrices` and `b_values` (1.0 §4.2), implicit
@@ -61,10 +61,16 @@ gradients are already in the world's axes writes the identity, stating it. `fram
   rotation - and writes `frame` as the identity. Image-frame gradients have no form in 2.0.
 - **MRtrix** (`.b`, scanner coordinates): world axes, `frame` the identity.
 
-## 5. Phase encoding names a dimension
+## 5. What the block leaves out
+
+1.0's `legacy.keyvalues` (the source NRRD's `DWMRI_*` key/value strings) restated the gradients
+and b-value the block states: it is left out (duckn 2.0 §2.3), and an export writes the keys again
+from the fields. `gradient_frame` is replaced by `frame` (§3).
+
+## 6. Phase encoding names a dimension
 
 1.0's `acquisition.phase_encoding_direction` (`"i"`, `"j-"`, ...) named an image axis in a layout
-the file does not fix. 2.0 names the array's dimension:
+the file does not fix, so it is not carried from a 1.0 block; 2.0 names the array's dimension:
 
 | Field | Meaning |
 |---|---|
@@ -73,7 +79,7 @@ the file does not fix. 2.0 names the array's dimension:
 `acquisition.slice_timing` stays in the block: a diffusion series' volumes are a list, with no
 time axis for the slice times to be geometry on (duckn 2.0 §5.1).
 
-## 6. Example
+## 7. Example
 
 Two volumes (b = 0, then b = 1000 along the patient's left), gradients in world axes:
 
