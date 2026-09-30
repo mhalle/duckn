@@ -131,6 +131,19 @@ def _chunk_bytes(chunks: list[int], itemsize: int) -> int:
     return result
 
 
+def _unit_along(direction: list[float], space_units: list[str]) -> str | None:
+    """The unit of an axis that steps by `direction`.
+
+    NRRD's `space units` name one unit per WORLD axis, so an array axis takes the unit of the
+    world axes its step moves along, when they agree. Through 0.6.0 the k-th entry went to the
+    k-th spatial array axis, which is wrong whenever the units differ (a 2D+time space, a
+    permuted or oblique grid).
+    """
+    known = [u if u and u != "???" else None for u in space_units]
+    along = {known[j] for j, c in enumerate(direction) if j < len(known) and c != 0}
+    return along.pop() if len(along) == 1 else None
+
+
 def _transpose_matrix(mat: list[list[float]]) -> list[list[float]]:
     """Transpose a list-of-lists matrix."""
     n = len(mat)
@@ -265,7 +278,6 @@ def _header_to_metadata(
 
     # --- Build AxisMetadata for each axis ---
     axes: list[AxisMetadata] = []
-    spatial_count = 0
     for i in range(ndim):
         ax_kwargs: dict[str, Any] = {}
 
@@ -292,11 +304,9 @@ def _header_to_metadata(
 
         # Units: for spatial axes prefer space units, else use per-axis units
         if is_spatial and space_units_raw is not None:
-            if spatial_count < len(space_units_raw):
-                su = space_units_raw[spatial_count]
-                if su and su != "???":
-                    ax_kwargs["unit"] = su
-            spatial_count += 1
+            su = _unit_along(ax_kwargs["space_direction"], list(space_units_raw))
+            if su is not None:
+                ax_kwargs["unit"] = su
         elif units is not None and i < len(units):
             u = units[i]
             if u and u != "???":
@@ -328,10 +338,13 @@ def _header_to_metadata(
     if mf_raw is not None:
         # pynrrd hands the header's vectors back as the ROWS of its array, and each NRRD vector is
         # a COLUMN of the frame (teem's format: "the vectors are the columns of the matrix"); duckn
-        # stores the matrix by rows (duckn-spec §3.1). Copying pynrrd's rows across stored the
-        # transpose, invisible to a round trip and to any symmetric frame, through 0.5.4.
+        # stores the matrix by rows (duckn-spec §3.1), 1.1's form; 1.0 wrote it as NRRD does, by
+        # columns. Through 0.5.4 duckn copied pynrrd's rows across (columns, under 1.0: right by
+        # accident); 0.5.5 to 0.6.2 wrote rows and still declared 1.0. The file declares the
+        # version whose rule its frame follows; none of the mislabeled files was distributed.
         meta_kwargs["measurement_frame"] = _transpose_matrix(
             [_clean_float_list(row) for row in mf_raw])
+        meta_kwargs["version"] = "1.1"
 
     sample_units_raw = header.get("sample units")
     if sample_units_raw:
@@ -471,8 +484,9 @@ def _metadata_to_header(
 
     # --- measurement frame ---
     if meta.measurement_frame is not None:
-        # duckn's rows back to NRRD's column vectors (see _header_to_metadata)
-        header["measurement frame"] = np.array(_transpose_matrix(meta.measurement_frame))
+        # duckn's rows back to NRRD's column vectors (see _header_to_metadata); a 1.0 file's
+        # frame is already columns, and measurement_frame_rows() reads it by its version
+        header["measurement frame"] = np.array(_transpose_matrix(meta.measurement_frame_rows()))
 
     # --- Per-axis fields ---
     axes = meta.axes or []
@@ -517,17 +531,29 @@ def _metadata_to_header(
             header["thicknesses"] = thicknesses_out
 
         # space units
+        # One entry per WORLD axis (not per spatial array axis, as through 0.6.0): the unit of
+        # the array axes stepping along it. A world axis no array axis steps along (a 2D slice
+        # in 3D) takes the unit every spatial axis shares, if they share one.
         if space_dim is not None:
+            def _symbol(u: Any) -> str:
+                if u is None:
+                    return ""
+                return u if isinstance(u, str) else getattr(u, "symbol", None) or ""
+
+            spatial = [ax for ax in nrrd_axes if ax.space_direction is not None]
+            shared = {_symbol(ax.unit) for ax in spatial}
+            shared_unit = shared.pop() if len(shared) == 1 else ""
             spatial_units: list[str] = []
-            for ax in nrrd_axes:
-                if ax.space_direction is not None:
-                    u = ax.unit
-                    if isinstance(u, str):
-                        spatial_units.append(u)
-                    elif u is not None:
-                        spatial_units.append(u.symbol)  # type: ignore[union-attr]
-                    else:
-                        spatial_units.append("")
+            for j in range(space_dim):
+                along = {_symbol(ax.unit) for ax in spatial
+                         if j < len(ax.space_direction) and ax.space_direction[j] != 0}
+                along.discard("")
+                if len(along) == 1:
+                    spatial_units.append(along.pop())
+                elif not along:
+                    spatial_units.append(shared_unit)
+                else:
+                    spatial_units.append("")
             if any(spatial_units):
                 header["space units"] = spatial_units
 

@@ -547,6 +547,18 @@ class DucknMetadata(BaseModel):
             return True
         return _version_tuple(self.version) < (1, 2)
 
+    def measurement_frame_rows(self) -> list[list[float]] | None:
+        """The measurement frame as rows (``world = F @ measurement``), whatever the file's
+        version: 1.0 wrote it as NRRD does, by columns, and 1.1 turned it to rows (the
+        transform specification's "Change from version 1.0"). A writer of rows declares 1.1 or
+        later; duckn 0.5.5 to 0.6.2 wrote rows under 1.0, and none of those files was
+        distributed."""
+        if self.measurement_frame is None:
+            return None
+        if _version_tuple(self.version) < (1, 1):
+            return [list(col) for col in zip(*self.measurement_frame)]
+        return [list(row) for row in self.measurement_frame]
+
     def _get_space_dim(self) -> int | None:
         """Return the space dimension from either space or space_dimension."""
         if self.space is not None:

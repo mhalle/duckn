@@ -139,6 +139,31 @@ _SLICE_CODE_TO_STR: dict[int, str] = {
 
 _STR_TO_SLICE_CODE: dict[str, int] = {v: k for k, v in _SLICE_CODE_TO_STR.items()}
 
+# Temporal unit codes that make the 4th dimension something other than time (nifti1.h: the
+# "temporal" unit bits also carry frequency, chemical shift and angular frequency).
+_NON_TIME_UNITS = frozenset({"Hz", "ppm", "rad/s"})
+
+# Intents whose values are vectors or matrices: nifti1.h puts the components in the 5th
+# dimension (dim[5]), with dim[4] = 1; some writers put them in the 4th instead.
+def _components_kind(intent_code: int, size: int) -> AxisKind:
+    if intent_code == 1005:                               # NIFTI_INTENT_SYMMATRIX
+        return {6: AxisKind.THREE_D_SYMMETRIC_MATRIX,
+                3: AxisKind.TWO_D_SYMMETRIC_MATRIX}.get(size, AxisKind.LIST)
+    if intent_code == 1004:                               # NIFTI_INTENT_GENMATRIX
+        return {9: AxisKind.THREE_D_MATRIX, 4: AxisKind.TWO_D_MATRIX}.get(size, AxisKind.LIST)
+    if intent_code in (1006, 1007):                       # DISPVECT, VECTOR
+        return AxisKind.VECTOR
+    if intent_code == 1010 and size == 4:                 # QUATERNION
+        return AxisKind.QUATERNION
+    if intent_code == 2003 and size == 3:                 # RGB_VECTOR
+        return AxisKind.RGB_COLOR
+    if intent_code == 2004 and size == 4:                 # RGBA_VECTOR
+        return AxisKind.RGBA_COLOR
+    return AxisKind.LIST
+
+
+_VECTOR_INTENTS = frozenset({1004, 1005, 1006, 1007, 1010, 2003, 2004})
+
 # NIfTI intent codes → convention-level intent strings
 _INTENT_CODE_TO_CONVENTION: dict[int, str] = {
     2: "statistical-map",
@@ -304,22 +329,37 @@ def nifti_to_zarr(
             ax_kwargs["unit"] = spatial_unit
         axes.append(AxisMetadata(**ax_kwargs))
 
-    # Time axis for 4D+
+    # Dimensions 4 and 5. Until 0.6.1 the 4th was always time and the 5th stated nothing, so a
+    # vector or tensor file (components in dim 5, dim 4 = 1, as nifti1.h lays them out) gained a
+    # time axis, and a spectrum (a Hz or ppm unit) was called time.
+    intent_code_hdr = int(hdr["intent_code"])
+    components_dim = None
+    if intent_code_hdr in _VECTOR_INTENTS:
+        components_dim = 4 if ndim >= 5 else (3 if ndim == 4 else None)
     if ndim >= 4:
-        time_kwargs: dict[str, Any] = {"kind": AxisKind.TIME}
-        if temporal_unit:
-            time_kwargs["unit"] = temporal_unit
-        # pixdim[4] is the sampling interval (TR), which is what `samples[i].position` states
-        # on a time axis (duckn-spec §3.2). 0.5.4 wrote it as `thickness` - the extent each
-        # sample measures, which is not the interval between samples.
-        pixdim4 = float(hdr["pixdim"][4])
-        if pixdim4 > 0 and shape[3] >= 2:
-            time_kwargs["samples"] = [{"position": k * pixdim4} for k in range(shape[3])]
-        axes.append(AxisMetadata(**time_kwargs))
+        if components_dim == 3:
+            axes.append(AxisMetadata(kind=_components_kind(intent_code_hdr, shape[3])))
+        elif components_dim == 4 and shape[3] == 1:
+            axes.append(AxisMetadata())                    # nifti1.h's placeholder dim[4] = 1
+        else:
+            kind = AxisKind.DOMAIN if temporal_unit in _NON_TIME_UNITS else AxisKind.TIME
+            time_kwargs: dict[str, Any] = {"kind": kind}
+            if temporal_unit:
+                time_kwargs["unit"] = temporal_unit
+            # pixdim[4] is the sampling interval (TR), which is what `samples[i].position`
+            # states on a time axis (duckn-spec §3.2). 0.5.4 wrote it as `thickness` - the
+            # extent each sample measures, which is not the interval between samples.
+            pixdim4 = float(hdr["pixdim"][4])
+            if pixdim4 > 0 and shape[3] >= 2:
+                time_kwargs["samples"] = [{"position": k * pixdim4} for k in range(shape[3])]
+            axes.append(AxisMetadata(**time_kwargs))
 
-    # Extra axes beyond 4D (rare)
+    # Dimensions beyond the 4th
     for i in range(4, ndim):
-        axes.append(AxisMetadata())
+        if i == components_dim:
+            axes.append(AxisMetadata(kind=_components_kind(intent_code_hdr, shape[i])))
+        else:
+            axes.append(AxisMetadata())
 
     # --- Value transforms from scl_slope/scl_inter ---
     # Use raw header because nibabel sanitizes these in the image header
@@ -471,11 +511,15 @@ def nifti_to_zarr(
 
     compressors_list = _build_compressors(compressor, level)
 
+    # "t" only for a dimension that is time; the components dimension is "c".
     dim_names = ["i", "j", "k"]
-    if ndim >= 4:
-        dim_names.append("t")
-    for i in range(4, ndim):
-        dim_names.append(f"d{i}")
+    for i in range(3, ndim):
+        if i == components_dim:
+            dim_names.append("c")
+        elif i == 3 and axes[3].kind == AxisKind.TIME:
+            dim_names.append("t")
+        else:
+            dim_names.append(f"d{i}")
 
     attrs = {"duckn": meta.model_dump(exclude_none=True)}
 
@@ -717,10 +761,11 @@ def zarr_to_nifti(
                 break
         # Time axis
         for ax in meta.axes[3:]:
-            if ax.kind == AxisKind.TIME and isinstance(ax.unit, str):
+            if ax.kind in (AxisKind.TIME, AxisKind.DOMAIN) and isinstance(ax.unit, str):
                 temporal_unit_code = _UNIT_TO_TEMPORAL_CODE.get(ax.unit, 0)
                 break
-    has_time_axis = bool(meta.axes) and any(ax.kind == AxisKind.TIME for ax in meta.axes[3:])
+    has_time_axis = bool(meta.axes) and any(
+        ax.kind in (AxisKind.TIME, AxisKind.DOMAIN) for ax in meta.axes[3:])
     if tags and tags.xyzt_units is not None and not has_time_axis:
         temporal_unit_code = int(tags.xyzt_units) & 0x38
     hdr["xyzt_units"] = spatial_unit_code | temporal_unit_code

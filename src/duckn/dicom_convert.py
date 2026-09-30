@@ -561,6 +561,49 @@ def _get_temporal_key(ds: Any) -> float:
     return float(getattr(ds, "InstanceNumber", 0))
 
 
+def _tm_seconds(value: Any) -> float | None:
+    """A DICOM TM value (HHMMSS.FFFFFF, fields optional after HH) as seconds since midnight."""
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        whole, _, frac = text.partition(".")
+        hh = int(whole[0:2])
+        mm = int(whole[2:4]) if len(whole) >= 4 else 0
+        ss = int(whole[4:6]) if len(whole) >= 6 else 0
+        return hh * 3600 + mm * 60 + ss + (float("0." + frac) if frac else 0.0)
+    except ValueError:
+        return None
+
+
+def _real_times_ms(datasets: list[Any]) -> list[float] | None:
+    """The times of these instances in ms, only where the files state real times.
+
+    TriggerTime is in ms. Otherwise AcquisitionTime differences from the first instance (a
+    series crossing midnight is unwrapped). TemporalPositionIdentifier and InstanceNumber order
+    the frames (:func:`_get_temporal_key`) but are indices, not times: until 0.6.1 they were
+    written as times in ms, which a reader took at their word.
+    """
+    trigger = [getattr(ds, "TriggerTime", None) for ds in datasets]
+    if all(t is not None and str(t).strip() != "" for t in trigger):
+        try:
+            return [float(t) for t in trigger]
+        except (TypeError, ValueError):
+            pass
+    acq = [_tm_seconds(getattr(ds, "AcquisitionTime", "")) for ds in datasets]
+    if all(a is not None for a in acq):
+        out: list[float] = []
+        offset = 0.0
+        for a in acq:
+            rel = a - acq[0] + offset
+            if out and rel < out[-1] / 1000.0 - 43200.0:     # the clock passed midnight
+                offset += 86400.0
+                rel += 86400.0
+            out.append(rel * 1000.0)
+        return out
+    return None
+
+
 def _load_2d_series(
     datasets: list[Any],
 ) -> tuple[np.ndarray, DicomImageInfo, list[Any]]:
@@ -1465,8 +1508,13 @@ def _build_samples(
     dir_arr = np.array(space_direction)
     dir_mag = np.linalg.norm(dir_arr)
 
-    # Project positions onto slice normal to get scalar positions
-    projections = [float(np.dot(np.array(p), slice_normal)) for p in positions_3d]
+    # Each slice's distance from the origin along the slice direction: what `samples[i].position`
+    # states (duckn-spec: "the distance along space_direction from the origin"), and what the
+    # exporter and the JS reader add to the origin. Until 0.6.1 this was the ABSOLUTE projection
+    # dot(IPP, normal), so every irregularly spaced series whose first slice did not sit on the
+    # plane through the world zero was placed off by dot(IPP_0, normal) on export or read.
+    unit_dir = dir_arr / dir_mag if dir_mag > 0 else slice_normal
+    projections = [float(np.dot(np.array(p) - origin_arr, unit_dir)) for p in positions_3d]
 
     # Check if positions differ only along the slice normal (position vs origin)
     # Residual = position minus the component along slice normal
@@ -1558,28 +1606,18 @@ def build_duckn_metadata(
 
             # Extract temporal positions from first slice of each time point
             # datasets are ordered [t0_z0, t0_z1, ..., t1_z0, t1_z1, ...]
+            times_ms = None
             if len(datasets) >= n_t * n_z:
-                trigger_times = []
-                for t_idx in range(n_t):
-                    ds_t = datasets[t_idx * n_z]
-                    trigger_times.append(_get_temporal_key(ds_t))
+                times_ms = _real_times_ms([datasets[t_idx * n_z] for t_idx in range(n_t)])
+                if times_ms is not None:
+                    time_samples = [SampleMetadata(position=t) for t in times_ms]
 
-                # Check if times are non-uniform
-                if len(trigger_times) > 1:
-                    diffs = np.diff(trigger_times)
-                    is_uniform_time = len(diffs) > 0 and np.allclose(
-                        diffs, diffs[0], rtol=0.01
-                    )
-                else:
-                    is_uniform_time = True
-
-                time_samples = [
-                    SampleMetadata(position=t) for t in trigger_times
-                ]
-
-            # Determine time unit from TriggerTime (always ms in DICOM)
-            time_kwargs: dict[str, Any] = {"kind": AxisKind.TIME, "unit": "ms"}
+            # Only real times state a unit and positions: with neither TriggerTime nor
+            # AcquisitionTime the axis is time, its coordinates unknown (duckn-spec: absent means
+            # unknown), rather than an index labeled milliseconds.
+            time_kwargs: dict[str, Any] = {"kind": AxisKind.TIME}
             if time_samples:
+                time_kwargs["unit"] = "ms"
                 time_kwargs["samples"] = time_samples
             axes.append(AxisMetadata(**time_kwargs))
 

@@ -1,5 +1,61 @@
 # Changelog
 
+## Unreleased
+
+- **A NRRD import with a measurement frame declares convention 1.1**, the version whose rule the
+  frame follows: 1.0 wrote the frame as NRRD does, by columns, and 1.1 turned it to rows (the
+  transform specification's "Change from version 1.0"). 0.5.5 to 0.6.2 wrote rows and declared
+  1.0, so a reader that honors the version read a non-symmetric frame transposed; none of those
+  files was distributed. `DucknMetadata.measurement_frame_rows()` reads a frame by its file's
+  version, and NRRD export uses it, so a genuine 1.0 file (columns) exports its vectors right.
+  Found while writing the convention 2.0 reader's §14 mapping.
+
+## 0.6.2 — 2026-09-27
+
+- **dicom-spec §5's groups by name** (`patient`, `study`, `series`, `equipment`, `ct`, `mr`,
+  `pet`, `frame-of-reference`, `sop-common`, `image-quality`; the spec's headings now carry
+  them) and three helpers in `duckn.dicom_tags`: `MODULES`, `keywords_named` (group names and
+  PS3.6 keywords to keys; an unknown name is a ValueError, never an empty selection), `select`
+  and `withhold` (§4.3's redaction: every present value named becomes `null`, at any depth, and
+  the caller learns whether anything was). A test reads the spec's tables and holds `MODULES`
+  equal to them. For a reader that serves a file's tags - haversack's `dicom.json` is the first.
+  The convention is unchanged.
+
+## 0.6.1 — 2026-09-27
+
+Four converter defects in how 1.x files state where samples lie and what a dimension is. None
+changes the convention; each test fails on 0.6.0.
+
+- **DICOM, irregular slice spacing: `samples[i].position` is a distance from the origin**
+  (duckn-spec §3.2), as it always was for regular series. 0.6.0 wrote each slice's position
+  along the slice normal measured from the patient origin - its absolute coordinate - so a
+  reader adding it to `space_origin` counted the first slice's offset twice. Regular series were
+  never affected.
+- **DICOM 4D: a time axis states times only when the series gives them.** Trigger Time is
+  milliseconds; otherwise Acquisition Time differences, in milliseconds from the first frame,
+  continued past midnight. Temporal Position Identifier (an index) and nothing at all no longer
+  become "times" - the axis is time with no positions then, which says what is known.
+- **NIfTI: components where nifti1.h puts them, and spectra are not time.** A vector or matrix
+  intent (symmetric and general matrix, displacement, vector, quaternion, RGB, RGBA) makes the
+  5th dimension its components (`3D-symmetric-matrix`, `vector`, `RGB-color`, ... or `list`
+  when the count fits no kind), with the placeholder 4th dimension of size 1 stating nothing; in
+  the four-dimensional layout some tools write, the 4th dimension is the components. A Hz, ppm
+  or rad/s unit in `xyzt_units` makes the 4th dimension a `domain`, not time, and exports its
+  unit code back. Through 0.6.0 the 4th dimension was always time and the 5th stated nothing,
+  so a tensor file gained a one-sample time axis. Dimension names follow: `t` only for time,
+  `c` for components.
+- **NRRD `space units` are one per world axis.** Import gives an array axis the unit of the
+  world axes its step moves along (when they agree); export writes one entry per world axis.
+  Through 0.6.0 the k-th entry went to the k-th spatial array axis - wrong whenever units differ
+  or axes are permuted - and a 2D slice in 3D exported two entries where NRRD requires three.
+
+**Stores written by 0.6.0 or earlier need converting again from their sources** when they came
+from: an irregularly spaced DICOM series (absolute positions); a 4D DICOM series with only
+Temporal Position Identifier (indices labeled milliseconds); a NIfTI vector or tensor file, or one
+whose 4th dimension is in `Hz`, `ppm` or `rad/s` (a time axis where the components or the
+spectrum were); an NRRD whose `space units` differ between world axes (units on the wrong axes).
+Nothing in a store records which duckn wrote it, so a reader cannot find these by itself.
+
 ## 0.6.0 — 2026-09-27
 
 Writes and reads convention 1.2; reads 1.0 and 1.1 files as before. The convention version (in
