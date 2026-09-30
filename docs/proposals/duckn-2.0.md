@@ -1,11 +1,11 @@
 # duckn convention 2.0 — draft specification
 
-**Status:** draft for review, revision 8, 2026-09-30. Not implemented. Supersedes the two
+**Status:** draft for review, revision 9, 2026-09-30. Not implemented. Supersedes the two
 world-frame proposals of 2026-09-26/27, whose decisions it records in §16. Revisions 2–4 answer
 three adversarial rounds and a study of every extension; revision 5 follows duckn 0.6.1's
 converter fixes; revision 6 settles the open decisions (§19) and carries over what 1.x settled
-since; revisions 7 and 8 answer review rounds 4 and 5 (§18), with three choices of their own
-listed in §19 for the owner. It folds in the units specification (§3.4) and, for 2.0 files, the transform
+since; revisions 7, 8 and 9 answer review rounds 4, 5 and 6 (§18), with the choices of their
+own listed in §19 for the owner. It folds in the units specification (§3.4) and, for 2.0 files, the transform
 specification (§7).
 
 2.0 keeps NRRD's principles and replaces the vocabulary that made them hard to read. It is a
@@ -62,8 +62,10 @@ token — one or more of `A`–`Z`, `a`–`z`, `0`–`9`, `_`, `-`, case-sensiti
 different: it names a frame of reference (§3.2), which many files may share, so it is not unique
 to this file and is not an `id`. It is either `<extension>:<value>`, the value in the grammar
 that extension defines (a DICOM UID, digits and dots), or a bare token, which is local to the
-array (and to the other arrays of its Zarr group, §12, where they use the same token) and says
-nothing about any other array.
+array and says nothing about any other array, even one in the same Zarr group that uses the same
+token (a converter writes fixed tokens, such as `qform`, for every file's own frame). A frame
+shared by several arrays is named by a prefixed reference; a group-level way to share a bare one
+is reserved with the group-level `world` (§12).
 
 ---
 
@@ -101,8 +103,9 @@ default or a sentinel, and a reader never assumes what a file does not state. Th
 
 ### 2.1 `version`
 
-The version of this convention, `"major.minor"`, required: a file without one is read as 1.x
-(§14), where an absent `value_transforms` meant identity. It is the only version number a
+The version of this convention, `"major.minor"`, required. A file without one is a 1.x file,
+read as 1.0 (§14), where an absent `value_transforms` meant identity; one that has `world` or
+`dimensions` and no `version` is neither (§10 rule 1). It is the only version number a
 reader acts on. A minor version only adds, and a reader of an earlier minor version ignores the
 fields it does not know; a major version breaks. Software that implements the convention has
 its own release numbers, which say nothing about a file.
@@ -119,15 +122,20 @@ What the array represents as a whole. Defined values; others may be used and rea
 | `"diffusion-tensor"` | diffusion tensors, on a matrix `components` dimension |
 | `"diffusion-weighted"` | a series of diffusion-weighted measurements, on a `list` dimension; the gradients are the `dwmri` extension's |
 | `"signed-distance"` | the signed distance to a surface, in `values.unit`, negative inside |
-| `"displacement-field"` | a displacement `d` on a `vector` dimension, defined on this array's grid: the point `p` corresponds to `p + d(p)`, `d` taken into this world's axes through the dimension's `frame` (§5.3) |
-| `"velocity-field"` | velocities on a `vector` dimension |
+| `"displacement-field"` | a displacement `d` on a `vector` dimension, defined on this array's grid: the point `p` corresponds to `p + d(p)`, `d` taken into this world's axes through the dimension's `frame` (§5.3), in `values.unit` (a length, converted to the spatial axes' unit; absent, in the spatial axes' unit, which a world with a `frame` shares, §3.1) |
+| `"velocity-field"` | velocities on a `vector` dimension, taken into this world's axes through its `frame` (§5.3), in `values.unit` (a length per time; absent, unknown) |
 
 ### 2.3 `extensions`
 
 Each extension's top-level block carries its `version`. A dimension, or a world axis, may carry
 a block for the same extension; it has no version of its own, is read under the top-level
-block's, and requires that block to be present. An extension version a reader does not know is read under
-the latest version of the same major it does know; a newer major is ignored and reported.
+block's, and requires that block to be present. A reader reads a block under a version it
+knows, or under the one the extension's own specification says it may: at major 1 or above, a
+later minor of a known major is read under the latest minor it knows (a minor only adds); a 0.x
+version is read only as itself, because a 0.x specification may change incompatibly (1.x core
+§3.1; `seg` refuses a later 0.x); an older version it no longer knows is read as that
+extension's specification says. A block it cannot read under these rules is ignored and
+reported.
 
 Extensions keep their own specifications, each revised for 2.0 separately (§17). An
 extension §17 marks *compatible* may be carried unrevised in a 2.0 file, read under its own
@@ -146,15 +154,18 @@ core states (a frame time, a slice position, a voxel size).
 
 **A source record is not a restatement.** A source-format extension (`dicom`, `nifti`, `fits`,
 `nrrd`) may keep the source's own attributes as a record of where the array came from. One test
-decides what it keeps: **it leaves out every attribute the converter turned into the array's
-geometry, layout or value mapping** — the core now states it, in the array's terms (a DICOM
-Image Position, a pixel spacing, a rescale, a slice location; each extension lists them) — and
-it may keep the rest: attributes the converter did not turn into anything (a NRRD's `old min`
-and `old max`, which no converter maps), and identifiers and acquisition facts even where the
-core states the same fact (DICOM's Frame of Reference UID beside `world.reference`, a slice's
-acquisition or trigger time beside its time position). The core is authoritative for the
-array; a reader never takes the array's geometry, layout or values from the record, and may use
-the rest as what the source said. A record never contradicts the array (§9).
+decides what it keeps: **it leaves out every attribute that says where the samples are, how
+the array is laid out, or how its stored values give the quantity** — the core now states each,
+in the array's terms (a DICOM Image Position and Image Orientation, a pixel spacing, a rescale
+slope and intercept; each extension lists them) — **and it may keep identifiers and acquisition
+facts, even where the core states a fact computed from them** (DICOM's Frame of Reference UID
+beside `world.reference`; a slice's trigger or acquisition time beside its time position; a
+Slice Location, whose zero DICOM leaves unstated), and anything the converter turned into
+nothing (a NRRD's `old min` and `old max`). An attribute in units the array no longer has is
+governed by §9, not by this test: a DICOM Pixel Padding Value stays in the record only while
+the array holds stored values. The core is authoritative for the array; a reader never takes
+the array's geometry, layout or values from the record, and may use the rest as what the
+source said. A record never contradicts the array (§9).
 
 **References to an extension without its block.** An `intent`, a `world.reference`, a
 transform target's `reference` or a transform type that names an extension (`diffusion-weighted`, `dicom:…`,
@@ -182,7 +193,7 @@ The core metadata stays valid either way.
 
 | Field | Meaning |
 |---|---|
-| `axes` | The world's axes, in the order of the components of `origin`, of every `step`, and of `samples[i].origin` and `samples[i].steps`. Its length is the world's dimension. Required when `world` is present. |
+| `axes` | The world's axes, in the order of the components of `origin`, of every `step`, and of `samples[i].origin` and `samples[i].steps`. Its length is the world's dimension. Required when `world` is present. The order carries no meaning; so that one source gives one header, a converter writes the spatial axes first, in the source's order, then time, then the rest. |
 | `reference` | The frame of reference this world is measured in, when known (§3.2). |
 | `name` | A display name for the frame. |
 | `transforms` | How this world relates to other frames (§7). |
@@ -212,15 +223,22 @@ of §5.2 concern them alone. A sky image's right ascension and declination are a
 `"angle"`), not spatial axes.
 
 **The unit fits the type**, for the types defined here: `space` and `wavelength` a length,
-`time` a time, `frequency` a frequency, `chemical-shift` a ratio (`[ppm]`) or a frequency,
-`angle` an angle. For another type, or a unit a reader cannot resolve to UCUM (§3.4), the fit
-is not checked. A unit a reader resolves to UCUM and finds not to fit a defined type makes the
-file invalid (§10).
+`time` a time, `frequency` a frequency (`Hz`) or an angular frequency (`rad/s`),
+`chemical-shift` a ratio (`[ppm]`) or a frequency, `angle` an angle. For another type, or a
+unit a reader cannot resolve to UCUM (§3.4), the fit is not checked. A writer never writes a
+unit that does not fit; a reader that finds one takes the axis's unit as unknown and reports
+it. It is not a matter of validity, because whether a unit resolves depends on how much of UCUM
+a reader parses, and a file must not be valid to one reader and refused by another.
 
-**Only space and time have frames.** A `space` or `time` axis is measured from a zero that
-belongs to a frame (§3.2). The other defined types are measured from the zero of their own
-quantity — 0 nm, 0 Hz, 0 ppm (the chemical-shift reference), 0 rad — and compare across files
-directly: 500 nm is 500 nm in any file.
+**Space and time always have frames; other types have one only where an extension defines
+it.** A `space` or `time` axis is measured from a zero that belongs to a frame (§3.2). An axis of
+another type is measured from its quantity's own zero — 0 nm, 0 Hz, 0 ppm (the chemical-shift
+reference) — and compares across files directly (500 nm is 500 nm in any file), unless an
+extension states a frame for it, as a transform whose `on` names it (§7): a sky's right
+ascension and declination are angles in a celestial frame (`fits:icrs`). A writer whose
+coordinates of such a type are offsets from another zero it cannot state (a frequency measured
+from an unknown carrier) leaves the axis's `type` out, so that no reader compares it across
+files.
 
 **Spatial axes in different units** are allowed (a grid in `mm` along one axis and `um` along
 another, as NRRD's per-axis `space units` can state), but no single quantity may span them: a
@@ -248,8 +266,8 @@ not stated. It is never written.
 
 ### 3.2 A frame's zero and its identity
 
-Every world axis is measured from a zero that belongs to the **frame**: a patient-based frame's
-origin, a scanner's isocenter, a session's time base. `origin` (§4) places this array relative
+Every spatial and temporal axis is measured from a zero that belongs to the **frame**: a
+patient-based frame's origin, a scanner's isocenter, a session's time base (other types, §3.1). `origin` (§4) places this array relative
 to those zeros. This is the same in space and in time.
 
 A world's **`reference`** names the frame of reference **of its spatial axes**, as DICOM's Frame
@@ -258,11 +276,10 @@ the same spatial frame, and their positions compare once their spatial axes are 
 reordered by `positive`, flipped where one says `left` and the other `right`, converted where
 their units differ. Many arrays share a reference, which is why it is a reference and not an
 `id`. A time axis is in a shared frame only when a transform says so (below); otherwise it has
-a **local zero**, and so has every spatial axis of a world with no `reference`: its coordinates
-compare only within the array (and, for a bare reference, within its group, §1). Axes of the
-other types need no frame (§3.1). A reference is
+a **local zero**, and so has every spatial axis of a world with no `reference` or a bare one:
+its coordinates compare only within the array. A reference is
 `<extension>:<value>` (`dicom:1.2.826.0.1.3680043.8.498.10033451`, `nifti:mni152`), the value in
-the grammar the extension defines, or a bare token that is local to the file (§1). It stays one
+the grammar the extension defines, or a bare token that is local to the array (§1). It stays one
 string with a colon (the owner's decision, 2026-09-27): a reference must work as a key — in a
 JSON object, a lookup table, a URL — and its one parse, the prefix, happens in one resolver.
 
@@ -285,8 +302,9 @@ axes the transform covers, so the DICOM Synchronization Frame of Reference takes
 `dicom:` prefix.) **A writer states a shared frame for an axis only when that axis's
 coordinates are measured from the shared frame's zero.** A local zero may be any instant the
 writer measures from, and the axis's `name` may say which: duckn's DICOM converter keeps Trigger
-Time as the source states it (after the ECG R wave: `"name": "time after R wave"`) and measures
-Acquisition Time from the first frame. Neither is the Synchronization Frame of Reference's zero,
+Time as the source states it (after the ECG R wave: `"name": "time after R wave"`, so a first
+phase at 20 ms has the time component 20 in `origin`) and measures Acquisition Time from the
+first frame. Neither is the Synchronization Frame of Reference's zero,
 so such a writer does not state that frame, which stays in the `dicom` extension's record
 (§2.3). A shared time base needs an agreed zero, and a date as that zero was not adopted (§16);
 stating one is left until an application needs it.
@@ -334,7 +352,7 @@ spelling with no mapping is kept as written, and the unit is unresolved.
 ## 4. `origin`
 
 The world point at index 0 on every dimension (position 0, where `samples` places samples by
-position, §5.4), one component per world axis, each measured from its frame's zero (§3.2). On a
+position, §5.4), one component per world axis, each measured from its axis's zero (§3.1, §3.2). On a
 regular grid that is the first sample; where samples are placed by position it is their common
 reference, such as a time zero from which PET frames are placed at their middles.
 
@@ -419,7 +437,9 @@ a fact about the source, kept, if at all, in a source record (§2.3).
 sample, the middle of its interval for a sample with a `thickness` or a `cell` (§5.1). A source
 that states onsets converts them: a PET frame starting at 0 and lasting 10 s is at 5 with
 `thickness` 10; a slice acquired at an instant (BIDS `SliceTiming`, NIfTI `slice_code`) is at
-that instant.
+that instant. A time position on a dimension that states neither `centering` nor `thickness`
+is where the source placed the sample, and which moment of its acquisition that is is not
+stated (a DICOM Acquisition Time with no known duration).
 
 **A dimension of length 1** may have a step. With no second sample its length is not a spacing,
 and it has no cell: the step states a direction (either sense), a writer does not write
@@ -489,13 +509,15 @@ components: a dimension that samples a continuous coordinate has a `step` (§5.1
 **`color_space`** is one of CSS Color 4's predefined spaces: `srgb`, `srgb-linear`,
 `display-p3`, `display-p3-linear`, `a98-rgb`, `prophoto-rgb` and `rec2020` for `RGB-color` and
 `RGBA-color`; `xyz-d50` and `xyz-d65` for `XYZ-color`. RGB and alpha components run from 0 to
-1; XYZ components are CIE XYZ, with Y = 1 at the white point (so X and Z may exceed 1). The
-components are the quantity (§6) scaled by the storage type: under `transforms: []` an unsigned
-integer `data_type`'s full range is 0 to 1 (in a `uint8` array a stored 255 is 1.0; the
-quantity is 255, the component its fraction of the type's maximum), and a floating-point
-quantity is the components themselves. Anything else — a signed type, 12 bits stored in 16, XYZ
-in an integer type — states a `linear` transform whose quantity is the components, in a
-floating-point sense. Without a stated mapping the components, and so the colors, are unknown. A color space is never stated by an ICC profile. Absent: unknown. A reader may
+1; XYZ components are CIE XYZ, with Y = 1 at the white point (so X and Z may exceed 1). **The
+quantity (§6) of a color dimension is its components,** held one of three ways: in a
+floating-point type under `transforms: []`, the stored values themselves; in an unsigned integer
+type under `[]`, for `RGB-color` and `RGBA-color` only, the stored value as a fraction of the
+type's maximum (in a `uint8` array a stored 255 is the component 1.0: the one place `[]` reads
+the storage type, as image formats do); anything else — a signed type, 12 bits stored in 16, XYZ
+in an integer type — through a `linear` transform whose result is the components. Every
+encoding of §6 keeps the components: a `uint8` `[]` array re-encoded as `float32` `[]` stores
+1.0 where it stored 255. Without a stated mapping the components, and so the colors, are unknown. A color space is never stated by an ICC profile. Absent: unknown. A reader may
 interpolate a color space's encoded components as they are (most do), or convert to its linear
 form first for accuracy.
 
@@ -527,7 +549,7 @@ uniform defaults".
 | `id` | A token naming this position, unique along the dimension: a channel (`"DAPI"`), a volume (`"b0"`). References use it. |
 | `name` | A display name for this position (`"DAPI (nuclei)"`). |
 | `position` | Where this sample sits along the dimension, as a multiple of the step: the sample is at `position · step` from the origin instead of `index · step`. Real-valued, and may be negative (irregular slice spacing; irregular frame times, with a step of one time unit). |
-| `origin` | This sample's full world point (one component per world axis) at index 0 of every other dimension: it replaces `origin + index · step`, and the other dimensions' `index · step` still add. For per-slice positions no uniform step fits (a gantry tilt), and for per-slice times on a spatial dimension (slice timing), where it restates the slice's position and adds its time. A writer keeps `samples[0].origin` equal to `origin`. At most one dimension carries `origin` or `steps` in its samples. |
+| `origin` | This sample's full world point (one component per world axis) at index 0 of every other dimension: it replaces `origin + index · step`, and the other dimensions' offsets (`index · step`, or `position · step` where their samples give positions) still add. For per-slice positions no uniform step fits (a gantry tilt), and for per-slice times on a spatial dimension (slice timing), where it restates the slice's position and adds its time. A writer keeps `samples[0].origin` equal to `origin`; where they differ, a reader places samples by `samples[i].origin` and reports the file as not conformant. At most one dimension carries `origin` or `steps` in its samples. |
 | `steps` | At this sample, the step of every dimension, in dimension order (`null` for one without a step): non-parallel slices. |
 | `thickness` | This sample's thickness (§5.1). |
 | `metadata` | Open per-sample metadata, keyed by application or standard (a DICOM slice's tags), §2.3. |
@@ -551,18 +573,20 @@ and `metadata` to any. A sample has at most one of `position` and `origin`.
 |---|---|
 | `unit` | The unit of the *quantity* (the values after `transforms`), never of stored values the transforms have not been applied to. A UCUM code is recommended, in the object form where a display symbol differs (`{ "symbol": "HU", "scheme": "UCUM", "code": "[hnsf'U]" }`, §3.4); a string is shown as written. `[arb'U]` states arbitrary units: a writer states it only when the source does, and otherwise leaves the unit out. Was `sample_units`. |
 | `transforms` | An ordered list mapping stored values to the quantity, applied first to last. Was `value_transforms`. |
-| `missing` | Values of the quantity that mark no measurement (a scanner's padding outside the field of view, a masked region), as a list: a DICOM Pixel Padding Value of −2000 stored under an intercept of −1024 is `[-3024]`. Being values of the quantity, they survive the encodings of §6 (a writer that re-encodes checks each is still exactly representable). Stated only where `transforms` is present and maps stored values to the quantity the same way at every index (not under `axis_linear`, and not under a `lut` that maps a missing value's stored value and a measured one alike). `[]` states that nothing is missing; absent states nothing. A range (DICOM's Pixel Padding Range Limit) has no form yet. |
+| `missing` | Values of the quantity that mark no measurement (a scanner's padding outside the field of view, a masked region), as a list: a DICOM Pixel Padding Value of −2000 stored under an intercept of −1024 is `[-3024]`. Being values of the quantity, they survive the encodings of §6 (a writer that re-encodes checks each is still exactly representable). Stated only where `transforms` is `[]` or one `linear` (one mapping, one-to-one, the same at every index); under `axis_linear` or a `lut` it has no form yet. A reader compares a sample's quantity, computed in double precision, with each listed value exactly, and a writer lists each value as that computation gives it. `[]` states that nothing is missing; absent states nothing, and is what a writer writes when it knows of missing values it cannot list. A range (DICOM's Pixel Padding Range Limit) has no form yet. A `missing` stated where this forbids it is ignored and reported. |
 
 **`transforms: []` states that the stored values are the quantity; a writer states an identity
 this way, never as a `linear` of slope 1 and intercept 0. An absent `transforms` states
 nothing**, so with a `unit` and no `transforms` a reader knows what the quantity is but not how
 the stored values give it, and must not show stored values in that unit. In 2.0 this is the only
 rule; 1.x files keep their own (§14). A source format whose own definition makes the stored
-numbers the data — a NRRD without `old min`/`old max`, a NIfTI whose `scl_slope` is 0 or NaN
-(unscaled, whatever `scl_inter` says) or is 1 with `scl_inter` 0, a DICOM image with no rescale
+numbers the data — a NRRD without `old min`/`old max`, a NIfTI whose `scl_slope` is 0 or not finite
+(unscaled, whatever `scl_inter` says, as nifti1_io and nibabel read it) or is 1 with `scl_inter`
+0, a DICOM image with no rescale
 and no Modality LUT — is converted with `[]`; a
 writer leaves `transforms` out only when it cannot say how the stored values relate to the
-quantity.
+quantity (a NIfTI with a usable slope and an intercept that is not finite: left out and
+reported).
 
 The transform types are 1.2's, with one parameter renamed:
 
@@ -628,7 +652,7 @@ those an extension defines, so one fact has one place.
 
 | Field | Meaning |
 |---|---|
-| `to` | The target frame: its `reference` (required; a bare token, like `stimulus` above, names a frame local to the file, §1), an optional `name`, and `axes` describing its axes as world-axis objects (§3.1). Without `axes` the target's coordinates are numbers whose units and directions are not stated; a writer states them. |
+| `to` | The target frame: its `reference` (required; a bare token, like `stimulus` above, names a frame local to the array, §1), an optional `name`, and `axes` describing its axes as world-axis objects (§3.1). Without `axes` the target's coordinates are numbers whose units and directions are not stated; a writer states them. |
 | `on` | The ids of this world's axes the transform acts on, in the order the transform takes them: an affine's columns follow `on`, and its rows follow `to.axes`. Absent: all of them, in the world's order. |
 | `forward` | A transform object mapping this world's coordinates (on `on`) to the target's. |
 | `inverse` | A transform object mapping the target's coordinates back. |
@@ -694,20 +718,22 @@ must settle the specification's two index formulas, `D·index + o` in its §2.1 
 **Derived arrays** (1.x §4.5, carried over): a tool that derives an array — resampling,
 filtering, registration — writes what is true of the new array. It keeps the world (its axes,
 `reference` and transforms) when the coordinates are unchanged, writes the new placement,
-computes `values` and `intent` for the new array (a smoothing whose weights sum to one keeps the
-unit; a derivative does not; `missing` stays only where no output sample mixes a missing value
+keeps a `thickness` only while it is still true, computes `values` and `intent` for the new
+array (a smoothing whose weights sum to one keeps the unit; a derivative does not; `missing` stays only where no output sample mixes a missing value
 with a measured one, as under nearest-neighbor resampling or a mask-aware filter, and is
 otherwise dropped), and drops every source-record extension (`dicom`, `nifti`, `fits`,
-`nrrd`): the array is no longer a re-encoding of that source (§9). It drops, too, any extension
+`nrrd`), with its entries in `samples[i].metadata`: the array is no longer a re-encoding of that
+source (§9). It drops, too, any extension
 it does not know, since it cannot tell which of its fields remain true, and it adds its own
 `provenance` step (§9). Registration changes the frame, and with it the `reference`.
 
 Two cases are not derivations and keep every extension, known or not: **rewriting** the same
 values on the same grid in the same convention version (rechunking, recompressing, changing the
 store), and the **levels of a multiscale pyramid**, which are one image at several resolutions
-(each level states its own placement and keeps the image's extensions; per-position records,
-such as a DICOM slice's tags in `samples`, stay only on a level whose positions are the
-source's).
+(each level states its own placement and its own `values` by the rules above — `missing`
+only where no sample of the level mixes one — and keeps the image's extensions, except that
+source records, with their per-position entries in `samples`, stay only on a level whose values
+and positions are the source's).
 
 **Converting a 1.x file to 2.0 is not a rewrite.** Its extensions follow §2.3: a compatible one
 is carried; one marked revision required is written in its 2.0 revision or, until that exists,
@@ -728,7 +754,7 @@ makes.
 statement or a source record. A source attribute stated in units the array no longer has (a
 DICOM Pixel Padding Value in stored values beside an array of Hounsfield units) is left out;
 what it meant is restated in the array's own terms where the core has a field for it
-(`values.missing`, §6). Where a writer cannot judge an attribute (a vendor's private element),
+(`values.missing`, §6), by a converter that knows it. Where a writer cannot judge an attribute (a vendor's private element),
 the extension states what the array holds, as the `dicom` extension's `stored_values` does, so
 that a reader can.
 
@@ -736,8 +762,10 @@ that a reader can.
 `processing` list naming it: `{ "name": "<what it did>", "software": { "name", "version" } }`
 (provenance §5.1). A tool that writes an array from one that already has a `provenance` block
 keeps its `sources` and `processing` steps — the input's lineage is the new array's lineage —
-and adds its own step, whose inputs are the earlier steps' outputs (provenance §5.3), with any
-new input appended to `sources` so that earlier indices stay valid. It is how
+and adds its own step with no `inputs`, which provenance §5.1 reads as operating on the previous
+step's output. A new input it also consumes (a second image, an atlas) is appended to `sources`,
+so that earlier indices stay valid, and named in the step's `description`: provenance 1.0 has no
+way for one step's `inputs` to name both the previous output and a source (§19). It is how
 a reader recognizes a file from a writer later found defective (§14). The rest of the extension
 stays optional. The rules of this section bind writers (conformance); a file that misses one is
 still read, and a reader may report it.
@@ -753,15 +781,15 @@ still read, and a reader may report it.
    `step`; `color_space` and `frame` to one with `components`.
 3. The steps are linearly independent.
 4. A `components` kind's fixed size matches the dimension's length in `shape`.
-5. World axis ids are unique, and so are sample ids along a dimension. A unit that resolves to
-   UCUM fits its axis's defined `type` (§3.1); `positive` appears only on `space` axes, at most
-   one term of each pair. No step spans spatial axes of different units, and a world whose
-   spatial axes differ in unit has no `frame`.
+5. World axis ids are unique, and so are sample ids along a dimension. `positive` appears only
+   on `space` axes, at most one term of each pair. No step spans spatial axes of different
+   units, and a world whose spatial axes differ in unit has no `frame`.
 6. `frame` is square and invertible, one row and column per spatial world axis, on a kind that
    is spatial in this world (§5.2, §5.3).
 7. A `color_space` fits its kind (§5.3).
-8. A transform's `on` names axes of this world; its affine has one column per such axis plus
-   one, and one row per target axis; a `to.reference` and `on` pair appears once.
+8. A transform's `on` names axes of this world, each once; its affine has one column per such
+   axis plus one, and one row per target axis; a `to.reference` appears at most once with the
+   same set of axes (the order of `on` does not matter, and an absent `on` is every axis).
 9. A world axis's `type`, where given, is a token (§1).
 10. `samples`, where present, has one entry per position along its dimension; no entry has both
     `position` and `origin`; at most one dimension's samples carry `origin` or `steps`; each
@@ -775,10 +803,10 @@ still read, and a reader may report it.
 **A file that breaks a rule is invalid.** A reader refuses its duckn metadata rather than guess
 which part to trust, and may still give access to the Zarr array's raw values. Three things are
 not validity: a value transform the reader cannot apply (an unknown type, malformed parameters,
-a `lut` that is empty or not first) makes only the quantity unknown (§6), and so does a
-`missing` stated where §6 forbids it; an extension block
-that breaks its own specification is handled as §2.3 says; and a writer's obligations (§9) are
-conformance.
+a `lut` that is empty or not first) makes only the quantity unknown (§6), and a `missing`
+stated where §6 forbids it is ignored; an extension block that breaks its own specification is
+handled as §2.3 says; and a writer's obligations (§6's encodings, §8's derivation rules, §9)
+are conformance. A unit that does not fit its axis's type is reported, not invalid (§3.1).
 
 ## 11. What a reader derives
 
@@ -832,7 +860,8 @@ reserved, not defined.
 
 Volumes are instants (node); each slice is 3 mm higher and 0.055 s later than the one below. The
 source states the signal in arbitrary units, so `[arb'U]` is written (§6). This and the
-examples after it are fragments: `version`, and `world` where not shown, are as in §13.1.
+examples after it are fragments: `version` is as in §13.1, and so is `world` where a fragment
+shows none; §13.6 and §13.7 show their own.
 
 ```json
 "world": {
@@ -899,6 +928,10 @@ Frames are cells: each position is its frame's middle, as a multiple of a one-se
 `thickness` is its duration. The activity is stored with one slope per frame.
 
 ```json
+"world": { "axes": [ { "id": "x", "type": "space", "unit": "mm", "positive": "left" },
+                    { "id": "y", "type": "space", "unit": "mm", "positive": "posterior" },
+                    { "id": "z", "type": "space", "unit": "mm", "positive": "superior" },
+                    { "id": "t", "type": "time", "unit": "s" } ] },
 "dimensions": [
   { "step": [0, 0, 0, 1.0], "centering": "cell",
     "samples": [ { "position": 5, "thickness": 10 }, { "position": 15, "thickness": 10 }, { "position": 25, "thickness": 10 } ] },
@@ -913,6 +946,8 @@ Frames are cells: each position is its frame's middle, as a multiple of a one-se
 ### 13.7 Fluorescence channels
 
 ```json
+"world": { "axes": [ { "id": "x", "type": "space", "unit": "um" }, { "id": "y", "type": "space", "unit": "um" },
+                    { "id": "z", "type": "space", "unit": "um" } ] },
 "dimensions": [
   { "components": "list", "samples": [ { "id": "DAPI" }, { "id": "GFP" }, { "id": "mCherry", "name": "mCherry (actin)" } ] },
   { "step": [0, 0, 0.5], "centering": "cell" },
@@ -960,7 +995,7 @@ is a 1.0 file (1.2 §3.1).
 |---|---|
 | `space: "left-posterior-superior"` (or `LPS`) | `world.axes` `x`, `y`, `z`, each `type` `space`, `positive` `left`, `posterior`, `superior` |
 | `right-anterior-superior`, `left-anterior-superior` (RAS, LAS) | the matching terms |
-| a `-time` space | the three, plus `{ "id": "t", "type": "time" }` with the 1.x time axis's `unit` when a dimension steps along it or `space_origin` states a time (its fourth component, else 0, a local zero); with neither, no time axis is added (it would claim one time point, §1) |
+| a `-time` space | the three, plus `{ "id": "t", "type": "time" }` with the 1.x time axis's `unit` when a dimension steps along it or `space_origin` states a time (its fourth component, a local zero); with neither, no time axis is added (it would claim one time point, §1) |
 | `scanner-xyz`, `3D-right-handed`, `3D-left-handed`, the general 3D names | `x`, `y`, `z` of `type` `space` without `positive`; a stated handedness is reported as not carried over |
 | `space_dimension: n` | n axes of `type` `space` without `positive`, ids `x`, `y`, `z`, then `a3`, `a4`, … |
 | a spatial axis's `unit` | each spatial world axis takes the unit of the spatial dimensions whose `space_direction` has a non-zero component along it, normalized as §3.4 lists; one no spatial dimension steps along takes the unit all spatial dimensions share, if they share one. Different units on different world axes are legitimate (§3.1); a file is refused only when one world axis would take two units (a step across axes in different units) |
@@ -968,12 +1003,12 @@ is a 1.0 file (1.2 §3.1).
 | `axes` | `dimensions` |
 | `space_direction` | `step` (extended with 0 on any world axis the 1.x space did not have) |
 | `kind: "domain" / "space" / "time"` with a direction | implied by the step |
-| `kind: "time"` with per-sample times and no direction | a world axis `{ "type": "time" }` added (id `t`, or `t1`, … if taken), in that axis's `unit` (none if it states none); `origin`'s component 0 (a local zero); the dimension steps along it by one unit, each sample's time its `position` |
+| `kind: "time"` with per-sample times and no direction | the dimension steps by one unit along the time axis the `-time` row added, when there is one, each sample's position its time less `origin`'s time component; otherwise along a world axis `{ "type": "time" }` added for it (id `t`, or `t1`, … if taken), in that axis's `unit` (none if it states none), `origin`'s component 0 (a local zero), each sample's position its time |
 | `kind: "time"` with no times | a dimension that states nothing; no time axis is added |
 | `kind: "domain"` with per-sample positions, a unit and no direction (a NIfTI spectrum in `Hz`, `ppm` or `rad/s`, as duckn 0.6.1 writes it) | a world axis added the same way, of the `type` its unit implies (`[ppm]`: `chemical-shift`; `Hz`, `rad/s`: `frequency`) |
 | `kind: "domain"` with neither positions nor direction | a dimension that states nothing |
 | `kind` of a range kind | `components`, the same word; a 1.x `3-vector` that a `measurement_frame` governs becomes `vector` (spatial in a 3-axis world), so the frame is carried; the DWI dimension of a `dwmri` file (`vector` or `list` in dwi 1.0) becomes `list` |
-| `measurement_frame` | `frame` on each spatial components dimension, its spatial block when the 1.x space has time (a 4 × 4 frame's first 3 × 3). In a `dwmri` 1.0 file it governs the gradients, which the 1.x block keeps (read under 1.0, §2.3) until `dwmri` 2.0 gives them a `frame` of their own: by `gradient_frame` (dwi §4.1), `measurement` → the frame, and an absent frame is the identity there (dwi §6); `world` → the identity; `image` → the rotation part of the steps' index-to-world matrix. A frame the file does not use for either is reported as not carried over. **A frame in a file that declares 1.0 is ambiguous:** the transform specification says 1.0 wrote columns, while duckn's NRRD converter from 0.5.5 wrote rows labeled 1.0 (and through 0.5.4 wrote the transpose). A symmetric one reads either way; a non-symmetric one is not carried over but reported, for the file to be converted again from its source. |
+| `measurement_frame` | `frame` on each spatial components dimension, its spatial block when the 1.x space has time (a 4 × 4 frame's first 3 × 3). In a `dwmri` 1.0 file it governs the gradients, which the 1.x block keeps (read under 1.0, §2.3) until `dwmri` 2.0 gives them a `frame` of their own: by `gradient_frame` (dwi §4.1), `measurement` → the frame, and an absent frame is the identity there (dwi §6); `world` → the identity; `image` → the directions of the spatial dimensions' steps, each normalized, as columns in dwi's and FSL's order (the fastest-varying dimension first, the reverse of duckn's), a grid whose steps are not orthogonal being reported and not carried. A frame the file does not use for either is reported as not carried over; a 4 × 4 frame that couples time and space is reported (the coupling is not carried). **A frame in a file that declares 1.0 is ambiguous:** the transform specification says 1.0 wrote columns, while duckn's NRRD converter from 0.5.5 wrote rows labeled 1.0 (and through 0.5.4 wrote the transpose). A symmetric one reads either way; a non-symmetric one is not carried over but reported, for the file to be converted again from its source, and where it governed `dwmri` gradients (`gradient_frame` `measurement`) the gradients' frame is then unknown: a reader does not fall back on dwi 1.0's identity default. |
 | `samples[i].position` (a distance) | `samples[i].position` divided by the spacing |
 | `samples[i].position` on a 1.x time axis that has a direction (a time in the axis's unit, 1.x §3.2) | its time less `origin`'s time component, divided by the step's time component |
 | `samples[i].position` and `.origin` together | `samples[i].origin` |
@@ -984,7 +1019,7 @@ is a 1.0 file (1.2 §3.1).
 | `value_transforms` (absent in a 1.2 file) | absent (1.2 meant "not stated") |
 | `axis_linear`'s `axis` | `dimension` |
 | a UDUNITS unit with a reference date (`hours since 2020-01-01`) | the unit alone (`h`); the reference date is reported as not carried over (§3.1) |
-| `space_transforms` from `world` | `world.transforms`, with `on` naming the spatial axes and with its `metadata`; an identity to any reference on every spatial axis becomes `world.reference` (§7) |
+| `space_transforms` from `world` | `world.transforms`, with `on` naming the spatial axes and with its `metadata`; an identity to one reference on every spatial axis becomes `world.reference` (§7) when the file states no other; otherwise it stays a transform |
 | `space_transforms` from `index`, `axis-aligned`, `axis-aligned-centered` | composed with the placement into a transform from this world (§7), with the nominal placement 1.x defined them by (its steps and `space_origin`, ignoring per-sample positions; a file whose samples override positions is reported) |
 | an extension's own `space_transforms` | `world.transforms`, the target qualified by the extension's name |
 | a 1.x target `to.name` | `to.reference`: a prefixed name as it is, a bare name as a reference local to the array (§1), its characters outside the token set replaced by `_` (reported) |
@@ -1021,9 +1056,9 @@ re-converted from their sources, not repaired in the mapping. 2.0 writers record
 | `measurement frame` | `dimensions[].frame` (transposed: NRRD writes columns) |
 | `kinds`: domain kinds | a `step`, where `space directions` or `spacings` give one; otherwise a dimension that states nothing |
 | `kinds`: range kinds | `components` |
-| `centers` | `centering`; an axis with none is `cell`, NRRD's default, where the origin is computed from `axis mins` (the assumption is written, not left implicit) |
+| `centers` | `centering`; an axis with none is `cell`, NRRD's default, where the origin is computed from `axis mins` (the assumption is written, not left implicit), except on a length-1 axis, which takes no `centering` (§5.1) |
 | `thicknesses` | `thickness` |
-| `spacings`, `units`, `axis mins` of a domain axis with no `space` | a world axis per such dimension, `type` `space` when its unit is a length, the type its unit implies otherwise, and no `type` when there is no unit (§3.1: unknown), in that unit (none if unstated), stepped along by the spacing; the world's axes in NRRD's axis order (fastest first), ids `x`, `y`, `z`, then `a3`, `a4`, …; with `axis mins` and `axis maxs` and no `spacings`, the spacing is (max − min) / size for a cell-centered axis and (max − min) / (size − 1) for a node-centered one; `origin` from the axis mins when every such axis states one, otherwise no `origin` (the steps still give the geometry, §4). An axis min is the first sample's position on a node-centered axis and the lower edge of the first cell on a cell-centered one (NRRD's own rule; an unstated centering is NRRD's default, cell), so a cell-centered axis's origin component is its min plus half the spacing |
+| `spacings`, `units`, `axis mins` of a domain axis with no `space` (and of one outside `space directions` in a file with `space`, whose world axis follows the spatial ones) | a world axis per such dimension, its `type` from the axis's `kinds` entry (`space` → `space`, `time` → `time`; `domain` states no type, so none is written, whatever the unit: §3.1 never infers one), in that unit (none if unstated), stepped along by the spacing; the world's axes in NRRD's axis order (fastest first), ids `x`, `y`, `z`, then `a3`, `a4`, …; with `axis mins` and `axis maxs` and no `spacings`, the spacing is (max − min) / size for a cell-centered axis and (max − min) / (size − 1) for a node-centered one; `origin` from the axis mins when every such axis states one, otherwise no `origin` (the steps still give the geometry, §4). An axis min is the first sample's position on a node-centered axis and the lower edge of the first cell on a cell-centered one (NRRD's own rule; an unstated centering is NRRD's default, cell), so a cell-centered axis's origin component is its min plus half the spacing |
 | `labels` | Zarr's `dimension_names` |
 | `old min`, `old max`, `min`, `max`, `content`, `units` of a range axis | the `nrrd` extension |
 | key/value pairs | the `keyvalues` extension |
@@ -1080,7 +1115,9 @@ duckn once, after which the two must agree.
 - **An axis `type`, stated (revision 7).** Revisions 3–6 let the unit say what an axis measures;
   review round 4 found a wavelength in `nm` read as a spatial axis, and a unit in a scheme one
   reader knows and another does not making the same axis spatial for one and unknown for the
-  other. OME-Zarr states an axis `type` for the same reason.
+  other. OME-Zarr states an axis `type` for the same reason. A unit that does not fit its type is
+  reported, not invalid (revision 9), for the same reason: validity may not depend on how much
+  UCUM a reader parses.
 - **Value transforms and world transforms keep different shapes.** A value transform is
   `{ "name", "parameters" }`, as in 1.x, so 1.x value transforms carry over unchanged; a world
   transform follows OME-Zarr's shape (§7). They are different things, and the names do not
@@ -1114,12 +1151,12 @@ revisions exist as documents; this table is what each must say.
 | `seg` | 0.11, wording only (0.10 is taken: the group form with `layers`, already released); compatible | "a `list` axis" → "a dimension with `components: \"list\"`"; binary labelmaps write `values.transforms: []`; no field changes. |
 | `microscopy` | 2.0, revision required | `timestamps` and `z_positions` move to core `samples[i].position` (they are absolute stage positions and acquisition times: the origin's component is subtracted and the step divided out, and times take a local zero); channel `color` becomes a CSS string (as `seg`); §1 against OME 0.6; spectral bins are a world axis (a wavelength in `nm`, each bin at its stated center) when every bin states its wavelength, and a `list` otherwise; FLIM microtime bins are a `list` (decision 4: `type` could now tell a microtime axis from acquisition time, but microscopy 2.0 keeps them a list until an application needs them as an axis). |
 | `nifti` | 2.0, revision required | the world from sform/qform (codes 1–5 are RAS), a differing qform as a `world.transforms` entry to a local reference (`qform`), `xyzt_units` onto world axes, `toffset` onto the origin, a 4th dimension that is time only when its unit is a time (a `Hz`, `ppm` or `rad/s` unit makes it a spectral world axis), intent codes onto `intent` and `components`: a vector or matrix intent's components are the 5th dimension, as nifti1.h lays them out, with a length-1 4th dimension that states nothing, or the 4th dimension in the four-dimensional layout some tools write. **Slice timing lives in the geometry, not also in the extension:** a regular order (`slice_code` sequential or interleaved, with `slice_duration`) becomes per-slice time origins on the slice dimension (or, when sequential, a step through space and time, §5.1), and irregular times (a BIDS `SliceTiming` list) become per-slice time origins, each slice at its acquisition instant (§5.1); the header's `slice_code`, `slice_start`, `slice_end` and `slice_duration` are then not repeated. A 3D file with a time unit keeps the unit in the extension and adds no time axis (an axis would claim one time point, §1). References: xform codes 3 and 4 name `nifti:talairach` and `nifti:mni152` (codes 1, 2 and 5 name no shared frame - a scanner, another file, some template - and write no `reference`); `nifti:mni152` means only "the header says an MNI 152 template", and finer names (`nifti:mni152nlin2009casym`) are optional, for a writer that knows the variant. |
-| `dicom` | 1.1, revision required (it defines the `dicom:` reference) | Frame of Reference UID → `world.reference` (`dicom:<UID>`), and it stays in `tags` as the source record (§2.3; the `frame-of-reference` group keeps both its keywords); the Synchronization Frame of Reference UID stays in `tags` only, and becomes an identity transform on the time axis to `dicom:<UID>` only when that axis is measured from that frame's zero (§3.2); a new section defining the `dicom:` reference (a UID, digits and dots, at most 64 characters; it covers the spatial axes as `world.reference` and the axes `on` names in a transform); Pixel Padding Value restated as `values.missing` (§6) under either policy, and kept in `tags` only while `stored_values` is true; Slice Location added to the excluded attributes (the core states the position); per-slice tags may sit in `samples` on a regular dimension (1.0 §6.2 said `samples` are omitted there); per-frame geometry onto `samples`; time only from real times; varying rescale onto `axis_linear`. **Unchanged from 1.x:** tags describe the source, not the array (§10.1); the §5 groups by name (0.6.2) and redaction as `null` with `anonymized: true` (§4.3); `stored_values` (true: the array holds the source's stored values, the mapping in `values.transforms`; false: the array holds the Modality stage's output, the quantity, encoded as `values.transforms` says) and the rule that nothing in stored-value units is written of values that are not stored values (§5.10); per-slice tags in `dimensions[i].samples[j].metadata.dicom`. The §2 table of excluded attributes names 2.0's fields: `origin`, `step`, `thickness`, `values.transforms`, `values.unit`, a dimension's `color_space`. |
+| `dicom` | 1.1, revision required (it defines the `dicom:` reference) | Frame of Reference UID → `world.reference` (`dicom:<UID>`), and it stays in `tags` as the source record (§2.3; the `frame-of-reference` group keeps both its keywords); the Synchronization Frame of Reference UID stays in `tags` only, and becomes an identity transform on the time axis to `dicom:<UID>` only when that axis is measured from that frame's zero (§3.2); a new section defining the `dicom:` reference (a UID, digits and dots, at most 64 characters; it covers the spatial axes as `world.reference` and the axes `on` names in a transform); a single Pixel Padding Value restated as `values.missing` (§6) under either policy where `transforms` is `[]` or `linear` (with a Pixel Padding Range Limit, or under `axis_linear`, `missing` is left out, not written `[]`), and kept in `tags` only while `stored_values` is true; Slice Location kept per slice as 1.0 §6.1 keeps it (its zero is unstated, so the core does not state it); Acquisition Time is when an acquisition started: a converter that knows the duration (PET's Actual Frame Duration) places the frame at its middle with that `thickness`, and otherwise writes the time with no `centering` (§5.1); per-slice tags may sit in `samples` on a regular dimension (1.0 §6.2 said `samples` are omitted there); per-frame geometry onto `samples`; time only from real times; varying rescale onto `axis_linear`. **Unchanged from 1.x:** tags describe the source, not the array (§10.1); the §5 groups by name (0.6.2) and redaction as `null` with `anonymized: true` (§4.3); `stored_values` (true: the array holds the source's stored values, the mapping in `values.transforms`; false: the array holds the Modality stage's output, the quantity, encoded as `values.transforms` says) and the rule that nothing in stored-value units is written of values that are not stored values (§5.10); per-slice tags in `dimensions[i].samples[j].metadata.dicom`. The §2 table of excluded attributes names 2.0's fields: `origin`, `step`, `thickness`, `values.transforms`, `values.unit`, a dimension's `color_space`. |
 | `fits` | 2.0, revision required | the world is FITS's *intermediate* world coordinates (exact, linear); CTYPE/CUNIT/CRVAL/CDELT/PV on world axes, CRPIX on dimensions; the celestial projection as an extension-defined transform type to `fits:icrs`; a unit table to UCUM. |
-| `nrrd` | 0.2, revision required | `spacings` of a no-space file become world axes (§15.1), reversing 0.1's rule that no world is inferred, and the extension records that the source had no `space`, so an export writes `spacings` and `axis mins` again; `space units` map one per world axis (export writes one entry for every world axis, including one no dimension steps along, as NRRD requires); range-axis `units` and a scalar file's measurement frame stay in the extension. |
+| `nrrd` | 0.2, revision required | `spacings` of a no-space file become world axes (§15.1), reversing 0.1's rule that no world is inferred, and the extension records that the source had no `space` (`"no_space": true` in its top-level block), so an export writes `spacings` and `axis mins` again; `space units` map one per world axis (export writes one entry for every world axis, including one no dimension steps along, as NRRD requires); range-axis `units` and a scalar file's measurement frame stay in the extension. |
 | units spec | folded into §3.4 | the UCUM reading on world axes, the string-or-object form, `unit_systems`, the normalization table; the spec stays for 1.x files. |
 | transform spec | folded into §7 | 2.0 transforms start from this world; the derived spaces' formulas move to the implementer's guide, for reading 1.x. |
-| `provenance` | 1.1, compatible | the writer's own `processing` step becomes required of 2.0 writers (§9); nothing else changes. |
+| `provenance` | 1.1, compatible | the writer's own `processing` step becomes required of 2.0 writers (§9); nothing else changes. A way for a step to take the previous step's output and a new source together is open (§19). |
 | `keyvalues` | wording, compatible | none. |
 | `presentation` | wording, compatible | windows are in the quantity, after `values.transforms`, under any stated mapping (presentation §2.2); with `transforms` absent and no `unit` they are in the stored values; with a `unit` but no `transforms` they cannot be applied. |
 
@@ -1201,6 +1238,25 @@ length-1 steps take the thickness; the source-record test by what the converter 
 §14 and §15.1 gaps (1.0 frames not carried, dwmri's DWI dimension, time positions, ambiguous
 names, 1.x files that break 1.x rules).
 
+**Round 6 (revision 8).** The ten scenarios again, one writer, one blind reader, and a review of
+revision 8 against the 1.x documents and duckn's converter. The writer's core headers equaled the
+reference headers; the reader recovered every number and found both planted faults (a `missing`
+kept through a linear resample; an `axis_linear` list one short). The review found what the
+scenarios did not reach. Answered by revision 9: extension versions (a 0.x version is read only as
+itself; revision 8 had read seg 0.8 as 0.10); a unit that does not fit its type reported, not
+invalid (revision 8 made NIfTI's own `rad/s` conversion invalid, and validity depend on a
+reader's UCUM parser); a dropped 1.0 measurement frame leaves `dwmri` gradients in an unknown
+frame, not the identity; color components kept by every encoding (a `uint8` `[]` re-encoded as
+`float32` had read 255 as the component); bare references local to the array (a group-shared
+bare token made every NIfTI's `qform` one frame); other types may have frames an extension
+defines; Slice Location kept, as 1.0 kept it; the source-record test restated (identifiers and
+acquisition facts kept); provenance steps without a mechanism provenance lacks; NRRD types from
+`kinds`, not units; `missing` limited to `[]` and `linear`, ignored where misplaced; pyramid
+levels state their own `values`; examples §13.6 and §13.7 with their own worlds; §10 rules 5
+and 8, the 1.x `-time` axis reused, `gradient_frame` `image` in dwi's order, identity promotion,
+NIfTI's non-finite slope and intercept, displacement and velocity units, time positions with no
+centering.
+
 ## 19. Decisions
 
 Settled 2026-09-29, the owner agreeing to each recommendation:
@@ -1232,6 +1288,21 @@ could be reversed):
     materializing.
 13. **One `dicom:` prefix for both DICOM frames**, with `world.reference` covering the spatial
     axes and a transform's `on` covering the rest (§3.2), replacing the `dicom-sync:` prefix.
+
+**Choices revision 9 made, for the owner's review:**
+
+14. **A bare reference is local to the array** (§1), not shared by a Zarr group's members that
+    use the same token; sharing a bare frame is reserved with the group-level `world`.
+    Alternative: group-shared, with converters forbidden fixed tokens such as `qform`.
+15. **A NRRD `domain` axis gets no `type`** (§15.1): only `kinds` `space` and `time` state one,
+    so a no-space NRRD in `mm` reads as axes of unknown type, still placed and resampled.
+    Alternative: a length unit on a `domain` axis implies `space`, the inference revision 7
+    removed.
+16. **A unit that does not fit its type is reported, not invalid** (§3.1), and `frequency` takes
+    `rad/s`. Alternative: a fixed list of units per type, checked as validity.
+
+**Open:** a provenance step that takes the previous step's output and a new source together (§9)
+needs a provenance revision; until then the new source is named in the step's `description`.
 
 Implementation order, agreed with the answers: duckn reads 1.x and 2.0, and keeps writing 1.2
 until the extension revisions §17 marks required exist; then it writes 2.0.
