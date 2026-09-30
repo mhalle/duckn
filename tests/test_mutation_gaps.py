@@ -67,7 +67,7 @@ def test_the_split_leaves_a_missing_tag_missing():
 
 
 # D24: a varying rescale keeps each slice's Rescale Type beside its slope and intercept
-def test_a_varying_rescale_keeps_each_slices_rescale_type(tmp_path):
+def test_a_varying_rescale_states_the_rescale_type_every_slice_shares(tmp_path):
     from test_dicom_convert_gaps import _series
 
     def vary(i, ds):
@@ -75,8 +75,9 @@ def test_a_varying_rescale_keeps_each_slices_rescale_type(tmp_path):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         _, meta = _series(tmp_path, vary)
-    per = [(s.metadata or {}).get("dicom", {}) for s in meta.axes[0].samples]
-    assert [d.get("RescaleType") for d in per] == ["HU"] * 3
+    # 0.6.3: a rescale that varies by slice is an axis_linear; the RescaleType every slice
+    # shares is the quantity's unit, stated once.
+    assert meta.sample_units == "HU" and meta.value_transforms[0].name == "axis_linear"
 
 
 # D27: the byte copy needs EVERY slice's stored bits to fill the container, not the first's

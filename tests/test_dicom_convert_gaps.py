@@ -96,9 +96,10 @@ def test_the_streaming_converter_stores_values_not_container_bits(tmp_path):
     assert list(mem) == list(got) == [-1, -2048, 5, 2047]
 
 
-def test_a_rescale_that_varies_is_kept_per_slice_and_claims_no_units(tmp_path):
-    """0.5.3 dropped a varying rescale (the warning said it was preserved) and still claimed
-    sample_units "HU" over the uncalibrated stored values."""
+def test_a_rescale_that_varies_by_slice_is_an_axis_linear_in_a_1_2_file(tmp_path):
+    """0.5.3 dropped a varying rescale; 0.5.4 to 0.6.2 kept it per slice but declared 1.0,
+    where an absent value_transforms means identity: the file claimed its stored values were
+    the quantity. 1.2's axis_linear states the mapping, and the file declares 1.2."""
     import warnings
 
     def vary(i, ds):
@@ -106,7 +107,40 @@ def test_a_rescale_that_varies_is_kept_per_slice_and_claims_no_units(tmp_path):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         _, meta = _series(tmp_path, vary)
-    assert meta.value_transforms is None and meta.sample_units is None
-    per = [(s.metadata or {}).get("dicom", {}) for s in meta.axes[0].samples]
-    assert [d["RescaleSlope"] for d in per] == [1.0, 2.0, 1.0]
-    assert [d["RescaleIntercept"] for d in per] == [-1024.0] * 3
+    assert meta.version == "1.2"
+    (t,) = meta.value_transforms
+    assert t.name == "axis_linear"
+    assert t.parameters == {"axis": 0, "slope": [1.0, 2.0, 1.0], "intercept": -1024.0}
+    assert meta.sample_units == "HU"  # RescaleType is the same on every slice
+    # the core states the mapping: the record does not repeat it per slice
+    per = [(s.metadata or {}).get("dicom", {}) for s in meta.axes[0].samples or []]
+    assert not any("RescaleSlope" in d or "RescaleIntercept" in d for d in per)
+    assert meta.values_stated()
+
+
+def test_a_time_series_whose_rescale_varies_states_no_mapping_and_declares_1_2():
+    """Along two axes there is no axis_linear: the mapping stays per slice, and the file must
+    not be a 1.0 file, where an absent value_transforms means identity."""
+    import warnings
+    from duckn.dicom_convert import DicomImageInfo, build_duckn_metadata
+    from duckn.models import SpaceName
+    from test_dicom_convert import _make_dataset
+
+    datasets = []
+    for t in range(2):
+        for k, z in enumerate((0.0, 2.0)):
+            ds = _make_dataset(position=(0, 0, z), modality="CT")
+            ds.RescaleSlope, ds.RescaleIntercept = 1 + k, -1024
+            ds.TriggerTime = 100.0 * t
+            datasets.append(ds)
+    geom = DicomImageInfo(
+        shape=(2, 2, 4, 4), dtype=np.dtype("uint16"), space=SpaceName.LEFT_POSTERIOR_SUPERIOR,
+        space_origin=[0.0, 0.0, 0.0], space_directions=[[0, 0, 2.0], [0, 1.0, 0], [1.0, 0, 0]],
+        slice_thickness=2.0, rescale_slope=None, rescale_intercept=None, rescale_type=None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        meta = build_duckn_metadata(geom, datasets, anonymized=None, include_tags=True)
+    assert meta.version == "1.2" and meta.value_transforms is None
+    assert not meta.values_stated()
+    per = [(s.metadata or {}).get("dicom", {}) for s in meta.axes[1].samples]
+    assert [d["RescaleSlope"] for d in per] == [1.0, 2.0]

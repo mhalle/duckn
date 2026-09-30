@@ -9,6 +9,14 @@
   files was distributed. `DucknMetadata.measurement_frame_rows()` reads a frame by its file's
   version, and NRRD export uses it, so a genuine 1.0 file (columns) exports its vectors right.
   Found while writing the convention 2.0 reader's §14 mapping.
+- **A DICOM rescale that varies by slice is an `axis_linear`, in a file that declares 1.2.**
+  0.5.4 to 0.6.2 kept each slice's rescale in its `samples` record, wrote no `value_transforms`
+  and declared 1.0 - where an absent `value_transforms` means identity, so the file claimed its
+  stored values were the quantity. A single volume now states the mapping (one slope and
+  intercept per slice, `sample_units` the shared `RescaleType`) and export writes it back as
+  each frame's Pixel Value Transformation; a time series, where it may vary along two axes,
+  still leaves it unstated and keeps it per slice, and declares 1.2 so that "unstated" is what
+  the file says. Found by running the convention 2.0 reader over a mixed-rescale CT.
 
 ## 0.6.2 — 2026-09-27
 
