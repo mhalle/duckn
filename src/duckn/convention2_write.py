@@ -42,7 +42,8 @@ def upgrade(duckn1: dict, shape: tuple[int, ...], data_type: str | None = None, 
     rescale it applied), and by then the 1.x record has dropped it; refused where §6 forbids one.
     The result has been read back and is valid.
     """
-    d = from_1x(duckn1, shape, data_type).duckn
+    mapped = from_1x(duckn1, shape, data_type)
+    d = mapped.duckn
     parameters: dict[str, Any] = {}
     if source_format == "NRRD":
         _finish_nrrd(d, duckn1, shape, domain_axes, parameters)
@@ -50,6 +51,7 @@ def upgrade(duckn1: dict, shape: tuple[int, ...], data_type: str | None = None, 
         _finish_dicom(d, time_tag)
     elif source_format == "NIfTI":
         _finish_nifti(d, shape)
+    _finish_dwmri(d, mapped.gradient_frame)
     _one_encoding(d)
     if missing is not None:
         values = d.setdefault("values", {})
@@ -134,9 +136,29 @@ def _finish_nrrd(d, duckn1, shape, domain_axes, parameters) -> None:
     if no_space and (placed or nrrd is not None):
         nrrd = ext.setdefault("nrrd", {})
         nrrd["no_space"] = True
-    if nrrd is not None:
-        nrrd["version"] = "0.2"
-        ext["nrrd"] = {"version": "0.2", **{k: v for k, v in nrrd.items() if k != "version"}}
+    # What the core has no field for stays here (nrrd 0.2 §2): a range axis's units, the kind of
+    # a domain axis that states nothing, and a frame no components dimension carries.
+    for k, a in enumerate(axes1):
+        dim = d["dimensions"][k] if k < len(d["dimensions"]) else {}
+        keep = {}
+        if "components" in dim and a.get("unit") is not None:
+            keep["unit"] = a["unit"]
+        if a.get("kind") in ("domain", "space", "time") and "step" not in dim:
+            keep["kind"] = a["kind"]
+        if keep:
+            dim.setdefault("extensions", {}).setdefault("nrrd", {}).update(keep)
+    frame = duckn1.get("measurement_frame")
+    if frame is not None and "dwmri" not in ext and not any(
+            "frame" in dim for dim in d["dimensions"]):
+        rows = frame if tuple(int(x) for x in str(duckn1.get("version") or "1.0").split(".")[:2]) \
+            >= (1, 1) else [list(c) for c in zip(*frame)]
+        nrrd = ext.setdefault("nrrd", {}) if nrrd is None else nrrd
+        nrrd["measurement_frame"] = [[float(v) for v in r] for r in rows]
+        ext["nrrd"] = nrrd
+    nrrd = ext.get("nrrd")
+    if nrrd is not None or any("nrrd" in (dim.get("extensions") or {}) for dim in d["dimensions"]):
+        # a dimension's block is read under the top-level one, which it requires (duckn 2.0 §2.3)
+        ext["nrrd"] = {"version": "0.2", **{k: v for k, v in (nrrd or {}).items() if k != "version"}}
     if not ext:
         del d["extensions"]
 
@@ -332,6 +354,13 @@ def _finish_nifti(d: dict, shape: tuple[int, ...]) -> None:
             dim["centering"] = "node"  # NIfTI's time points are instants; slice times add to them
     if t is not None and origin is not None and "toffset" in tags:
         origin[t] = tags.pop("toffset")
+    # A spectrum in ppm is a chemical shift only where toffset places its first bin (nifti 2.0
+    # §2): duckn 1.x placed the first bin at 0 whatever the header said.
+    ppm = next((j for j, a in enumerate(axes) if a.get("unit") == "[ppm]" and "type" not in a), None)
+    if ppm is not None and origin is not None and "toffset" in tags:
+        axes[ppm]["type"] = "chemical-shift"
+        axes[ppm]["id"] = "chemical-shift"
+        origin[ppm] = tags.pop("toffset")
 
     timing = tags.get("slice_timing")
     slice_dim = (tags.get("dim_info") or {}).get("slice_dim")
@@ -366,3 +395,26 @@ def _finish_nifti(d: dict, shape: tuple[int, ...]) -> None:
     del tags["slice_timing"]
     if not tags:
         nifti.pop("tags", None)
+
+
+# ---- dwmri (dwmri 2.0) -------------------------------------------------------------------------
+
+
+def _finish_dwmri(d: dict, gradient_frame) -> None:
+    """A dwmri 1.0 block as 2.0 writes it: the gradients' frame as a matrix of its own (the §14
+    mapping's reading of gradient_frame and the 1.x measurement_frame; absent where it is
+    unknown), the DWI dimension a list, the intent stated, the key/value record that restated
+    the gradients left out (dwmri 2.0 §3, §5)."""
+    dw = (d.get("extensions") or {}).get("dwmri")
+    if not isinstance(dw, dict):
+        return
+    dw["version"] = "2.0"
+    dw.pop("gradient_frame", None)
+    dw.pop("legacy", None)
+    if gradient_frame is not None:
+        dw["frame"] = [[float(v) for v in r] for r in gradient_frame]
+    acq = dw.get("acquisition")
+    if isinstance(acq, dict):
+        # 1.0 named an image axis ("j-") in a layout the file does not fix: not carried
+        acq.pop("phase_encoding_direction", None)
+    d.setdefault("intent", "diffusion-weighted")
