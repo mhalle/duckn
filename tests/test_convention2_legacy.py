@@ -71,9 +71,9 @@ class TestLegacyFixtures(unittest.TestCase):
         self.assertEqual(float(h.quantity(1000)), 1000.0)
         self.assertEqual(h.values["unit"]["code"], "[hnsf'U]")
 
-    def test_l3_a_non_symmetric_1_0_frame_is_not_carried(self):
+    def test_l3_a_frame_that_governs_nothing_is_reported(self):
         h = self._read("L3-dwi-1.0-malformed")
-        self.assertIn("ambiguous", _messages(h))
+        self.assertIn("governs nothing", _messages(h))
         self.assertEqual(h.dims[0], {"components": "list"})
         self.assertEqual(h.gradient_frame, np.eye(3).tolist())  # gradient_frame world
 
@@ -168,10 +168,21 @@ class TestRows(unittest.TestCase):
         h = read_any(_file(axes=axes, measurement_frame=f), (2, 2, 2, 3))
         self.assertEqual(h.dims[3], {"components": "vector", "frame": f})
 
-    def test_a_symmetric_1_0_frame_is_carried(self):
-        f = [[1, 0, 0], [0, -1, 0], [0, 0, 1]]
-        h = read_any(_file("1.0", axes=AX3 + [{"kind": "vector"}], measurement_frame=f), (2, 2, 2, 3))
-        self.assertEqual(h.dims[3]["frame"], f)
+    def test_a_1_0_frame_is_read_by_columns(self):
+        columns = [[0, 1, 0], [-1, 0, 0], [0, 0, 1]]  # as 1.0 wrote it
+        h = read_any(_file("1.0", axes=AX3 + [{"kind": "vector"}], measurement_frame=columns),
+                     (2, 2, 2, 3))
+        self.assertEqual(h.dims[3]["frame"], np.array(columns).T.tolist())
+
+    def test_the_1x_model_and_the_mapping_read_a_frame_alike(self):
+        for version in ("1.0", "1.1", "1.2"):
+            f = [[0, 1, 0], [-1, 0, 0], [0, 0, 1]]
+            d = _file(version, axes=AX3 + [{"kind": "vector"}], measurement_frame=f)
+            if version != "1.2":
+                d["value_transforms"] = []
+            with self.subTest(version):
+                self.assertEqual(read_any(d, (2, 2, 2, 3)).dims[3]["frame"],
+                                 DucknMetadata(**d).measurement_frame_rows())
 
     def test_a_distance_position_becomes_a_multiple_of_the_step(self):
         axes = json.loads(json.dumps(AX3))

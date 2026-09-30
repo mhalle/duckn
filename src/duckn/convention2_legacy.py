@@ -418,11 +418,9 @@ def _map_frames(d, dims, world_axes, version, report, time_space):
             if not (np.allclose(f[3, :3], 0) and np.allclose(f[:3, 3], 0) and math.isclose(f[3, 3], 1)):
                 report("a 4 x 4 measurement_frame couples time and space: the coupling is not carried")
             f = f[:3, :3]
-        if str(version) == "1.0" and not np.allclose(f, f.T):
-            report("a non-symmetric measurement_frame in a 1.0 file is ambiguous (rows or columns): "
-                   "not carried; convert the file again from its source")
-        else:
-            frame = f.tolist()
+        if tuple(int(x) for x in str(version).split(".")[:2]) < (1, 1):
+            f = f.T  # 1.0 wrote the frame by columns, as NRRD does; 1.1 turned it to rows
+        frame = f.tolist()
     used = False
     for k, dim in enumerate(dims):
         kind = dim.get("components")
