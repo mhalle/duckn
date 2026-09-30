@@ -179,6 +179,85 @@ class TestDicomTimes(unittest.TestCase):
         self.assertNotIn("missing", d["values"])  # a range has no form yet (§6): absent, not []
 
 
+def _nifti(tmp, shape=(8, 8, 6, 4), slice_code=3, sform_code=1, duration=0.1, edit=None):
+    import nibabel as nib
+    from duckn.nifti_convert import nifti_to_zarr
+
+    aff = np.array([[3, 0, 0, -12], [0, 3, 0, -12], [0, 0, 3, -9], [0, 0, 0, 1.0]])
+    img = nib.Nifti1Image(np.zeros(shape, np.float32), aff)
+    h = img.header
+    h.set_sform(aff, code=sform_code)
+    h.set_qform(None, code=0)
+    h.set_xyzt_units("mm", "sec")
+    h["pixdim"][4] = 2.0
+    if slice_code:
+        h.set_dim_info(slice=2)
+        h["slice_code"], h["slice_duration"] = slice_code, duration
+        h["slice_start"], h["slice_end"] = 0, shape[2] - 1
+    if edit:
+        edit(h)
+    nib.save(img, str(Path(tmp) / "f.nii"))
+    out = Path(tmp) / "o.zarr"
+    nifti_to_zarr(Path(tmp) / "f.nii", out, convention="2.0", overwrite=True)
+    arr = zarr.open_array(str(out), mode="r")
+    return dict(arr.attrs)["duckn"], arr
+
+
+class TestNiftiAgainstTheReferenceHeader(unittest.TestCase):
+    maxDiff = None
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_s21_interleaved_slice_timing(self):
+        d, arr = _nifti(self.tmp.name)
+        ref = _core(_reference("S21"))
+        # duckn's NIfTI import keeps NIfTI's dimension order (i, j, k, t); the scenario states
+        # the array the other way round. The same dimensions, reversed.
+        ref["dimensions"] = ref["dimensions"][::-1]
+        self.assertEqual(_core(d), ref)
+        self.assertEqual(d["extensions"]["nifti"]["version"], "2.0")
+        self.assertNotIn("slice_timing", d["extensions"]["nifti"]["tags"])  # geometry now
+        self.assertNotIn("legacy", d["extensions"]["nifti"])  # the core states the sform
+        h = read(d, arr.shape)
+        self.assertEqual(h.position([0, 0, 2, 1])[3], 2.1)  # volume 1, slice 2
+
+    def test_sequential_slices_are_a_step_through_space_and_time(self):
+        d, _ = _nifti(self.tmp.name, slice_code=1)
+        self.assertEqual(d["dimensions"][2], {"step": [0.0, 0.0, 3.0, 0.1], "centering": "cell"})
+        d, _ = _nifti(self.tmp.name, slice_code=2)
+        self.assertEqual(d["dimensions"][2]["step"], [0.0, 0.0, 3.0, -0.1])
+        self.assertEqual(d["origin"][3], 0.5)  # slice 0 is acquired last of six
+
+    def test_an_order_that_starts_on_slice_1_keeps_samples_0_at_the_origin(self):
+        d, arr = _nifti(self.tmp.name, slice_code=5)  # 1, 3, 5, 0, 2, 4
+        times = [s["origin"][3] for s in d["dimensions"][2]["samples"]]
+        self.assertEqual(times, [0.3, 0.0, 0.4, 0.1, 0.5, 0.2])
+        self.assertEqual(d["origin"], d["dimensions"][2]["samples"][0]["origin"])
+
+    def test_a_template_code_names_the_frame_and_others_do_not(self):
+        d, _ = _nifti(self.tmp.name, sform_code=4, slice_code=0)
+        self.assertEqual(d["world"]["reference"], "nifti:mni152")
+        d, _ = _nifti(self.tmp.name, sform_code=2, slice_code=0)
+        self.assertNotIn("reference", d["world"])
+
+    def test_a_partial_slice_range_stays_in_the_record(self):
+        d, _ = _nifti(self.tmp.name, edit=lambda h: h.__setitem__("slice_end", 4))
+        self.assertIn("slice_timing", d["extensions"]["nifti"]["tags"])
+        self.assertNotIn("samples", d["dimensions"][2])
+
+    def test_toffset_is_the_origins_time(self):
+        d, _ = _nifti(self.tmp.name, slice_code=0, edit=lambda h: h.__setitem__("toffset", 7.5))
+        self.assertEqual(d["origin"][3], 7.5)
+        self.assertNotIn("toffset", d["extensions"]["nifti"].get("tags", {}))
+
+    def test_volumes_are_instants(self):
+        d, _ = _nifti(self.tmp.name, slice_code=0)
+        self.assertEqual(d["dimensions"][3], {"step": [0.0, 0.0, 0.0, 2.0], "centering": "node"})
+
+
 class TestOneEncoding(unittest.TestCase):
     def _file(self, positions):
         return {"version": "1.2", "space": "left-posterior-superior", "space_origin": [0.0, 0.0, 10.0],

@@ -190,6 +190,7 @@ def nifti_to_zarr(
     compressor: str = "zstd",
     level: int = 3,
     overwrite: bool = False,
+    convention: str = "1.x",
 ) -> None:
     """Convert a NIfTI file to a duckn Zarr v3 store.
 
@@ -522,6 +523,12 @@ def nifti_to_zarr(
             dim_names.append(f"d{i}")
 
     attrs = {"duckn": meta.model_dump(exclude_none=True)}
+    if convention == "2.0":  # EXPERIMENTAL: the draft convention (duckn.convention2_write)
+        from duckn.convention2_write import upgrade
+        attrs = {"duckn": upgrade(meta.model_dump(exclude_none=True, mode="json"), tuple(shape),
+                                  str(data.dtype), what="convert NIfTI", source_format="NIfTI")}
+    elif convention != "1.x":
+        raise ValueError(f"convention {convention!r}: \"1.x\" or \"2.0\"")
 
     is_zip = _is_zip_path(output_path)
     with open_store(output_path, mode="w", overwrite=overwrite) as store:

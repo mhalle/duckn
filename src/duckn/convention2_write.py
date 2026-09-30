@@ -44,6 +44,8 @@ def upgrade(duckn1: dict, shape: tuple[int, ...], data_type: str | None = None, 
         _finish_nrrd(d, duckn1, shape, domain_axes, parameters)
     elif source_format == "DICOM":
         _finish_dicom(d, time_tag)
+    elif source_format == "NIfTI":
+        _finish_nifti(d, shape)
     _one_encoding(d)
     _record(d, what, source_format, software, parameters)
     read(d, shape, data_type)  # refuses what §10 refuses: never write it
@@ -262,3 +264,93 @@ def _dicom_padding(d: dict, dicom: dict, tags: dict) -> None:
     if float(missing).is_integer():
         missing = int(missing)
     values["missing"] = [missing]
+
+
+# ---- NIfTI (§5.1, §17's nifti row) -------------------------------------------------------------
+
+_XFORM_REFERENCE = {3: "nifti:talairach", 4: "nifti:mni152"}  # codes 1, 2, 5 name no shared frame
+
+
+def _slice_ranks(code: str, n: int) -> list[int] | None:
+    """Each slice's place in the acquisition order, for a NIfTI ``slice_code``."""
+    up, down = list(range(n)), list(range(n - 1, -1, -1))
+    order = {
+        "sequential-increasing": up,
+        "sequential-decreasing": down,
+        "alternating-increasing": up[0::2] + up[1::2],
+        "alternating-decreasing": down[0::2] + down[1::2],
+        "alternating-increasing-2": up[1::2] + up[0::2],
+        "alternating-decreasing-2": down[1::2] + down[0::2],
+    }.get(code)
+    if order is None:
+        return None
+    ranks = [0] * n
+    for rank, k in enumerate(order):
+        ranks[k] = rank
+    return ranks
+
+
+def _finish_nifti(d: dict, shape: tuple[int, ...]) -> None:
+    from decimal import Decimal
+
+    nifti = (d.get("extensions") or {}).get("nifti")
+    if not isinstance(nifti, dict):
+        return
+    nifti["version"] = "2.0"
+    tags = nifti.get("tags") or {}
+    world = d.get("world")
+    if world is None:
+        return
+    axes = world["axes"]
+    code = tags.get("sform_code") or tags.get("qform_code")
+    if code in _XFORM_REFERENCE and "reference" not in world:
+        world["reference"] = _XFORM_REFERENCE[code]
+    # The core states the affine the world was taken from: the record leaves it out (§2.3).
+    legacy_tags = (nifti.get("legacy") or {}).get("tags") or {}
+    legacy_tags.pop("sform" if tags.get("sform_code") else "qform", None)
+    if "legacy" in nifti and not legacy_tags:
+        del nifti["legacy"]
+
+    t = next((j for j, a in enumerate(axes) if a.get("type") == "time"), None)
+    origin = d.get("origin")
+    for k, dim in enumerate(d["dimensions"]):
+        step = dim.get("step")
+        if step is not None and t is not None and step[t] != 0 and all(
+                v == 0 for j, v in enumerate(step) if j != t) and shape[k] > 1:
+            dim["centering"] = "node"  # NIfTI's time points are instants; slice times add to them
+    if t is not None and origin is not None and "toffset" in tags:
+        origin[t] = tags.pop("toffset")
+
+    timing = tags.get("slice_timing")
+    slice_dim = (tags.get("dim_info") or {}).get("slice_dim")
+    if not (isinstance(timing, dict) and slice_dim and t is not None and origin is not None):
+        return
+    k = slice_dim - 1  # duckn's NIfTI import keeps NIfTI's dimension order
+    n = shape[k]
+    ranks = _slice_ranks(timing.get("code"), n)
+    duration = timing.get("duration")
+    if ranks is None or not duration or timing.get("start", 0) != 0 or timing.get("end", n - 1) != n - 1:
+        return  # a partial or unknown order has no geometry: the record keeps what the source said
+    # The header states the duration as a float32: compute in its shortest decimal, so that
+    # three slices of 0.1 s are 0.3 s and not 0.30000000447 (§9: as the source states it).
+    unit = Decimal(str(np.float32(duration)))
+    times = [float(unit * r) for r in ranks]
+    dim = d["dimensions"][k]
+    step = [float(v) for v in dim["step"]]
+    if timing["code"].startswith("sequential"):
+        # a step through space and time (§5.1), in the same decimal terms as the times
+        step[t] = float(unit * (ranks[1] - ranks[0])) if n > 1 else 0.0
+        dim["step"] = step
+        origin[t] = origin[t] + times[0]
+    else:
+        base = np.array(origin, float)
+        samples = dim.get("samples") or [{} for _ in range(n)]
+        for i, s in enumerate(samples):
+            point = base + i * np.array(step)
+            point[t] = origin[t] + times[i]
+            s["origin"] = point.tolist()
+        dim["samples"] = samples
+        origin[t] = samples[0]["origin"][t]  # samples[0].origin equals origin (§5.4)
+    del tags["slice_timing"]
+    if not tags:
+        nifti.pop("tags", None)
