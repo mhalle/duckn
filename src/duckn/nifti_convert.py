@@ -304,6 +304,7 @@ def nifti_to_zarr(
 
     if affine not in ("sform", "qform"):
         raise ValueError(f'affine {affine!r}: "sform" or "qform"')
+    prefer = affine  # `affine` is the matrix below
     try:
         img = nib.load(str(input_path))
     except (nib.spatialimages.HeaderDataError, ValueError) as e:
@@ -369,7 +370,7 @@ def nifti_to_zarr(
 
     import warnings
     matrices = {"sform": (sform_code, img.get_sform), "qform": (qform_code, img.get_qform)}
-    order = ("sform", "qform") if affine == "sform" else ("qform", "sform")
+    order = ("sform", "qform") if prefer == "sform" else ("qform", "sform")
     chosen = None
     for which in order:
         code, get = matrices[which]
