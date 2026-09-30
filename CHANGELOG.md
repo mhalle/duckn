@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.6.3 — 2026-09-30
+
+Two 1.x converters declared a convention version whose rules their output did not follow, found
+by writing and running the convention 2.0 reader (docs/proposals/duckn-2.0.md). Neither changes
+the convention. None of the mislabeled files was distributed.
 
 - **A NRRD import with a measurement frame declares convention 1.1**, the version whose rule the
   frame follows: 1.0 wrote the frame as NRRD does, by columns, and 1.1 turned it to rows (the
