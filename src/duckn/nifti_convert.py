@@ -145,30 +145,87 @@ _NON_TIME_UNITS = frozenset({"Hz", "ppm", "rad/s"})
 
 # Intents whose values are vectors or matrices: nifti1.h puts the components in the 5th
 # dimension (dim[5]), with dim[4] = 1; some writers put them in the 4th instead.
-def _load_ignoring_intercept(nib, path):
-    """``nib.load`` for a file nibabel refuses over a usable ``scl_slope`` beside an intercept
-    that is not finite: its header, with the intercept set to 0, over the file's own data."""
+def _open_header_file(path):
+    """The header's bytes as a file: gzip judged by its magic number, not its name (an
+    uppercase ``.NII.GZ`` read raw failed before 0.6.4)."""
+    import gzip
+    with open(str(path), "rb") as fh:
+        magic = fh.read(2)
+    return gzip.open(str(path), "rb") if magic == b"\x1f\x8b" else open(str(path), "rb")
+
+
+def _load_repaired(nib, path):
+    """``nib.load`` for a single-file NIfTI nibabel refuses where nifti1_io, NIfTI's reference
+    library, reads it: a usable ``scl_slope`` beside an intercept that is not finite (read as
+    0), and a quaternion whose b, c, d have a squared norm above 1 (nifti1_io normalizes them
+    and takes a = 0). Its header, so repaired, over the file's own data."""
     from nibabel.arrayproxy import ArrayProxy
-    from nibabel.openers import ImageOpener
 
     for klass in (nib.Nifti1Image, nib.Nifti2Image):
-        with ImageOpener(str(path), "rb") as fh:
+        with _open_header_file(path) as fh:
             try:
                 header = klass.header_class.from_fileobj(fh)
             except Exception:                    # noqa: BLE001 - not this NIfTI version
                 continue
-        header["scl_inter"] = 0
+        if not np.isfinite(float(header["scl_inter"])):
+            header["scl_inter"] = 0
+        bcd = np.array([float(header["quatern_b"]), float(header["quatern_c"]),
+                        float(header["quatern_d"])])
+        norm = float(np.linalg.norm(bcd))
+        if norm > 1:
+            for k, v in zip(("quatern_b", "quatern_c", "quatern_d"), bcd / norm):
+                header[k] = v
         return klass(ArrayProxy(str(path), header), header.get_best_affine(), header)
     raise ValueError(f"{path}: not a NIfTI-1 or NIfTI-2 file")
 
 
-def _components_kind(intent_code: int, size: int) -> AxisKind:
+# CIFTI-2's intents (nifti2.h: 3000-3099): a matrix of brain-ordinates described by an XML
+# extension, not an image on a grid. NIfTI-MRS: header extension code 44. Neither is refused
+# silently converted: their meaning lives outside what this converter models (nifti-spec §4.4).
+_CIFTI_INTENTS = range(3000, 3100)
+_NIFTI_MRS_ECODE = 44
+
+
+# Components that are spatial quantities, and so change with the world's frame
+_SPATIAL_COMPONENT_KINDS = frozenset({AxisKind.VECTOR, AxisKind.THREE_D_MATRIX,
+                                      AxisKind.THREE_D_SYMMETRIC_MATRIX})
+
+
+def _reframe_components(data: np.ndarray, axis: int, kind: AxisKind, R: np.ndarray):
+    """Components on dimension ``axis`` taken through R: a vector R v, a matrix R M R^T. Only
+    3-vectors and 3x3 matrices (a component count that is not one of those is left alone)."""
+    moved = np.moveaxis(data, axis, -1)
+    n = moved.shape[-1]
+    work = moved.astype(np.result_type(moved.dtype, np.float32), copy=False)
+    if kind == AxisKind.VECTOR and n == 3:
+        out = work @ R.T
+    elif kind == AxisKind.THREE_D_MATRIX and n == 9:
+        m = work.reshape(work.shape[:-1] + (3, 3))
+        out = (R @ m @ R.T).reshape(work.shape)
+    elif kind == AxisKind.THREE_D_SYMMETRIC_MATRIX and n == 6:
+        iu = np.triu_indices(3)                        # xx xy xz yy yz zz
+        m = np.zeros(work.shape[:-1] + (3, 3), dtype=work.dtype)
+        m[..., iu[0], iu[1]] = work
+        m[..., iu[1], iu[0]] = work
+        out = (R @ m @ R.T)[..., iu[0], iu[1]]
+    else:
+        return data
+    return np.moveaxis(out.astype(work.dtype, copy=False), -1, axis)
+
+
+def _components_kind(intent_code: int, size: int, p1: float = 0, p2: float = 0) -> AxisKind:
     if intent_code == 1005:                               # NIFTI_INTENT_SYMMATRIX
         return {6: AxisKind.THREE_D_SYMMETRIC_MATRIX,
                 3: AxisKind.TWO_D_SYMMETRIC_MATRIX}.get(size, AxisKind.LIST)
     if intent_code == 1004:                               # NIFTI_INTENT_GENMATRIX
-        return {9: AxisKind.THREE_D_MATRIX, 4: AxisKind.TWO_D_MATRIX}.get(size, AxisKind.LIST)
-    if intent_code in (1006, 1007):                       # DISPVECT, VECTOR
+        # an M x N matrix, M and N in intent_p1 and p2: a 1 x 4 is no 2 x 2
+        shape = (int(p1), int(p2)) if p1 and p2 else None
+        if shape in (None, (3, 3)) and size == 9:
+            return AxisKind.THREE_D_MATRIX
+        if shape in (None, (2, 2)) and size == 4:
+            return AxisKind.TWO_D_MATRIX
+        return AxisKind.LIST
+    if intent_code in (1006, 1007, 2006):                 # DISPVECT, VECTOR, FNIRT field
         return AxisKind.VECTOR
     if intent_code == 1010 and size == 4:                 # QUATERNION
         return AxisKind.QUATERNION
@@ -179,7 +236,14 @@ def _components_kind(intent_code: int, size: int) -> AxisKind:
     return AxisKind.LIST
 
 
-_VECTOR_INTENTS = frozenset({1004, 1005, 1006, 1007, 1010, 2003, 2004})
+_VECTOR_INTENTS = frozenset({1004, 1005, 1006, 1007, 1010, 2003, 2004,
+                             # FSL's fields (FSL's nifti1.h, as nibabel lists them): an FNIRT
+                             # displacement field, and spline, DCT and TOPUP coefficient
+                             # fields - components, never time
+                             2006, 2007, 2008, 2009, 2016, 2017})
+# statistical intents (nifti1.h 2-24): with a 5th dimension, it holds the statistic in plane 0
+# and its parameters after (nifti1.h "STATISTICAL PARAMETRIC DATASETS"): a list, never time
+_STATISTIC_INTENTS = frozenset(range(2, 25))
 
 # nifti1.h stores NIFTI_INTENT_SYMMATRIX as the lower triangle, row by row: A00 A10 A11 A20 A21
 # A22, that is xx xy yy xz yz zz. duckn's 3D-symmetric-matrix is xx xy xz yy yz zz (NRRD's
@@ -189,14 +253,13 @@ _SYMMATRIX_3D_ORDER = [0, 1, 3, 2, 4, 5]
 
 # NIfTI intent codes → convention-level intent strings
 _INTENT_CODE_TO_CONVENTION: dict[int, str] = {
-    2: "statistical-map",
-    3: "statistical-map",
-    4: "statistical-map",
-    5: "statistical-map",
+    **{c: "statistical-map" for c in range(2, 25)},       # nifti1.h's statistical codes
     1001: "statistical-map",
     1002: "label-map",
+    1003: "label-map",                                    # NEURONAME: labels by name
     1005: "diffusion-tensor",
     1006: "displacement-field",
+    2006: "displacement-field",                           # FSL's FNIRT displacement field
 }
 
 
@@ -213,18 +276,25 @@ def nifti_to_zarr(
     compressor: str = "zstd",
     level: int = 3,
     overwrite: bool = False,
+    affine: str = "sform",
     convention: str = "1.x",
 ) -> None:
     """Convert a NIfTI file to a duckn Zarr v3 store.
 
     Parameters
     ----------
-    input_path : path to the input .nii or .nii.gz file
+    input_path : path to the input .nii or .nii.gz file (or a pair's .hdr or .img)
     output_path : path for the output Zarr store (directory)
     chunks : explicit chunk shape, or None for auto-chunking
     compressor : "zstd", "gzip", or "none"
     level : compression level
     overwrite : if True, overwrite existing store
+    affine : which transform is the array's world when both are set: ``"sform"`` (the sform
+        when ``sform_code`` > 0, else the qform: nibabel's, FSL's and SPM's rule) or
+        ``"qform"`` (the qform when ``qform_code`` > 0, else the sform). nifti1.h leaves the
+        choice to the reader; a singular matrix is never used.
+    convention : "1.x" (the default), or "2.0" for the draft convention (EXPERIMENTAL,
+        ``duckn.convention2_write``)
     """
     _require_nibabel()
     import nibabel as nib
@@ -232,25 +302,37 @@ def nifti_to_zarr(
     input_path = Path(input_path)
     output_path = Path(output_path)
 
+    if affine not in ("sform", "qform"):
+        raise ValueError(f'affine {affine!r}: "sform" or "qform"')
     try:
         img = nib.load(str(input_path))
-    except nib.spatialimages.HeaderDataError:
-        # nibabel refuses a usable scl_slope beside an intercept that is not finite; nifti1_io,
-        # NIfTI's reference library, reads that intercept as 0. The file is read here with the
-        # intercept set aside, and the value transform below follows nifti1_io.
-        img = _load_ignoring_intercept(nib, input_path)
+    except (nib.spatialimages.HeaderDataError, ValueError) as e:
+        # nibabel refuses what nifti1_io, NIfTI's reference library, reads: a usable scl_slope
+        # beside an intercept that is not finite, a quaternion whose b, c, d exceed unit norm.
+        try:
+            img = _load_repaired(nib, input_path)
+        except Exception:                        # noqa: BLE001 - not what nibabel refused
+            raise e from None
+    if type(img).__name__.startswith("Cifti2"):
+        raise ValueError(f"{input_path}: a CIFTI-2 file (brain-ordinates described by its XML "
+                         "extension), not an image on a grid; not converted")
+    if not isinstance(img, nib.Nifti1Pair):
+        raise ValueError(f"{input_path}: not a NIfTI file ({type(img).__name__}; an Analyze "
+                         "7.5 header states no sform, qform or units)")
     hdr = img.header
+    if int(hdr["intent_code"]) in _CIFTI_INTENTS:
+        raise ValueError(f"{input_path}: intent {int(hdr['intent_code'])} is CIFTI's; not an "
+                         "image on a grid, not converted")
+    if any(e.get_code() == _NIFTI_MRS_ECODE for e in hdr.extensions):
+        raise ValueError(f"{input_path}: a NIfTI-MRS file (header extension 44); its dimensions "
+                         "are defined by that extension, which this converter does not read")
 
-    # Read raw header directly from file for fields nibabel sanitizes
-    # (e.g., scl_slope/scl_inter are reset to NaN by nibabel's image loading)
-    if str(input_path).endswith(".gz"):
-        import gzip
-
-        with gzip.open(str(input_path), "rb") as fh:
-            raw_hdr = type(hdr).from_fileobj(fh)
-    else:
-        with open(str(input_path), "rb") as fh:
-            raw_hdr = type(hdr).from_fileobj(fh)
+    # The raw header, for fields nibabel sanitizes on load (scl_slope/scl_inter): read from the
+    # file nibabel read the header from - a pair's .hdr, even when given its .img.
+    fm = img.file_map.get("header") or img.file_map["image"]
+    header_file = fm.filename or str(input_path)
+    with _open_header_file(header_file) as fh:
+        raw_hdr = type(hdr).from_fileobj(fh)
 
     # Detect NIfTI version
     is_nifti2 = isinstance(img, nib.Nifti2Image)
@@ -258,47 +340,66 @@ def nifti_to_zarr(
 
     # Raw stored values (NOT get_fdata which applies scaling)
     data = img.dataobj.get_unscaled()
+    # RGB24 / RGBA32 (datatypes 128, 2304): one record of uint8 per voxel. The components become
+    # the last dimension, an RGB-color or RGBA-color (nifti1.h: scaling does not apply to them).
+    color = None
+    if data.dtype.names:
+        names = data.dtype.names
+        color = AxisKind.RGBA_COLOR if len(names) == 4 else AxisKind.RGB_COLOR
+        data = np.stack([np.asarray(data[n]) for n in names], axis=-1)
 
-    ndim = data.ndim
+    ndim = data.ndim - (1 if color is not None else 0)
     shape = data.shape
 
-    # --- The affine: nifti1.h's precedence ---
-    # Method 3, the sform, when sform_code > 0; else method 2, the qform (its matrix built from
-    # the quaternion, pixdim and qfac, as nibabel's get_qform builds it); else method 1 (below).
-    # This is nifti1.h's rule and nibabel's (get_best_affine). Until 0.6.4 duckn took the qform
-    # whenever the sform's column lengths disagreed with pixdim by more than 1 %, and otherwise
-    # rescaled the sform's columns to pixdim: a heuristic that silently moved a file into
-    # another frame (a scanner qform read as the sform's MNI space). Method 3 does not use
-    # pixdim at all, so a disagreement is only reported; the matrix is used as written, and a
-    # 2.0 writer keeps the other affine as a transform (nifti 2.0 §1).
+    # --- The affine ---
+    # nifti1.h defines three methods and leaves the choice between the sform (method 3) and the
+    # qform (method 2) to the reader, "depending on its purposes". Here it is the caller's:
+    # affine="sform" (the default) is nibabel's, FSL's and SPM's rule (get_best_affine), the
+    # sform when sform_code > 0; affine="qform" prefers the qform. SimpleITK has rules of its
+    # own (it takes the qform for an MNI sform beside a scanner qform), so two readers can place
+    # one file differently; a 2.0 writer keeps the transform not chosen (nifti 2.0 §1). The
+    # chosen matrix is used as written: method 3 does not use pixdim, so a disagreement is only
+    # reported. A singular matrix places nothing, and is passed over (reported). Until 0.6.4
+    # duckn took the qform whenever the sform's column lengths disagreed with pixdim and
+    # otherwise rescaled the sform to pixdim.
     sform_code = int(hdr["sform_code"])
     qform_code = int(hdr["qform_code"])
 
     pixdims = np.array(hdr.get_zooms()[:min(3, ndim)], dtype=np.float64)
 
-    if sform_code > 0:
-        affine = img.get_sform()
-        active_code = sform_code
-        mags = np.array([np.linalg.norm(affine[:3, i]) for i in range(min(3, ndim))])
+    import warnings
+    matrices = {"sform": (sform_code, img.get_sform), "qform": (qform_code, img.get_qform)}
+    order = ("sform", "qform") if affine == "sform" else ("qform", "sform")
+    chosen = None
+    for which in order:
+        code, get = matrices[which]
+        if code <= 0:
+            continue
+        m = np.asarray(get(), dtype=np.float64)
+        if not np.all(np.isfinite(m)) or abs(np.linalg.det(m[:3, :3])) < 1e-12:
+            warnings.warn(f"NIfTI {which} (code {code}) is singular or not finite; not used",
+                          stacklevel=2)
+            continue
+        chosen, affine_matrix, active_code = which, m, code
+        break
+    if chosen == "sform":
+        mags = np.array([np.linalg.norm(affine_matrix[:3, i]) for i in range(min(3, ndim))])
         if not np.allclose(mags, np.where(pixdims > 0, pixdims, mags), rtol=0.01):
-            import warnings
             warnings.warn(
                 f"NIfTI sform column lengths {mags.tolist()} disagree with pixdim "
-                f"{pixdims.tolist()}; the sform is used as written (nifti1.h method 3 does "
-                "not use pixdim)", stacklevel=2)
-    elif qform_code > 0:
-        affine = img.get_qform()
-        active_code = qform_code
-    else:
+                f"{pixdims.tolist()}; the sform is used as written (method 3 does not use "
+                "pixdim)", stacklevel=2)
+    if chosen is None:
         # sform_code = qform_code = 0: NIfTI's "method 1", which states only x = pixdim[1] * i
         # and so on - no orientation and no origin in any patient space (NIfTI-1 keeps it for
         # Analyze 7.5 compatibility and nothing else). nibabel's fall-back affine
         # invents both (a flipped x and a centered origin), and 0.5.4 stored it as RAS. The
         # honest statement is an unnamed space (`space_dimension`) with method 1's axes.
-        affine = np.eye(4)
+        affine_matrix = np.eye(4)
         for i in range(min(3, ndim)):
-            affine[i, i] = pixdims[i] if pixdims[i] > 0 else 1.0
+            affine_matrix[i, i] = pixdims[i] if pixdims[i] > 0 else 1.0
         active_code = 0
+    affine = affine_matrix
     # a 2D NIfTI has two spatial axes; the affine is always 3-dimensional
     n_spatial = min(3, ndim)
 
@@ -306,14 +407,9 @@ def nifti_to_zarr(
     space_origin = affine[:3, 3].tolist()
 
     # space_directions: the affine's columns as written (method 3's matrix, or method 2's, which
-    # already carries pixdim); a zero column (a degenerate header) takes pixdim along its axis
-    space_directions: list[list[float]] = []
-    for i in range(min(3, ndim)):
-        col = np.array(affine[:3, i], dtype=np.float64)
-        if np.linalg.norm(col) == 0:
-            col = np.zeros(3)
-            col[i] = pixdims[i] if pixdims[i] > 0 else 1.0
-        space_directions.append(col.tolist())
+    # already carries pixdim); a singular matrix was passed over above, so none is zero
+    space_directions = [np.array(affine[:3, i], dtype=np.float64).tolist()
+                        for i in range(min(3, ndim))]
 
     # Map code → space name (none for code 0: see above)
     space = _SFORM_CODE_TO_SPACE.get(active_code) if active_code else None
@@ -342,12 +438,16 @@ def nifti_to_zarr(
     # vector or tensor file (components in dim 5, dim 4 = 1, as nifti1.h lays them out) gained a
     # time axis, and a spectrum (a Hz or ppm unit) was called time.
     intent_code_hdr = int(hdr["intent_code"])
+    ip1, ip2 = float(hdr["intent_p1"]), float(hdr["intent_p2"])
     components_dim = None
     if intent_code_hdr in _VECTOR_INTENTS:
         components_dim = 4 if ndim >= 5 else (3 if ndim == 4 else None)
+    elif intent_code_hdr in _STATISTIC_INTENTS and ndim >= 5:
+        components_dim = 4
+    toffset = float(hdr["toffset"])
     if ndim >= 4:
         if components_dim == 3:
-            axes.append(AxisMetadata(kind=_components_kind(intent_code_hdr, shape[3])))
+            axes.append(AxisMetadata(kind=_components_kind(intent_code_hdr, shape[3], ip1, ip2)))
         elif components_dim == 4 and shape[3] == 1:
             axes.append(AxisMetadata())                    # nifti1.h's placeholder dim[4] = 1
         else:
@@ -358,17 +458,26 @@ def nifti_to_zarr(
             # pixdim[4] is the sampling interval (TR), which is what `samples[i].position`
             # states on a time axis (duckn-spec §3.2). 0.5.4 wrote it as `thickness` - the
             # extent each sample measures, which is not the interval between samples.
+            # nifti1.h: time point m is at toffset + m * pixdim[4], in pixdim[4]'s unit (a
+            # spectrum's first bin likewise); 0.6.3 and earlier left toffset out of the positions.
             pixdim4 = float(hdr["pixdim"][4])
             if pixdim4 > 0 and shape[3] >= 2:
-                time_kwargs["samples"] = [{"position": k * pixdim4} for k in range(shape[3])]
+                time_kwargs["samples"] = [{"position": toffset + k * pixdim4}
+                                          for k in range(shape[3])]
+            elif shape[3] == 1 and toffset != 0:
+                time_kwargs["samples"] = [{"position": toffset}]
             axes.append(AxisMetadata(**time_kwargs))
 
     # Dimensions beyond the 4th
     for i in range(4, ndim):
         if i == components_dim:
-            axes.append(AxisMetadata(kind=_components_kind(intent_code_hdr, shape[i])))
+            kind = (AxisKind.LIST if intent_code_hdr in _STATISTIC_INTENTS
+                    else _components_kind(intent_code_hdr, shape[i], ip1, ip2))
+            axes.append(AxisMetadata(kind=kind))
         else:
             axes.append(AxisMetadata())
+    if color is not None:
+        axes.append(AxisMetadata(kind=color))
     if intent_code_hdr == 1005 and components_dim is not None \
             and axes[components_dim].kind == AxisKind.THREE_D_SYMMETRIC_MATRIX:
         data = np.take(np.asarray(data), _SYMMATRIX_3D_ORDER, axis=components_dim)
@@ -381,7 +490,7 @@ def nifti_to_zarr(
     # As nifti1_io reads them: a slope of 0 or not finite leaves the stored values unscaled,
     # whatever the intercept; a usable slope beside an intercept that is not finite reads that
     # intercept as 0. (0.6.3 took an infinite slope as a slope, which no transform can hold.)
-    slope_set = bool(np.isfinite(scl_slope)) and scl_slope != 0
+    slope_set = bool(np.isfinite(scl_slope)) and scl_slope != 0 and color is None
     if slope_set and not np.isfinite(scl_inter):
         scl_inter = 0.0
     if slope_set and not (scl_slope == 1.0 and scl_inter == 0.0):
@@ -467,7 +576,6 @@ def nifti_to_zarr(
         tags_kwargs["slice_timing"] = NiftiSliceTiming(**st_kwargs)
 
     # toffset
-    toffset = float(hdr["toffset"])
     if toffset != 0:
         tags_kwargs["toffset"] = toffset
 
@@ -492,9 +600,23 @@ def nifti_to_zarr(
     if aux_file:
         tags_kwargs["aux_file"] = aux_file
 
+    # Header extensions (esize > 0 after the header): kept whole, their code and bytes, never
+    # interpreted (nifti-spec §4.4); 0.6.3 and earlier dropped them without a word.
+    header_extensions = []
+    for e in hdr.extensions:
+        import base64
+        raw = getattr(e, "_raw", None)             # nibabel 5: the bytes as the file held them
+        if not isinstance(raw, bytes):
+            raw = e.get_content()
+            raw = raw if isinstance(raw, bytes) else str(raw).encode("utf-8")
+        header_extensions.append({"code": int(e.get_code()),
+                                  "content": base64.b64encode(raw).decode("ascii")})
+    if header_extensions:
+        tags_kwargs["extensions"] = header_extensions
+
     # Build extension
     nifti_ext_kwargs: dict[str, Any] = {
-        "version": "1.1",   # 1.1: codes stated when 0, `xyzt_units` (nifti-spec §4.2)
+        "version": "1.2",   # 1.2: header extensions kept (§4.4); 1.1: codes stated when 0
         "nifti_version": nifti_version,
     }
     if tags_kwargs:
@@ -526,7 +648,7 @@ def nifti_to_zarr(
     compressors_list = _build_compressors(compressor, level)
 
     # "t" only for a dimension that is time; the components dimension is "c".
-    dim_names = ["i", "j", "k"]
+    dim_names = ["i", "j", "k"][:min(3, ndim)]
     for i in range(3, ndim):
         if i == components_dim:
             dim_names.append("c")
@@ -534,13 +656,15 @@ def nifti_to_zarr(
             dim_names.append("t")
         else:
             dim_names.append(f"d{i}")
+    if color is not None:
+        dim_names.append("c")
 
     attrs = {"duckn": meta.model_dump(exclude_none=True)}
     if convention == "2.0":  # EXPERIMENTAL: the draft convention (duckn.convention2_write)
         from duckn.convention2_write import upgrade
         attrs = {"duckn": upgrade(meta.model_dump(exclude_none=True, mode="json"), tuple(shape),
                                   str(data.dtype), what="convert NIfTI", source_format="NIfTI",
-                                  source_name=Path(input_path).name)}
+                                  source_name=Path(input_path).name, affine=affine)}
     elif convention != "1.x":
         raise ValueError(f"convention {convention!r}: \"1.x\" or \"2.0\"")
 
@@ -656,10 +780,24 @@ def zarr_to_nifti(
     # is untouched. Skipping it (the historical bug) writes, say, LPS numbers
     # into an RAS-declared sform, which every reader then mis-reads as a 180°
     # rotation about S (left/right + ant/post swapped).
+    signs = np.ones(3)
     if meta.space:
         signs = _space_to_ras_signs(meta.space.value)
         if not np.all(signs == 1.0):
             affine = np.diag([signs[0], signs[1], signs[2], 1.0]) @ affine
+
+    # --- Components into the file's world (RAS) ---
+    # A vector's or a tensor's components are in the store's world, or in its measurement
+    # frame when it states one (world = F @ components). NIfTI's world is RAS, and a reader of
+    # the file has no other frame to put them in, so they are written in it: v' = R v and
+    # T' = R T R^T, R = diag(signs) @ F. Until 0.6.4 an LPS store's components went out as
+    # they were - two of three components negated against the file's own affine.
+    comp_axis = next((i for i, ax in enumerate(meta.axes or [])
+                      if i >= 3 and ax.kind in _SPATIAL_COMPONENT_KINDS), None)
+    frame = meta.measurement_frame_rows()
+    R = np.diag(signs) @ (np.array(frame, dtype=np.float64) if frame else np.eye(3))
+    if comp_axis is not None and not np.allclose(R, np.eye(3)):
+        data = _reframe_components(np.asarray(data), comp_axis, meta.axes[comp_axis].kind, R)
 
     # --- Determine codes ---
     # After the reframe, anatomical spaces are RAS+ → code 2 (aligned_anat);
@@ -679,10 +817,29 @@ def zarr_to_nifti(
     # --- A symmetric tensor in nifti1.h's order (see _SYMMATRIX_3D_ORDER) ---
     sym_axis = next((i for i, ax in enumerate(meta.axes or [])
                      if ax.kind == AxisKind.THREE_D_SYMMETRIC_MATRIX and i >= 3), None)
-    out_intent = tags.intent.code if tags and tags.intent is not None else (
-        1005 if sym_axis is not None else 0)
+    # The intent a store without nifti tags states by its components: a tensor is SYMMATRIX, a
+    # vector VECTOR, or DISPVECT when the store says it is a displacement field (0.6.3 wrote a
+    # vector store with intent 0, which states no components at all).
+    implied_intent = 0
+    if sym_axis is not None:
+        implied_intent = 1005
+    elif comp_axis is not None and meta.axes[comp_axis].kind == AxisKind.VECTOR:
+        implied_intent = 1006 if meta.intent == "displacement-field" else 1007
+    out_intent = tags.intent.code if tags and tags.intent is not None else implied_intent
     if sym_axis is not None and out_intent == 1005:
         data = np.take(np.asarray(data), _SYMMATRIX_3D_ORDER, axis=sym_axis)
+
+    # --- RGB24 / RGBA32: a trailing uint8 color dimension goes back into one record a voxel ---
+    color_axes = meta.axes or []
+    if (data.ndim >= 2 and len(color_axes) == data.ndim
+            and color_axes[-1].kind in (AxisKind.RGB_COLOR, AxisKind.RGBA_COLOR)
+            and data.dtype == np.uint8 and data.shape[-1] in (3, 4)):
+        names = "RGBA"[:data.shape[-1]]
+        rec = np.empty(data.shape[:-1], dtype=[(c, "u1") for c in names])
+        for k, c in enumerate(names):
+            rec[c] = data[..., k]
+        data = rec
+        ndim = data.ndim
 
     # --- Choose NIfTI version ---
     use_nifti2 = False
@@ -693,19 +850,32 @@ def zarr_to_nifti(
         use_nifti2 = True
 
     ImageClass = nib.Nifti2Image if use_nifti2 else nib.Nifti1Image
+    # nibabel refuses 64-bit integers unless the type is asked for by name (NIfTI has codes
+    # for both, 1024 and 1280); 0.6.3 failed on every int64 store.
+    image_kw = ({"dtype": data.dtype} if data.dtype in (np.dtype(np.int64), np.dtype(np.uint64))
+                else {})
+    # A qform is a rotation, a reflection and pixdim: it cannot hold a shear. Written from a
+    # sheared affine it would be a second, different placement; unless the tags ask for one,
+    # the file states the sform alone.
+    cols = affine[:3, :min(3, ndim)]
+    gram = cols.T @ cols
+    sheared = not np.allclose(gram, np.diag(np.diag(gram)),
+                              atol=1e-6 * max(1.0, float(np.max(np.abs(gram)))))
+    if sheared and not (tags and tags.qform_code is not None):
+        qform_code_out = 0
     no_codes = sform_code == 0 and qform_code_out == 0
     if no_codes:
         # Neither transform: the file states only pixdim (method 1). An image built with an
         # affine has nibabel rewrite both codes on save (to aligned_anat), so it is built
         # without one and pixdim set from the axes.
-        img = ImageClass(data, None)
+        img = ImageClass(data, None, **image_kw)
         hdr = img.header
         zooms = list(hdr.get_zooms())
         for i in range(min(3, ndim)):
             zooms[i] = float(np.linalg.norm(affine[:3, i]))
         hdr.set_zooms(zooms)
     else:
-        img = ImageClass(data, affine)
+        img = ImageClass(data, affine, **image_kw)
         hdr = img.header
 
     # --- Set sform and qform ---
@@ -732,7 +902,7 @@ def zarr_to_nifti(
         for i in range(min(3, ndim)):
             hdr["pixdim"][i + 1] = np.linalg.norm(sform_affine[:3, i])
         # Recreate image with the sform affine so nibabel's internals are consistent
-        img = ImageClass(data, sform_affine)
+        img = ImageClass(data, sform_affine, **image_kw)
         hdr = img.header
         hdr.set_sform(sform_affine, code=sform_code)
         hdr.set_qform(qform_affine, code=qform_code_out)
@@ -808,9 +978,16 @@ def zarr_to_nifti(
         elif time_ax.thickness is not None and not time_ax.samples:
             # stores written by 0.5.4 and earlier put pixdim[4] here
             hdr["pixdim"][4] = time_ax.thickness
+        # nifti1.h: time point 0 is at toffset (0.6.4 reads it into the positions)
+        first = (time_ax.samples or [None])[0]
+        if (time_ax.kind in (AxisKind.TIME, AxisKind.DOMAIN) and first is not None
+                and first.position is not None):
+            hdr["toffset"] = first.position
 
-    if out_intent == 1005 and not (tags and tags.intent is not None):
-        hdr["intent_code"] = 1005                      # the order written is nifti1.h's
+    if out_intent and not (tags and tags.intent is not None):
+        hdr["intent_code"] = out_intent
+        if out_intent == 1005:
+            hdr["intent_p1"] = 3                       # nifti1.h: SYMMATRIX's p1 is its size N
 
     # --- Restore NIfTI tags ---
     if tags:
@@ -826,7 +1003,7 @@ def zarr_to_nifti(
         if tags.intent is not None:
             hdr["intent_code"] = tags.intent.code
             if tags.intent.name:
-                name_bytes = tags.intent.name.encode("ascii")[:16]
+                name_bytes = tags.intent.name.encode("ascii", errors="replace")[:16]
                 hdr["intent_name"] = name_bytes
             if tags.intent.p1 is not None:
                 hdr["intent_p1"] = tags.intent.p1
@@ -860,11 +1037,18 @@ def zarr_to_nifti(
 
         # descrip
         if tags.descrip is not None:
-            hdr["descrip"] = tags.descrip.encode("ascii")[:80]
+            hdr["descrip"] = tags.descrip.encode("ascii", errors="replace")[:80]
 
         # aux_file
         if tags.aux_file is not None:
-            hdr["aux_file"] = tags.aux_file.encode("ascii")[:24]
+            hdr["aux_file"] = tags.aux_file.encode("ascii", errors="replace")[:24]
+
+        # header extensions, whole, as the source had them (nifti-spec §4.4)
+        if tags.extensions:
+            import base64
+            for e in tags.extensions:
+                hdr.extensions.append(nib.nifti1.Nifti1Extension(
+                    int(e["code"]), base64.b64decode(e["content"])))
 
     # --- Save ---
     nib.save(img, str(output_path))
@@ -882,225 +1066,38 @@ def zarr_to_nifti(
                 break
 
     if _slope_to_patch is not None:
-        import struct as _struct
-
-        actual_path = output_path
-        is_gz = str(output_path).endswith(".gz")
-        if is_gz:
-            import gzip
-            import shutil
-            import tempfile
-
-            # Decompress, patch, recompress
-            tmp_nii = Path(tempfile.mktemp(suffix=".nii"))
-            with gzip.open(str(output_path), "rb") as f_in:
-                with open(str(tmp_nii), "wb") as f_out:
-                    shutil.copyfileobj(f_in, f_out)
-            # Determine offset (NIfTI-1: 112, NIfTI-2: 176)
-            slope_offset = 176 if use_nifti2 else 112
-            fmt = "<d" if use_nifti2 else "<f"
-            with open(str(tmp_nii), "r+b") as fh:
-                fh.seek(slope_offset)
-                fh.write(_struct.pack(fmt, _slope_to_patch))
-                fh.write(_struct.pack(fmt, _inter_to_patch or 0.0))
-            with open(str(tmp_nii), "rb") as f_in:
-                with gzip.open(str(output_path), "wb") as f_out:
-                    shutil.copyfileobj(f_in, f_out)
-            tmp_nii.unlink()
-        else:
-            slope_offset = 176 if use_nifti2 else 112
-            fmt = "<d" if use_nifti2 else "<f"
-            with open(str(output_path), "r+b") as fh:
-                fh.seek(slope_offset)
-                fh.write(_struct.pack(fmt, _slope_to_patch))
-                fh.write(_struct.pack(fmt, _inter_to_patch or 0.0))
+        # the header lives in the .hdr of a pair, whatever name the caller gave (nib.save
+        # converts to a pair on its own, so the saved image's file map is not this one's)
+        _patch_scaling(_header_file_of(output_path), use_nifti2,
+                       _slope_to_patch, _inter_to_patch or 0.0)
 
 
-# ---------------------------------------------------------------------------
-# NIfTI ZMP builder (no nibabel required)
-# ---------------------------------------------------------------------------
-
-# NIfTI datatype code → (zarr dtype string, itemsize)
-_NII_DATATYPE_MAP: dict[int, tuple[str, int]] = {
-    2: ("uint8", 1), 4: ("int16", 2), 8: ("int32", 4),
-    16: ("float32", 4), 64: ("float64", 8),
-    256: ("int8", 1), 512: ("uint16", 2), 768: ("uint32", 4),
-}
-
-_NII_SFORM_TO_SPACE: dict[int, str] = {   # every code is RAS+ (see _SFORM_CODE_TO_SPACE)
-    1: "right-anterior-superior",
-    2: "right-anterior-superior",
-    3: "right-anterior-superior",
-    4: "right-anterior-superior",
-}
-
-_NII_SPATIAL_UNITS: dict[int, str] = {1: "m", 2: "mm", 3: "um"}
+def _header_file_of(path: Path) -> Path:
+    """The file holding the header nibabel wrote for ``path``: itself for a .nii or .hdr, the
+    .hdr of a pair named by its .img (in the .img's case, as nibabel names it)."""
+    name = path.name
+    for ext in (".img.gz", ".img"):
+        if name.lower().endswith(ext):
+            img_part = name[len(name) - len(ext):len(name) - len(ext) + 4]     # ".img" / ".IMG"
+            hdr_part = ".HDR" if img_part[1:].isupper() else ".hdr"
+            return path.with_name(name[:len(name) - len(ext)] + hdr_part + ext[4:])
+    return path
 
 
-def build_nifti_zmp(
-    input_path: str | Path,
-    output_path: str | Path,
-    *,
-    overwrite: bool = False,
-) -> Path:
-    """Build a ZMP manifest for a NIfTI file with per-slice byte ranges.
-
-    Parses the NIfTI-1 header directly (no nibabel required) and creates
-    a ZMP where each chunk is one axial slice — a contiguous byte range
-    in the .nii file.
-
-    The Zarr array shape is (z, y, x) with chunk shape (1, y, x).
-
-    Requirements:
-    - Uncompressed .nii (not .nii.gz)
-    - NIfTI-1 format (348-byte header)
-    - 3D volume
-    - sform_code > 0 (sform affine present)
-
-    Parameters
-    ----------
-    input_path : path to the .nii file (or HTTP/S3 URL)
-    output_path : path for the output .zmp file
-    overwrite : if True, overwrite existing file
-
-    Returns
-    -------
-    Path to the created .zmp file
-    """
+def _patch_scaling(header_path: Path, nifti2: bool, slope: float, inter: float) -> None:
+    """Write scl_slope and scl_inter into a saved header (NIfTI-1 offset 112 as float32,
+    NIfTI-2 176 as float64), compressed or not - judged by the gzip magic number."""
+    import gzip
     import struct
-    from zarr_zmp import Builder as ZMPBuilder
 
-    input_path = Path(input_path)
-    output_path = Path(output_path)
-
-    if output_path.exists() and not overwrite:
-        raise FileExistsError(f"{output_path} already exists")
-
-    if str(input_path).endswith(".gz"):
-        raise ValueError("ZMP requires uncompressed .nii (not .nii.gz)")
-
-    # Read 348-byte NIfTI-1 header
-    with open(input_path, "rb") as f:
-        hdr = f.read(348)
-
-    # Detect endianness from sizeof_hdr (must be 348)
-    if struct.unpack_from("<i", hdr, 0)[0] == 348:
-        e = "<"
-        endian = "little"
-    elif struct.unpack_from(">i", hdr, 0)[0] == 348:
-        e = ">"
-        endian = "big"
-    else:
-        raise ValueError("Not a valid NIfTI-1 file (sizeof_hdr != 348)")
-
-    # Parse header fields
-    dim = struct.unpack_from(f"{e}8h", hdr, 40)
-    ndim = dim[0]
-    datatype = struct.unpack_from(f"{e}h", hdr, 70)[0]
-    vox_offset = max(352, int(struct.unpack_from(f"{e}f", hdr, 108)[0]))
-    sform_code = struct.unpack_from(f"{e}h", hdr, 254)[0]
-    srow_x = struct.unpack_from(f"{e}4f", hdr, 280)
-    srow_y = struct.unpack_from(f"{e}4f", hdr, 296)
-    srow_z = struct.unpack_from(f"{e}4f", hdr, 312)
-    xyzt_units = hdr[123]
-
-    if ndim != 3:
-        raise ValueError(f"ZMP currently supports 3D NIfTI only, got {ndim}D")
-
-    if datatype not in _NII_DATATYPE_MAP:
-        raise ValueError(f"Unsupported NIfTI datatype code: {datatype}")
-
-    if sform_code <= 0:
-        raise ValueError("NIfTI file has no sform (sform_code <= 0)")
-
-    dtype_str, itemsize = _NII_DATATYPE_MAP[datatype]
-    x_dim, y_dim, z_dim = dim[1], dim[2], dim[3]
-    slice_bytes = x_dim * y_dim * itemsize
-    spatial_unit = _NII_SPATIAL_UNITS.get(xyzt_units & 0x07, "mm")
-
-    # Geometry from sform: columns are space_directions, last col is origin
-    origin = [srow_x[3], srow_y[3], srow_z[3]]
-    dir_x = [srow_x[0], srow_y[0], srow_z[0]]
-    dir_y = [srow_x[1], srow_y[1], srow_z[1]]
-    dir_z = [srow_x[2], srow_y[2], srow_z[2]]
-    space = _NII_SFORM_TO_SPACE.get(sform_code, "right-anterior-superior")
-
-    # Build duckn metadata in Zarr (z, y, x) order
-    duckn_meta = {
-        "version": "1.0",
-        "space": space,
-        "space_origin": origin,
-        "axes": [
-            {"kind": "space", "centering": "cell",
-             "space_direction": dir_z, "unit": spatial_unit},
-            {"kind": "space", "centering": "cell",
-             "space_direction": dir_y, "unit": spatial_unit},
-            {"kind": "space", "centering": "cell",
-             "space_direction": dir_x, "unit": spatial_unit},
-        ],
-        "extensions": {
-            "nifti": {
-                "version": "1.0",
-                "nifti_version": 1,
-                "tags": {"sform_code": sform_code},
-            },
-        },
-    }
-
-    # Value transforms from scl_slope/scl_inter
-    scl_slope = struct.unpack_from(f"{e}f", hdr, 112)[0]
-    scl_inter = struct.unpack_from(f"{e}f", hdr, 116)[0]
-    import math
-    slope_set = not (math.isnan(scl_slope) or scl_slope == 0)
-    if slope_set and not (scl_slope == 1.0 and (scl_inter == 0.0 or math.isnan(scl_inter))):
-        if math.isnan(scl_inter):
-            scl_inter = 0.0
-        duckn_meta["value_transforms"] = [
-            {"name": "linear", "parameters": {"slope": scl_slope, "intercept": scl_inter}}
-        ]
-
-    # Build zarr.json
-    zarr_meta = {
-        "zarr_format": 3,
-        "node_type": "array",
-        "shape": [z_dim, y_dim, x_dim],
-        "data_type": dtype_str,
-        "chunk_grid": {
-            "name": "regular",
-            "configuration": {"chunk_shape": [1, y_dim, x_dim]},
-        },
-        "chunk_key_encoding": {
-            "name": "default",
-            "configuration": {"separator": "/"},
-        },
-        "fill_value": 0,
-        "codecs": [
-            {"name": "bytes", "configuration": {"endian": endian}},
-        ],
-        "attributes": {"duckn": duckn_meta},
-        "dimension_names": ["k", "j", "i"],
-    }
-
-    zarr_json_text = json.dumps(zarr_meta)
-    uri = input_path.resolve().as_uri()
-    file_size = input_path.stat().st_size
-
-    # Build ZMP — one chunk per axial slice
-    builder = ZMPBuilder()
-    builder.add("zarr.json", text=zarr_json_text)
-
-    for k in range(z_dim):
-        builder.add(
-            f"c/{k}/0/0",
-            resolve={"http": {"url": uri, "offset": vox_offset + k * slice_bytes, "length": slice_bytes}},
-            size=file_size,
-        )
-
-    if output_path.exists() and overwrite:
-        output_path.unlink()
-
-    builder.write(output_path)
-    return output_path
+    offset, fmt = (176, "<dd") if nifti2 else (112, "<ff")
+    with open(header_path, "rb") as fh:
+        raw = fh.read()
+    gz = raw[:2] == b"\x1f\x8b"
+    body = bytearray(gzip.decompress(raw) if gz else raw)
+    body[offset:offset + struct.calcsize(fmt)] = struct.pack(fmt, slope, inter)
+    with open(header_path, "wb") as fh:
+        fh.write(gzip.compress(bytes(body)) if gz else bytes(body))
 
 
 # ---------------------------------------------------------------------------

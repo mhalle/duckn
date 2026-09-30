@@ -12,16 +12,48 @@ Converter defects found by the review of the convention 2.0 extension revisions 
   lower triangle by rows (xx xy yy xz yz zz); duckn's `3D-symmetric-matrix` is xx xy xz yy yz zz.
   0.6.3 and earlier took one for the other, so Dyy read as Dxz and Dxz as Dyy. Import and export
   now permute, and an exported tensor states intent 1005.
-- **The NIfTI affine by nifti1.h's precedence**: the sform when `sform_code` > 0, used as
-  written; else the qform; else `pixdim` alone - nifti1.h's rule and nibabel's. 0.6.3 and earlier
-  took the qform whenever the sform's column lengths disagreed with `pixdim` by more than 1 %
-  (so a scanner-space qform could be read in the sform's MNI frame), and otherwise rescaled the
-  sform's columns to `pixdim`. A disagreement is now reported, not acted on.
+- **The NIfTI affine is the sform when `sform_code` > 0, used as written; else the qform; else
+  `pixdim` alone** - nibabel's rule, and FSL's and SPM's. nifti1.h does not define a precedence
+  (it leaves the choice to the reader; an earlier wording of this entry said it did), so the
+  choice is the caller's: `nifti_to_zarr(..., affine="qform")` prefers the qform. 0.6.3 and
+  earlier took the qform whenever the sform's column lengths disagreed with `pixdim` by more than
+  1 % (so a scanner-space qform could be read in the sform's MNI frame), and otherwise rescaled
+  the sform's columns to `pixdim`. A disagreement is now reported, not acted on; a singular or
+  non-finite transform is reported and passed over (0.6.3 filled a zero column from `pixdim`).
 - **DICOM Rescale Type `US` states no unit**: it is the defined term for *unspecified*
   (PS3.3 C.11.1.1.2), not the Modality's ultrasound; 0.6.3 wrote "US" as `sample_units`.
 - **NIfTI scaling as nifti1_io reads it.** A usable `scl_slope` beside an intercept that is not
   finite no longer fails to load (nibabel refuses such a file): the intercept reads as 0. A slope
   that is not finite leaves the values unscaled, as 0 does; 0.6.3 failed validating it.
+
+
+From the adversarial round on NIfTI (2026-09-30), in the NIfTI converter:
+
+- **Files it could not read**: a 1D or 2D file (it crashed naming its dimensions); a pair given by
+  its `.img` (the raw header was read from the image file); an upper-case `.NII.GZ` (gzip is judged
+  by its magic number now, not a case-sensitive `.gz`); a quaternion whose b, c, d exceed unit norm
+  (normalized, as nifti1_io does; nibabel refuses it). An Analyze 7.5 header is refused by name.
+- **CIFTI-2 and NIfTI-MRS are refused** with a message: their meaning lives in an extension this
+  converter does not read, and a store converted without it misstates them.
+- **Header extensions are kept whole** (`tags.extensions`, code and base64 bytes; nifti extension
+  1.2) and written back on export. 0.6.3 dropped them silently.
+- **`toffset` places the first time point**: positions are `toffset + k * pixdim[4]`, as
+  nifti1.h defines them; a single volume with a `toffset` has that position. Export writes
+  `toffset` back from the first position when the tags do not state it.
+- **Intents**: every statistical code (2-24) is a `statistical-map`, NEURONAME (1003) a
+  `label-map`, FSL's FNIRT field (2006) a `vector` `displacement-field`; FSL's coefficient fields
+  (2007-2009, 2016, 2017) hold components, not time; a statistic's per-voxel parameters (5th
+  dimension) are a `list`; a GENMATRIX is shaped by `intent_p1` and `intent_p2`.
+- **RGB24 and RGBA32** read as uint8 with a trailing `RGB-color` / `RGBA-color` dimension, with no
+  scaling (nifti1.h), and export back to those types.
+- **Export**: a vector or tensor in an LPS store (or under a measurement frame) is written in the
+  file's RAS world - 0.6.3 wrote LPS components beside an RAS affine; an untagged vector states
+  intent 1007 (1006 for a displacement field) and a tensor `intent_p1` 3; a sheared affine writes
+  no qform (a qform cannot hold a shear); int64 and uint64 export (nibabel refused them); a
+  non-ASCII description no longer fails; scaling is patched into a pair's `.hdr` and into a
+  compressed file judged by its bytes.
+- **Complex values stay complex under a scale** (`zarr_io.materialize` cast them to float32).
+- The unused first of two `build_nifti_zmp` definitions is gone.
 
 ## 0.6.3 — 2026-09-30
 

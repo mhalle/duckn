@@ -958,6 +958,8 @@ class NiftiTags(BaseModel):
     cal: NiftiCal | None = None
     descrip: str | None = None
     aux_file: str | None = None
+    # header extensions, whole (nifti-spec §4.4): [{"code": int, "content": base64}]
+    extensions: list[dict[str, Any]] | None = None
 
 
 class NiftiLegacyTags(BaseModel):

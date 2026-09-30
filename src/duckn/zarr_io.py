@@ -381,13 +381,19 @@ def _rescale(
     if target is None:
         if slope == 1.0 and intercept == 0.0:
             return data
-        target = np.dtype(np.float32)
+        # complex values stay complex: a float target dropped the imaginary part (0.6.3)
+        target = (np.dtype(np.complex128) if data.dtype == np.complex128
+                  else np.dtype(np.complex64) if np.iscomplexobj(data)
+                  else np.dtype(np.float32))
 
-    work = (
-        np.dtype(np.float64)
-        if target == np.dtype(np.float64)
-        else np.dtype(np.float32)
-    )
+    if np.issubdtype(target, np.complexfloating):
+        work = target
+    else:
+        work = (
+            np.dtype(np.float64)
+            if target == np.dtype(np.float64)
+            else np.dtype(np.float32)
+        )
     out = data.astype(work, copy=False) * work.type(slope)
     if intercept != 0.0:
         out = out + work.type(intercept)
