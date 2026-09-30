@@ -1,0 +1,142 @@
+{
+ "duckn": {
+  "version": "2.0",
+  "world": {
+   "axes": [
+    {
+     "id": "x",
+     "type": "space",
+     "unit": "mm",
+     "positive": "left"
+    },
+    {
+     "id": "y",
+     "type": "space",
+     "unit": "mm",
+     "positive": "posterior"
+    },
+    {
+     "id": "z",
+     "type": "space",
+     "unit": "mm",
+     "positive": "superior"
+    },
+    {
+     "id": "t",
+     "type": "time",
+     "unit": "s"
+    }
+   ],
+   "transforms": [
+    {
+     "to": {
+      "reference": "stimulus",
+      "axes": [
+       {
+        "id": "t",
+        "type": "time",
+        "unit": "s"
+       }
+      ]
+     },
+     "on": [
+      "t"
+     ],
+     "forward": {
+      "affine": [
+       [
+        1.0,
+        -12.5
+       ]
+      ]
+     }
+    }
+   ]
+  },
+  "origin": [
+   0,
+   0,
+   0,
+   0
+  ],
+  "dimensions": [
+   {
+    "step": [
+     0,
+     0,
+     0,
+     60
+    ],
+    "centering": "cell",
+    "samples": [
+     {
+      "thickness": 60
+     },
+     {
+      "thickness": 60
+     },
+     {
+      "thickness": 60
+     }
+    ]
+   },
+   {
+    "step": [
+     0,
+     0,
+     2,
+     0
+    ],
+    "centering": "cell"
+   },
+   {
+    "step": [
+     0,
+     2,
+     0,
+     0
+    ],
+    "centering": "cell"
+   },
+   {
+    "step": [
+     2,
+     0,
+     0,
+     0
+    ],
+    "centering": "cell"
+   }
+  ],
+  "values": {
+   "unit": "Bq/mL",
+   "transforms": [
+    {
+     "name": "axis_linear",
+     "parameters": {
+      "dimension": 0,
+      "slope": [
+       1.1,
+       1.2
+      ],
+      "intercept": 0
+     }
+    }
+   ]
+  },
+  "extensions": {
+   "provenance": {
+    "version": "1.1",
+    "processing": [
+     {
+      "name": "convert",
+      "software": {
+       "name": "duckn",
+       "version": "0.7.0"
+      }
+     }
+    ]
+   }
+  }
+ }
+}

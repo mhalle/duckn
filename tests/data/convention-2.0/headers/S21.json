@@ -1,0 +1,151 @@
+{
+ "duckn": {
+  "version": "2.0",
+  "world": {
+   "axes": [
+    {
+     "id": "x",
+     "unit": "mm",
+     "positive": "right",
+     "type": "space"
+    },
+    {
+     "id": "y",
+     "unit": "mm",
+     "positive": "anterior",
+     "type": "space"
+    },
+    {
+     "id": "z",
+     "unit": "mm",
+     "positive": "superior",
+     "type": "space"
+    },
+    {
+     "id": "t",
+     "unit": "s",
+     "type": "time"
+    }
+   ]
+  },
+  "origin": [
+   -12,
+   -12,
+   -9,
+   0
+  ],
+  "dimensions": [
+   {
+    "step": [
+     0,
+     0,
+     0,
+     2.0
+    ],
+    "centering": "node"
+   },
+   {
+    "step": [
+     0,
+     0,
+     3,
+     0
+    ],
+    "centering": "cell",
+    "samples": [
+     {
+      "origin": [
+       -12,
+       -12,
+       -9,
+       0.0
+      ]
+     },
+     {
+      "origin": [
+       -12,
+       -12,
+       -6,
+       0.3
+      ]
+     },
+     {
+      "origin": [
+       -12,
+       -12,
+       -3,
+       0.1
+      ]
+     },
+     {
+      "origin": [
+       -12,
+       -12,
+       0,
+       0.4
+      ]
+     },
+     {
+      "origin": [
+       -12,
+       -12,
+       3,
+       0.2
+      ]
+     },
+     {
+      "origin": [
+       -12,
+       -12,
+       6,
+       0.5
+      ]
+     }
+    ]
+   },
+   {
+    "step": [
+     0,
+     3,
+     0,
+     0
+    ],
+    "centering": "cell"
+   },
+   {
+    "step": [
+     3,
+     0,
+     0,
+     0
+    ],
+    "centering": "cell"
+   }
+  ],
+  "values": {
+   "transforms": []
+  },
+  "extensions": {
+   "nifti": {
+    "version": "2.0"
+   },
+   "provenance": {
+    "version": "1.1",
+    "sources": [
+     {
+      "format": "NIfTI"
+     }
+    ],
+    "processing": [
+     {
+      "name": "convert NIfTI",
+      "software": {
+       "name": "duckn",
+       "version": "0.7.0"
+      }
+     }
+    ]
+   }
+  }
+ }
+}

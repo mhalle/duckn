@@ -1,0 +1,82 @@
+{
+ "duckn": {
+  "version": "1.0",
+  "space": "left-posterior-superior",
+  "space_origin": [
+   0,
+   0,
+   0
+  ],
+  "measurement_frame": [
+   [
+    0,
+    1,
+    0
+   ],
+   [
+    -1,
+    0,
+    0
+   ],
+   [
+    0,
+    0,
+    1
+   ]
+  ],
+  "axes": [
+   {
+    "kind": "list"
+   },
+   {
+    "kind": "space",
+    "space_direction": [
+     0,
+     0,
+     2
+    ],
+    "unit": "mm"
+   },
+   {
+    "kind": "space",
+    "space_direction": [
+     0,
+     2,
+     0
+    ],
+    "unit": "mm"
+   },
+   {
+    "kind": "space",
+    "space_direction": [
+     2,
+     0,
+     0
+    ],
+    "unit": "mm"
+   }
+  ],
+  "extensions": {
+   "dwmri": {
+    "version": "1.0",
+    "gradient_frame": "world",
+    "b_values": [
+     0,
+     1000
+    ],
+    "gradients": [
+     [
+      0,
+      0,
+      0
+     ],
+     [
+      1,
+      0,
+      0
+     ]
+    ]
+   }
+  }
+ }
+}

@@ -1,0 +1,133 @@
+{
+ "duckn": {
+  "version": "2.0",
+  "world": {
+   "reference": "dicom:1.2.3.4",
+   "axes": [
+    {
+     "id": "x",
+     "unit": "mm",
+     "positive": "left",
+     "type": "space"
+    },
+    {
+     "id": "y",
+     "unit": "mm",
+     "positive": "posterior",
+     "type": "space"
+    },
+    {
+     "id": "z",
+     "unit": "mm",
+     "positive": "superior",
+     "type": "space"
+    }
+   ]
+  },
+  "origin": [
+   -10,
+   -20,
+   30
+  ],
+  "dimensions": [
+   {
+    "step": [
+     0,
+     0,
+     2.0
+    ],
+    "centering": "cell",
+    "thickness": 2.0,
+    "samples": [
+     {
+      "metadata": {
+       "dicom": {
+        "AcquisitionTime": "101500.000"
+       }
+      }
+     },
+     {
+      "metadata": {
+       "dicom": {
+        "AcquisitionTime": "101500.500"
+       }
+      }
+     },
+     {
+      "metadata": {
+       "dicom": {
+        "AcquisitionTime": "101501.000"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "step": [
+     0,
+     0.5,
+     0
+    ],
+    "centering": "cell"
+   },
+   {
+    "step": [
+     0.5,
+     0,
+     0
+    ],
+    "centering": "cell"
+   }
+  ],
+  "values": {
+   "unit": {
+    "symbol": "HU",
+    "scheme": "UCUM",
+    "code": "[hnsf'U]"
+   },
+   "transforms": [
+    {
+     "name": "linear",
+     "parameters": {
+      "slope": 1,
+      "intercept": -1024
+     }
+    }
+   ],
+   "missing": [
+    -3024
+   ]
+  },
+  "extensions": {
+   "dicom": {
+    "version": "2.0",
+    "stored_values": true,
+    "tags": {
+     "Modality": "CT",
+     "KVP": 120,
+     "Manufacturer": "Acme",
+     "FrameOfReferenceUID": "1.2.3.4",
+     "SynchronizationFrameOfReferenceUID": "1.2.3.9",
+     "PixelPaddingValue": -2000
+    }
+   },
+   "provenance": {
+    "version": "1.1",
+    "sources": [
+     {
+      "format": "DICOM"
+     }
+    ],
+    "processing": [
+     {
+      "name": "convert DICOM",
+      "software": {
+       "name": "duckn",
+       "version": "0.7.0"
+      }
+     }
+    ]
+   }
+  }
+ }
+}

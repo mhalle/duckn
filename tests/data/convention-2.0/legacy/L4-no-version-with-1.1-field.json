@@ -1,0 +1,70 @@
+{
+ "duckn": {
+  "space": "right-anterior-superior",
+  "space_origin": [
+   -90,
+   -126,
+   -72
+  ],
+  "sample_units": "HU",
+  "axes": [
+   {
+    "kind": "space",
+    "space_direction": [
+     0,
+     0,
+     1
+    ],
+    "unit": "mm"
+   },
+   {
+    "kind": "space",
+    "space_direction": [
+     0,
+     1,
+     0
+    ],
+    "unit": "mm"
+   },
+   {
+    "kind": "space",
+    "space_direction": [
+     1,
+     0,
+     0
+    ],
+    "unit": "mm"
+   }
+  ],
+  "space_transforms": [
+   {
+    "from": "world",
+    "to": {
+     "name": "surgical_plan"
+    },
+    "forward": {
+     "affine": [
+      [
+       1,
+       0,
+       0,
+       5
+      ],
+      [
+       0,
+       1,
+       0,
+       0
+      ],
+      [
+       0,
+       0,
+       1,
+       0
+      ]
+     ]
+    }
+   }
+  ]
+ }
+}

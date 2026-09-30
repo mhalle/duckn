@@ -1,0 +1,97 @@
+{
+ "duckn": {
+  "version": "2.0",
+  "world": {
+   "reference": "dicom:1.2.3.4",
+   "axes": [
+    {
+     "id": "x",
+     "unit": "mm",
+     "positive": "left",
+     "type": "space"
+    },
+    {
+     "id": "y",
+     "unit": "mm",
+     "positive": "posterior",
+     "type": "space"
+    },
+    {
+     "id": "z",
+     "unit": "mm",
+     "positive": "superior",
+     "type": "space"
+    }
+   ]
+  },
+  "origin": [
+   -9.75,
+   -19.75,
+   30
+  ],
+  "dimensions": [
+   {
+    "step": [
+     0,
+     0,
+     2.0
+    ],
+    "centering": "cell",
+    "thickness": 2.0
+   },
+   {
+    "step": [
+     0,
+     1.0,
+     0
+    ],
+    "centering": "cell"
+   },
+   {
+    "step": [
+     1.0,
+     0,
+     0
+    ],
+    "centering": "cell"
+   }
+  ],
+  "values": {
+   "unit": {
+    "symbol": "HU",
+    "scheme": "UCUM",
+    "code": "[hnsf'U]"
+   },
+   "transforms": [],
+   "missing": [
+    -3024
+   ]
+  },
+  "extensions": {
+   "provenance": {
+    "version": "1.1",
+    "sources": [
+     {
+      "format": "DICOM"
+     }
+    ],
+    "processing": [
+     {
+      "name": "convert DICOM",
+      "software": {
+       "name": "duckn",
+       "version": "0.7.0"
+      }
+     },
+     {
+      "name": "resample in-plane to 1 mm, linear",
+      "software": {
+       "name": "resample-tool",
+       "version": "1.2"
+      }
+     }
+    ]
+   }
+  }
+ }
+}

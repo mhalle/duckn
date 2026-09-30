@@ -1,0 +1,63 @@
+{
+ "duckn": {
+  "version": "2.0",
+  "world": {
+   "axes": [
+    {
+     "id": "x",
+     "unit": "mm"
+    },
+    {
+     "id": "y",
+     "unit": "mm"
+    }
+   ]
+  },
+  "origin": [
+   -4.875,
+   10.25
+  ],
+  "dimensions": [
+   {
+    "step": [
+     0,
+     0.5
+    ],
+    "centering": "cell"
+   },
+   {
+    "step": [
+     0.25,
+     0
+    ],
+    "centering": "cell"
+   }
+  ],
+  "values": {
+   "transforms": []
+  },
+  "extensions": {
+   "provenance": {
+    "version": "1.1",
+    "sources": [
+     {
+      "format": "NRRD"
+     }
+    ],
+    "processing": [
+     {
+      "name": "convert NRRD",
+      "software": {
+       "name": "duckn",
+       "version": "0.7.0"
+      }
+     }
+    ]
+   },
+   "nrrd": {
+    "version": "0.2",
+    "no_space": true
+   }
+  }
+ }
+}

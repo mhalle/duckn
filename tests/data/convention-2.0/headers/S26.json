@@ -1,0 +1,182 @@
+{
+ "duckn": {
+  "version": "2.0",
+  "world": {
+   "reference": "dicom:1.2.3.5",
+   "axes": [
+    {
+     "id": "x",
+     "unit": "mm",
+     "positive": "left",
+     "type": "space"
+    },
+    {
+     "id": "y",
+     "unit": "mm",
+     "positive": "posterior",
+     "type": "space"
+    },
+    {
+     "id": "z",
+     "unit": "mm",
+     "positive": "superior",
+     "type": "space"
+    },
+    {
+     "id": "t",
+     "unit": "ms",
+     "type": "time",
+     "name": "time after R wave"
+    }
+   ]
+  },
+  "origin": [
+   -3,
+   -3,
+   0,
+   20
+  ],
+  "dimensions": [
+   {
+    "step": [
+     0,
+     0,
+     0,
+     80
+    ],
+    "centering": "node",
+    "samples": [
+     {
+      "metadata": {
+       "dicom": {
+        "TriggerTime": 20
+       }
+      }
+     },
+     {
+      "metadata": {
+       "dicom": {
+        "TriggerTime": 100
+       }
+      }
+     },
+     {
+      "metadata": {
+       "dicom": {
+        "TriggerTime": 180
+       }
+      }
+     },
+     {
+      "metadata": {
+       "dicom": {
+        "TriggerTime": 260
+       }
+      }
+     },
+     {
+      "metadata": {
+       "dicom": {
+        "TriggerTime": 340
+       }
+      }
+     },
+     {
+      "metadata": {
+       "dicom": {
+        "TriggerTime": 420
+       }
+      }
+     },
+     {
+      "metadata": {
+       "dicom": {
+        "TriggerTime": 500
+       }
+      }
+     },
+     {
+      "metadata": {
+       "dicom": {
+        "TriggerTime": 580
+       }
+      }
+     },
+     {
+      "metadata": {
+       "dicom": {
+        "TriggerTime": 660
+       }
+      }
+     },
+     {
+      "metadata": {
+       "dicom": {
+        "TriggerTime": 740
+       }
+      }
+     }
+    ]
+   },
+   {
+    "step": [
+     0,
+     0,
+     8,
+     0
+    ],
+    "centering": "cell",
+    "thickness": 8
+   },
+   {
+    "step": [
+     0,
+     1.5,
+     0,
+     0
+    ],
+    "centering": "cell"
+   },
+   {
+    "step": [
+     1.5,
+     0,
+     0,
+     0
+    ],
+    "centering": "cell"
+   }
+  ],
+  "values": {
+   "transforms": []
+  },
+  "extensions": {
+   "dicom": {
+    "version": "2.0",
+    "stored_values": true,
+    "tags": {
+     "Modality": "MR",
+     "FrameOfReferenceUID": "1.2.3.5",
+     "SynchronizationFrameOfReferenceUID": "1.2.3.99"
+    }
+   },
+   "provenance": {
+    "version": "1.1",
+    "sources": [
+     {
+      "format": "DICOM"
+     }
+    ],
+    "processing": [
+     {
+      "name": "convert DICOM",
+      "software": {
+       "name": "duckn",
+       "version": "0.7.0"
+      }
+     }
+    ]
+   }
+  }
+ }
+}
