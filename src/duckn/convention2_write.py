@@ -28,18 +28,22 @@ __all__ = ["upgrade"]
 def upgrade(duckn1: dict, shape: tuple[int, ...], data_type: str | None = None, *,
             what: str, source_format: str | None = None,
             software: tuple[str, str] | None = None,
-            domain_axes: str | None = None) -> dict:
+            domain_axes: str | None = None, time_tag: str | None = None) -> dict:
     """A converter's 1.x ``duckn`` object as the 2.0 object a 2.0 converter writes.
 
     ``what`` names the conversion for the provenance step (§9); ``source_format`` selects the
     format's finishing and is recorded as the source. ``domain_axes="space"`` is the caller's
     assertion that a no-space NRRD's ``domain`` axes are spatial (§19 item 15), recorded in the
-    step. The result has been read back and is valid.
+    step. ``time_tag`` is the DICOM attribute a series' time positions came from
+    (``"TriggerTime"`` or ``"AcquisitionTime"``), which the 1.x metadata does not record. The
+    result has been read back and is valid.
     """
     d = from_1x(duckn1, shape, data_type).duckn
     parameters: dict[str, Any] = {}
     if source_format == "NRRD":
         _finish_nrrd(d, duckn1, shape, domain_axes, parameters)
+    elif source_format == "DICOM":
+        _finish_dicom(d, time_tag)
     _one_encoding(d)
     _record(d, what, source_format, software, parameters)
     read(d, shape, data_type)  # refuses what §10 refuses: never write it
@@ -186,3 +190,75 @@ def _nrrd_world(d, axes1, placed, shape, domain_axes, parameters) -> None:
         d["values"] = d.pop("values")
     if "extensions" in d:
         d["extensions"] = d.pop("extensions")
+
+
+# ---- DICOM (§3.2, §17's dicom row) -------------------------------------------------------------
+
+
+def _finish_dicom(d: dict, time_tag: str | None) -> None:
+    dicom = (d.get("extensions") or {}).get("dicom")
+    if not isinstance(dicom, dict):
+        return
+    dicom["version"] = "2.0"
+    tags = dicom.get("tags") or {}
+    world = d.get("world")
+    # The Frame of Reference names the spatial frame; the UID stays in the record (§2.3). The
+    # Synchronization Frame of Reference stays in the record only: no time here is measured
+    # from its zero (§3.2).
+    uid = tags.get("FrameOfReferenceUID")
+    if world is not None and isinstance(uid, str) and uid:
+        world["reference"] = f"dicom:{uid}"
+        world["axes"] = world.pop("axes")  # reference first, as the draft writes it
+    _dicom_times(d, time_tag)
+    _dicom_padding(d, dicom, tags)
+
+
+def _dicom_times(d: dict, time_tag: str | None) -> None:
+    """A time axis from Trigger Time is instants after the R wave, in ms; one from a time of
+    day (Acquisition Time, measured from the first frame) is in s, with no centering: when in
+    its acquisition a frame was stamped is not stated without a duration (§5.1, §17)."""
+    axes = (d.get("world") or {}).get("axes") or []
+    for dim in d.get("dimensions", []):
+        step = dim.get("step")
+        if step is None:
+            continue
+        along = [j for j, v in enumerate(step) if v != 0]
+        if len(along) != 1 or axes[along[0]].get("type") != "time":
+            continue
+        axis = axes[along[0]]
+        samples = dim.get("samples") or []
+        if time_tag == "TriggerTime":
+            axis["name"] = "time after R wave"
+            dim["centering"] = "node"
+            for s in samples:  # the record keeps each phase's Trigger Time (§2.3)
+                if "position" in s:
+                    t = s["position"]
+                    s.setdefault("metadata", {}).setdefault("dicom", {})["TriggerTime"] = (
+                        int(t) if float(t).is_integer() else t)
+        elif axis.get("unit") == "ms":
+            axis["unit"] = "s"
+            for s in samples:
+                if "position" in s:
+                    s["position"] = s["position"] / 1000.0
+            dim.pop("centering", None)
+
+
+def _dicom_padding(d: dict, dicom: dict, tags: dict) -> None:
+    """A single Pixel Padding Value restated as values.missing, where §6 allows it."""
+    values = d.get("values") or {}
+    padding = tags.get("PixelPaddingValue")
+    if padding is None or not dicom.get("stored_values") or "PixelPaddingRangeLimit" in tags:
+        return
+    transforms = values.get("transforms")
+    if transforms == []:
+        missing = padding
+    elif (isinstance(transforms, list) and len(transforms) == 1
+          and transforms[0].get("name") == "linear"
+          and transforms[0]["parameters"].get("slope", 0) != 0):
+        p = transforms[0]["parameters"]
+        missing = float(padding) * p["slope"] + p["intercept"]  # §6: product, then sum
+    else:
+        return
+    if float(missing).is_integer():
+        missing = int(missing)
+    values["missing"] = [missing]

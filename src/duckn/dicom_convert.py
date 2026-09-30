@@ -1870,6 +1870,7 @@ def dicom_to_zarr(
     anonymized: bool | None = None,
     tags: bool = True,
     binary_tags: bool = False,
+    convention: str = "1.x",
 ) -> list[Any]:
     """Convert DICOM file(s) to a duckn Zarr v3 store. Returns what the
     conversion reports: for a Segmentation, the seg import's diagnostics.
@@ -1914,6 +1915,14 @@ def dicom_to_zarr(
     compressors_list = _build_compressors(compressor, level)
 
     attrs = duckn_attrs(meta)
+    if convention == "2.0":  # EXPERIMENTAL: the draft convention (duckn.convention2_write)
+        from duckn.convention2_write import upgrade
+        trigger = all(getattr(ds, "TriggerTime", None) not in (None, "") for ds in datasets)
+        attrs = {"duckn": upgrade(attrs["duckn"], volume.shape, str(volume.dtype),
+                                  what="convert DICOM", source_format="DICOM",
+                                  time_tag="TriggerTime" if trigger else "AcquisitionTime")}
+    elif convention != "1.x":
+        raise ValueError(f"convention {convention!r}: \"1.x\" or \"2.0\"")
 
     # Dimension names
     if volume.ndim == 4:

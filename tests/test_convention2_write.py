@@ -61,6 +61,124 @@ class TestAgainstTheReferenceHeaders(unittest.TestCase):
                          {"domain_axes": "space"})
 
 
+def _dicom(tmp, instances, **kw):
+    """Write ``instances`` (pydicom datasets) as a series and convert it with the 2.0 flag."""
+    from duckn.dicom_convert import dicom_to_zarr
+    from test_dicom_convert import _make_file_dataset
+
+    src = Path(tmp) / "dcm"
+    src.mkdir()
+    for n, ds in enumerate(instances):
+        ds.InstanceNumber = n + 1
+        ds.SOPInstanceUID = f"1.2.3.77.{n + 1}"
+        _make_file_dataset(ds, str(src / f"i{n:03d}.dcm")).save_as(str(src / f"i{n:03d}.dcm"))
+    out = Path(tmp) / "o.zarr"
+    dicom_to_zarr(src, out, convention="2.0", **kw)
+    arr = zarr.open_array(str(out), mode="r")
+    return dict(arr.attrs)["duckn"], arr
+
+
+def _core(d):
+    """The core metadata, per-sample records cut to the keys the reference keeps."""
+    return {k: d.get(k) for k in ("version", "world", "origin", "dimensions", "values")}
+
+
+def _cut_records(d, ref):
+    """Reference headers abbreviate the DICOM record to the tags their scenario names (the
+    review's rule); cut the converter's fuller record to those keys before comparing."""
+    for dim, rdim in zip(d["dimensions"], ref["dimensions"]):
+        for s, rs in zip(dim.get("samples", []), rdim.get("samples", [])):
+            keep = (rs.get("metadata") or {}).get("dicom", {})
+            if "metadata" in s:
+                s["metadata"]["dicom"] = {k: v for k, v in s["metadata"]["dicom"].items() if k in keep}
+    tags, rtags = d["extensions"]["dicom"]["tags"], ref["extensions"]["dicom"]["tags"]
+    d["extensions"]["dicom"]["tags"] = {k: v for k, v in tags.items() if k in rtags}
+    return d
+
+
+class TestDicomAgainstTheReferenceHeaders(unittest.TestCase):
+    maxDiff = None
+
+    def _ct(self):
+        from test_dicom_convert import _make_dataset
+        out = []
+        for i in range(3):
+            ds = _make_dataset(rows=4, cols=4, position=(-10, -20, 30 + 2 * i),
+                               pixel_spacing=(0.5, 0.5), pixel_representation=1,
+                               pixel_data=np.full((4, 4), i, np.int16), series_uid="1.2.3.77")
+            ds.SliceThickness = 2.0
+            ds.RescaleSlope, ds.RescaleIntercept, ds.RescaleType = 1, -1024, "HU"
+            ds.PixelPaddingValue = -2000
+            ds.FrameOfReferenceUID = "1.2.3.4"
+            ds.SynchronizationFrameOfReferenceUID = "1.2.3.9"
+            ds.AcquisitionTime = ["101500.000", "101500.500", "101501.000"][i]
+            ds.KVP, ds.Manufacturer = 120, "Acme"
+            out.append(ds)
+        return out
+
+    def _cine(self, first_ms):
+        from test_dicom_convert import _make_dataset
+        out = []
+        for p in range(10):
+            for k in range(3):
+                ds = _make_dataset(rows=4, cols=4, position=(-3, -3, 8 * k),
+                                   pixel_spacing=(1.5, 1.5), modality="MR", series_uid="1.2.3.88")
+                ds.SliceThickness = 8.0
+                ds.TriggerTime = first_ms + 80.0 * p
+                ds.FrameOfReferenceUID = "1.2.3.5"
+                ds.SynchronizationFrameOfReferenceUID = "1.2.3.99"
+                out.append(ds)
+        return out
+
+    def _check(self, name, instances):
+        import tempfile
+        ref = _reference(name)
+        with tempfile.TemporaryDirectory() as tmp:
+            d, arr = _dicom(tmp, instances)
+        d = _cut_records(d, ref)
+        self.assertEqual(_core(d), _core(ref))
+        self.assertEqual(d["extensions"]["dicom"]["version"], "2.0")
+        self.assertEqual(d["extensions"]["dicom"]["stored_values"], ref["extensions"]["dicom"]["stored_values"])
+        self.assertEqual(d["extensions"]["dicom"]["tags"], ref["extensions"]["dicom"]["tags"])
+        self.assertEqual(d["extensions"]["provenance"]["sources"], [{"format": "DICOM"}])
+        return d
+
+    def test_s17_a_ct_with_its_stored_values(self):
+        self._check("S17", self._ct())
+
+    def test_s19_a_cardiac_cine(self):
+        self._check("S19", self._cine(0.0))
+
+    def test_s26_trigger_times_that_start_at_20_ms(self):
+        self._check("S26", self._cine(20.0))
+
+
+class TestDicomTimes(unittest.TestCase):
+    def test_a_series_timed_by_acquisition_time_is_in_seconds_with_no_centering(self):
+        import tempfile
+        from test_dicom_convert import _make_dataset
+        instances = []
+        for t in ("101500.000", "101502.500", "101505.000"):
+            for z in (0.0, 2.0):
+                ds = _make_dataset(position=(0, 0, z), modality="MR", series_uid="1.2.3.99")
+                ds.AcquisitionTime = t
+                instances.append(ds)
+        with tempfile.TemporaryDirectory() as tmp:
+            d, arr = _dicom(tmp, instances)
+        self.assertEqual(d["world"]["axes"][3], {"id": "t", "type": "time", "unit": "s"})
+        self.assertEqual(d["dimensions"][0], {"step": [0.0, 0.0, 0.0, 2.5]})  # no centering (§5.1)
+        self.assertNotIn("reference", d["world"])  # no Frame of Reference UID in the source
+
+    def test_padding_is_not_restated_with_a_range_limit(self):
+        import tempfile
+        ct = TestDicomAgainstTheReferenceHeaders()._ct()
+        for ds in ct:
+            ds.PixelPaddingRangeLimit = -1990
+        with tempfile.TemporaryDirectory() as tmp:
+            d, _ = _dicom(tmp, ct)
+        self.assertNotIn("missing", d["values"])  # a range has no form yet (§6): absent, not []
+
+
 class TestOneEncoding(unittest.TestCase):
     def _file(self, positions):
         return {"version": "1.2", "space": "left-posterior-superior", "space_origin": [0.0, 0.0, 10.0],
