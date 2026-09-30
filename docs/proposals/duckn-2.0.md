@@ -1095,6 +1095,7 @@ is a 1.0 file (1.2 §3.1), unless it has one of 2.0's own fields (§2.1).
 | a 1.x target's `axes` (`kind`, `unit`) | world-axis objects: `kind` `space` → `type` `space` (no type in a file with a `fits` block, as its own axes), `time` → `time`, the unit normalized |
 | `thickness`, `color_space`, `intent`, `unit_systems`, `centering` | unchanged, except that an `XYZ-color` axis in an unsigned integer type under identity (1.2 read its components as fractions of the type's maximum) gains a `linear` of slope 1 / maximum, reported |
 | `extensions` | read under their own versions (§2.3) |
+| a `dicom` block's `FrameOfReferenceUID` tag | `world.reference` `dicom:<UID>`, where no `space_transforms` identity already gave one and the world has spatial axes: the array's positions are the source's patient coordinates, so its frame is the source's (the tag stays in the record) |
 | anything that breaks the rules of the 1.x version the file declares | read as that version's rules say (a part it refuses is refused), and reported; not repaired |
 
 **Files from duckn 0.6.0 and earlier converters.** The mapping carries what a 1.x file says, and
@@ -1105,7 +1106,9 @@ NIfTI vector or tensor file (components in the 5th dimension) gained a one-sampl
 lost its components' kind, and a spectrum in `Hz` or `ppm` became time; an NRRD's `space units`
 were given to spatial axes by position, not by the world axis each steps along. (duckn 0.5.5
 to 0.6.2 also wrote a NRRD's measurement frame by rows under 1.0; none of those files was
-distributed, and 0.6.3 declares 1.1. The mapping follows the declared version.) A reader cannot
+distributed, and 0.6.3 declares 1.1. The same releases declared 1.0 over a DICOM series
+whose rescale varies by slice, kept only in its per-slice record: a false identity, which 0.6.3
+states as an `axis_linear` in a 1.2 file. The mapping follows the declared version.) A reader cannot
 detect these: duckn's 1.x converters record nothing about themselves (haversack's input
 copies do, in their own `extensions.haversack`; nothing general reads it). They are
 re-converted from their sources, not repaired in the mapping. 2.0 writers record themselves
