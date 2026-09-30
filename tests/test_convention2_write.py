@@ -169,6 +169,24 @@ class TestDicomTimes(unittest.TestCase):
         self.assertEqual(d["dimensions"][0], {"step": [0.0, 0.0, 0.0, 2.5]})  # no centering (§5.1)
         self.assertNotIn("reference", d["world"])  # no Frame of Reference UID in the source
 
+    def test_a_rescale_that_varies_by_slice_is_an_axis_linear_with_no_missing(self):
+        import tempfile
+        import warnings
+        ct = TestDicomAgainstTheReferenceHeaders()._ct()
+        ct[2].RescaleSlope = 2
+        with tempfile.TemporaryDirectory() as tmp, warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            d, arr = _dicom(tmp, ct)
+        (t,) = d["values"]["transforms"]
+        self.assertEqual(t, {"name": "axis_linear", "parameters": {
+            "dimension": 0, "slope": [1.0, 1.0, 2.0], "intercept": -1024.0}})
+        # the padding's quantity differs by slice: one list would mark measured voxels (§6)
+        self.assertNotIn("missing", d["values"])
+        self.assertEqual(d["extensions"]["dicom"]["tags"]["PixelPaddingValue"], -2000)
+        h = read(d, arr.shape, str(arr.dtype))
+        self.assertEqual(float(h.quantity(100, index={0: 2})), -824.0)
+        self.assertEqual(float(h.quantity(100, index={0: 0})), -924.0)
+
     def test_padding_is_not_restated_with_a_range_limit(self):
         import tempfile
         ct = TestDicomAgainstTheReferenceHeaders()._ct()
@@ -276,6 +294,21 @@ class TestOneEncoding(unittest.TestCase):
     def test_uneven_positions_stay_positions(self):
         d = upgrade(self._file([0.0, 2.0, 5.0]), (3, 2, 2), what="convert")
         self.assertEqual([s["position"] for s in d["dimensions"][0]["samples"]], [0.0, 1.0, 2.5])
+
+
+class TestCallersMissing(unittest.TestCase):
+    def test_a_materializing_writer_states_what_its_padding_became(self):
+        d = TestOneEncoding()._file([0.0, 2.0, 4.0])
+        out = upgrade(d, (3, 2, 2), what="input copy", missing=[-3024.0])
+        self.assertEqual(out["values"], {"transforms": [], "missing": [-3024]})
+        np.testing.assert_array_equal(read(out, (3, 2, 2)).missing_mask(np.array([-3024, 5])),
+                                      [True, False])
+
+    def test_missing_is_refused_where_6_forbids_it(self):
+        d = TestOneEncoding()._file([0.0, 2.0, 4.0])
+        d["value_transforms"] = [{"name": "lut", "parameters": {"values": [0, 1]}}]
+        with self.assertRaisesRegex(ValueError, "§6"):
+            upgrade(d, (3, 2, 2), "uint8", what="input copy", missing=[0])
 
 
 class TestNothingInvalidIsWritten(unittest.TestCase):

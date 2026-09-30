@@ -28,15 +28,19 @@ __all__ = ["upgrade"]
 def upgrade(duckn1: dict, shape: tuple[int, ...], data_type: str | None = None, *,
             what: str, source_format: str | None = None,
             software: tuple[str, str] | None = None,
-            domain_axes: str | None = None, time_tag: str | None = None) -> dict:
+            domain_axes: str | None = None, time_tag: str | None = None,
+            missing: list[float] | None = None) -> dict:
     """A converter's 1.x ``duckn`` object as the 2.0 object a 2.0 converter writes.
 
     ``what`` names the conversion for the provenance step (§9); ``source_format`` selects the
     format's finishing and is recorded as the source. ``domain_axes="space"`` is the caller's
     assertion that a no-space NRRD's ``domain`` axes are spatial (§19 item 15), recorded in the
     step. ``time_tag`` is the DICOM attribute a series' time positions came from
-    (``"TriggerTime"`` or ``"AcquisitionTime"``), which the 1.x metadata does not record. The
-    result has been read back and is valid.
+    (``"TriggerTime"`` or ``"AcquisitionTime"``), which the 1.x metadata does not record.
+    ``missing`` is the caller's ``values.missing``, in the quantity's units: a writer that
+    materialized a source knows what its padding became (a CT's Pixel Padding Value through the
+    rescale it applied), and by then the 1.x record has dropped it; refused where §6 forbids one.
+    The result has been read back and is valid.
     """
     d = from_1x(duckn1, shape, data_type).duckn
     parameters: dict[str, Any] = {}
@@ -47,6 +51,14 @@ def upgrade(duckn1: dict, shape: tuple[int, ...], data_type: str | None = None, 
     elif source_format == "NIfTI":
         _finish_nifti(d, shape)
     _one_encoding(d)
+    if missing is not None:
+        values = d.setdefault("values", {})
+        t = values.get("transforms")
+        if not (t == [] or (isinstance(t, list) and len(t) == 1 and t[0].get("name") == "linear"
+                            and (t[0].get("parameters") or {}).get("slope", 0) != 0)):
+            raise ValueError("values.missing is stated only under transforms [] or one linear "
+                             "of non-zero slope (§6)")
+        values["missing"] = [int(m) if float(m).is_integer() else float(m) for m in missing]
     _record(d, what, source_format, software, parameters)
     read(d, shape, data_type)  # refuses what §10 refuses: never write it
     return d

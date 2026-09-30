@@ -261,6 +261,13 @@ def from_1x(duckn: dict, shape: tuple[int, ...] | None = None,
         out["world"] = {"axes": world_axes}
         _map_transforms(d, out, dims, directions, world_origin, world_axes, n1, shape, report,
                         fits, has_time_space, keep_time)
+        # A dicom block's Frame of Reference is the frame the array's patient coordinates are
+        # in (its geometry is the source's Image Position and Orientation): §14.
+        uid = ((extensions.get("dicom") or {}).get("tags") or {}).get("FrameOfReferenceUID") \
+            if isinstance(extensions.get("dicom"), dict) else None
+        if isinstance(uid, str) and uid and "reference" not in out["world"] and any(
+                a.get("type") == "space" for a in world_axes):
+            out["world"]["reference"] = f"dicom:{uid}"
     if world_origin is not None and world_axes:
         out["origin"] = world_origin
     out["dimensions"] = dims

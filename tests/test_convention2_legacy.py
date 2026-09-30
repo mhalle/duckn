@@ -227,6 +227,14 @@ class TestRows(unittest.TestCase):
             expected = np.array(a) @ np.r_[spatial_index, 1.0]
             np.testing.assert_allclose(m @ np.r_[world, 1.0], expected)
 
+    def test_a_dicom_blocks_frame_of_reference_is_the_worlds_reference(self):
+        ext = {"dicom": {"version": "1.0", "tags": {"FrameOfReferenceUID": "1.2.3.4"}}}
+        h = read_any(_file("1.0", extensions=ext), (2, 2, 2))
+        self.assertEqual(h.duckn["world"]["reference"], "dicom:1.2.3.4")
+        self.assertEqual(h.duckn["extensions"]["dicom"]["tags"]["FrameOfReferenceUID"], "1.2.3.4")
+        h = read_any(_file("1.0", extensions={"dicom": {"version": "1.0", "tags": {}}}), (2, 2, 2))
+        self.assertNotIn("reference", h.duckn["world"])
+
     def test_a_bare_target_is_local_and_reported(self):
         st = [{"to": {"name": "surgical plan"}, "forward": {"affine": [[1, 0, 0, 1], [0, 1, 0, 0], [0, 0, 1, 0]]}}]
         h = read_any(_file("1.1", space_transforms=st), (2, 2, 2))
