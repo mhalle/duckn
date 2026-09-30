@@ -456,6 +456,8 @@ class Header:
     values: dict | None
     data_type: str | None
     findings: list[Finding] = field(default_factory=list)
+    # A 1.x file's dwmri gradients' frame (§14), which 2.0 core has no place for until dwmri 2.0.
+    gradient_frame: list[list[float]] | None = None
 
     # ---- geometry -------------------------------------------------------------------------
 
