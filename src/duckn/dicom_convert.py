@@ -246,9 +246,9 @@ def _uniform_rescale_value(datasets: list[Any], keyword: str, cast: Any) -> Any:
         warnings.warn(
             f"{keyword} varies across the series ({sorted(unique)!r}"
             f"{', and is absent on some instances' if len(present) != len(values) else ''})"
-            "; it cannot be represented as a single value transform, so the "
-            "array holds uncalibrated stored values and each slice's mapping is "
-            "kept in that slice's samples[i].metadata.dicom.",
+            "; it is not one linear transform. A single volume states it per slice "
+            "(axis_linear); a time series leaves the mapping unstated and keeps each "
+            "slice's own in samples[i].metadata.dicom.",
             stacklevel=3,
         )
         return None
@@ -1652,13 +1652,17 @@ def build_duckn_metadata(
         else:
             series_tags, slice_tags, tag_fields = tags_from_datasets(
                 slice_datasets, stored_values=True, binary=include_binary)
-    # A rescale that varies per instance cannot be one value transform (see
-    # _uniform_rescale_value); each slice's own mapping is then the only statement of it, so it
-    # is kept per slice (dicom-spec §9) - 0.5.3's warning promised this and dropped them.
-    if include_tags and slice_tags is not None and not _is_dicom_seg(slice_datasets[0]) \
-            and (geometry.rescale_slope is None or geometry.rescale_intercept is None) \
-            and any(hasattr(ds, "RescaleSlope") or hasattr(ds, "RescaleIntercept")
-                    for ds in slice_datasets):
+    # A rescale that varies per instance is not one `linear` (see _uniform_rescale_value).
+    # Along the slices of a single volume it is an `axis_linear` (convention 1.2), built below;
+    # where it cannot be (a time series, color), each slice's own mapping is the only statement
+    # of it and is kept per slice (dicom-spec §9). Either way the file declares 1.2: under 1.0
+    # and 1.1 an absent value_transforms meant identity, which such a file must not claim.
+    rescale_varies = not _is_dicom_seg(slice_datasets[0]) \
+        and (geometry.rescale_slope is None or geometry.rescale_intercept is None) \
+        and any(hasattr(ds, "RescaleSlope") or hasattr(ds, "RescaleIntercept")
+                for ds in slice_datasets)
+    rescale_by_slice = rescale_varies and not is_4d and not is_color
+    if include_tags and slice_tags is not None and rescale_varies and not rescale_by_slice:
         from .dicom_tags import encode
         for ds, tags in zip(slice_datasets, slice_tags):
             for tag, kw in ((0x00281053, "RescaleSlope"), (0x00281052, "RescaleIntercept"),
@@ -1705,6 +1709,15 @@ def build_duckn_metadata(
     modality_lut = _extract_modality_lut(datasets[0])
     if modality_lut is not None:
         value_transforms = [modality_lut]
+    elif rescale_by_slice:
+        # An instance with no rescale is the identity (PS3.3 C.11.1.1.2).
+        slopes = [float(getattr(ds, "RescaleSlope", 1)) for ds in slice_datasets]
+        intercepts = [float(getattr(ds, "RescaleIntercept", 0)) for ds in slice_datasets]
+        value_transforms = [ValueTransform(name="axis_linear", parameters={
+            "axis": 0,
+            "slope": slopes[0] if len(set(slopes)) == 1 else slopes,
+            "intercept": intercepts[0] if len(set(intercepts)) == 1 else intercepts,
+        })]
     elif geometry.rescale_slope is not None and geometry.rescale_intercept is not None:
         value_transforms = [
             ValueTransform(
@@ -1778,7 +1791,8 @@ def build_duckn_metadata(
     return DucknMetadata(
         # Declare the lowest convention version that covers what was written:
         # the `lut` transform was introduced in 1.1, `color_space` in 1.2.
-        version="1.2" if color_space is not None else ("1.1" if modality_lut is not None else "1.0"),
+        version="1.2" if color_space is not None or (rescale_varies and modality_lut is None)
+        else ("1.1" if modality_lut is not None else "1.0"),
         space=geometry.space,
         space_origin=geometry.space_origin,
         sample_units=sample_units,
@@ -2520,10 +2534,13 @@ def zarr_to_dicom(
     # affine mapping as RescaleSlope/Intercept and an explicit table as a
     # Modality LUT Sequence, so both duckn transform types round-trip.
     modality_lut_tags: dict[str, Any] = {}
+    axis_linear: dict[str, Any] | None = None  # a rescale per slice: written per frame below
     if meta.value_transforms:
         transforms = meta.value_transforms
         names = [vt.name for vt in transforms]
-        if names == ["linear"]:
+        if names == ["axis_linear"]:
+            axis_linear = dict(transforms[0].parameters or {})
+        elif names == ["linear"]:
             params = transforms[0].parameters or {}
             modality_lut_tags["RescaleSlope"] = float(params.get("slope", 1.0))
             modality_lut_tags["RescaleIntercept"] = float(params.get("intercept", 0.0))
@@ -2556,7 +2573,7 @@ def zarr_to_dicom(
                 "single explicit table. Materialize the array first "
                 "(duckn-spec §4.3) so the values need no transform."
             )
-        if meta.sample_units:
+        if meta.sample_units and axis_linear is None:
             modality_lut_tags["RescaleType"] = str(meta.sample_units)
 
     # Detect modality from stored tags
@@ -2808,17 +2825,32 @@ def zarr_to_dicom(
                         _restore_tag(frame_fg, keyword, value)
                     except Exception:
                         continue
-                # A rescale that varied by slice has no value_transforms to state it; each
-                # slice's own mapping is its only statement (dicom-spec §9), and an Enhanced
-                # object has a per-frame place for it. 0.5.4 wrote none, so the export's
-                # stored values carried no calibration at all.
-                if enhanced and not modality_lut_tags and (
+                # A rescale that varied by slice in a file with no value_transforms (a time
+                # series; files from before 0.6.3): each slice's own mapping is its only
+                # statement (dicom-spec §9), and an Enhanced object has a per-frame place for
+                # it. 0.5.4 wrote none, so the export's stored values carried no calibration.
+                if enhanced and not modality_lut_tags and axis_linear is None and (
                         "RescaleSlope" in slice_tags or "RescaleIntercept" in slice_tags):
                     pvt = Dataset()
                     pvt.RescaleIntercept = _first(slice_tags.get("RescaleIntercept", 0))
                     pvt.RescaleSlope = _first(slice_tags.get("RescaleSlope", 1))
                     pvt.RescaleType = str(_first(slice_tags.get("RescaleType", "US")))
                     frame_fg.PixelValueTransformationSequence = Sequence([pvt])
+
+        # An axis_linear along the slices: each frame's own rescale (PS3.3 C.7.6.16.2.9).
+        if axis_linear is not None:
+            if not enhanced or axis_linear.get("axis") != list(meta.axes).index(slice_axis):
+                raise ValueError(
+                    "an axis_linear value transform is written to DICOM only along the slice "
+                    "axis of an Enhanced CT, MR or PET object (a rescale per frame). "
+                    "Materialize the array first (duckn-spec §4.3).")
+            pvt = Dataset()
+            for keyword, key, default in (("RescaleIntercept", "intercept", 0.0),
+                                          ("RescaleSlope", "slope", 1.0)):
+                v = axis_linear.get(key, default)
+                setattr(pvt, keyword, float(v[z_idx] if isinstance(v, list) else v))
+            pvt.RescaleType = str(meta.sample_units) if meta.sample_units else "US"
+            frame_fg.PixelValueTransformationSequence = Sequence([pvt])
 
         # Temporal position for 4D
         if is_4d and time_axis:

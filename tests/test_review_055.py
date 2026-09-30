@@ -643,13 +643,15 @@ class TestEnhancedRescale:
             ds.Modality = "CT"
             ds.RescaleSlope, ds.RescaleIntercept, ds.RescaleType = [1, 2, 1][i], -1024, "HU"
         z, m = self._series(tmp_path, vary)
-        assert not m.value_transforms
+        assert [t.name for t in m.value_transforms] == ["axis_linear"]  # 0.6.3: stated, in 1.2
         out = tmp_path / "e.dcm"
         zarr_to_dicom(z, out)
         ds = pydicom.dcmread(out)
-        slopes = [float(fg.PixelValueTransformationSequence[0].RescaleSlope)
-                  for fg in ds.PerFrameFunctionalGroupsSequence]
-        assert slopes == [1.0, 2.0, 1.0]
+        pvts = [fg.PixelValueTransformationSequence[0] for fg in ds.PerFrameFunctionalGroupsSequence]
+        assert [float(p.RescaleSlope) for p in pvts] == [1.0, 2.0, 1.0]
+        assert [float(p.RescaleIntercept) for p in pvts] == [-1024.0] * 3
+        assert {str(p.RescaleType) for p in pvts} == {"HU"}
+        assert "PixelValueTransformationSequence" not in ds.SharedFunctionalGroupsSequence[0]
 
 
 # ---------------------------------------------------------------------------
