@@ -24,7 +24,8 @@ it, read with 2.0's names (`axes` -> `dimensions`, `space_direction` -> `step`, 
 ## 1. The `dicom:` reference
 
 This extension defines the reference prefix `dicom:` (duckn 2.0 §1, §3.2). Its value is a DICOM
-UID: one to 64 characters, digits and dots, each component without a leading zero (PS3.5 §9.1).
+UID: one to 64 characters, digits and dots, no component of more than one digit starting with 0
+(PS3.5 §9.1).
 A reader of this extension reports a value that breaks this grammar; the core does not refuse it
 (duckn 2.0 §10 rule 11).
 
@@ -45,17 +46,21 @@ what a reference covers is said by where it stands:
 
 A converter writes the world DICOM's patient coordinates are in: three axes of `type` `space`,
 `positive` `left`, `posterior`, `superior`, in `mm`, ids `x`, `y`, `z` (duckn 2.0 §3). Image
-Position (Patient) of the first slice is `origin`; the column and row directions times Pixel Spacing
-are the in-plane steps; the slice step is the spacing between slices along their normal. A series
-whose slices are evenly spaced takes a step; one whose slices are not takes a step of one slice
-spacing's direction and each slice's `position` (duckn 2.0 §5.4); a series whose slices shift
-in-plane (a gantry tilt) takes each slice's `origin`, and non-parallel slices each slice's `origin`
-and `steps`. Slice Thickness is `thickness`.
+Position (Patient) of the first slice - the lowest along the normal, the cross product of the row
+and column direction cosines of Image Orientation (Patient) - is `origin`. The row index steps
+along the column direction (Image Orientation's second triplet) by Pixel Spacing's first value,
+the column index along the row direction (the first triplet) by its second. The slice step is the
+spacing between slices along their normal. Slices evenly spaced (differences within 0.001 mm)
+take a step; slices that are not take a step of 1 mm along the normal and each slice's
+`position` in mm (duckn 2.0 §5.4). Slices shifted in-plane by the same amount each (a uniform
+gantry tilt) are a sheared step; slices shifted unevenly take each slice's `origin`, and
+non-parallel slices each slice's `origin` and `steps`. Slice Thickness is `thickness`.
 
 ## 3. What the record leaves out
 
 The block's `tags` (and each sample's `metadata.dicom`) keep every attribute the converter read,
-except the list below, which is closed (duckn 2.0 §2.3): two converters keep the same record.
+except the list below, which is closed (duckn 2.0 §2.3): two converters that both write a record
+write the same one (a record is optional, duckn 2.0 §9).
 
 | Left out | Because the core states it as |
 |---|---|
@@ -64,9 +69,9 @@ except the list below, which is closed (duckn 2.0 §2.3): two converters keep th
 | Slice Thickness | `thickness`, `samples[i].thickness` |
 | Rows, Columns, Number of Frames, Bits Allocated, Pixel Representation | Zarr's `shape` and `data_type` |
 | Rescale Slope, Rescale Intercept, Rescale Type; Modality LUT Sequence; Pixel Value Transformation Sequence | `values.transforms` and `values.unit` (a rescale that varies too, §4) |
-| Color Space | the RGB dimension's `color_space` (1.0 §2's terms); it also stays in `tags` as the source's, as in 1.0 |
+| (none: Color Space is kept) | Color Space is stated as the RGB dimension's `color_space` (1.0 §2's terms) and also stays in `tags` as the source's, as in 1.0 |
 | Planar Configuration; Pixel Data and the other bulk data; overlay and curve groups; group 0002; group lengths; the Per-frame Functional Groups Sequence | as dicom 1.0 §9 |
-| Bits Stored, High Bit, pixel value ranges, Pixel Padding Value and Range Limit, Real World Value Mapping - *when `stored_values` is `false`* | stated in stored-value units, which the array does not hold (1.0 §5.10); the padding is restated (§4) |
+| Bits Stored, High Bit, pixel value ranges, Pixel Padding Value and Range Limit, Real World Value Mapping, the Palette Color Lookup Table Descriptors, Data and UID - *when `stored_values` is `false`* | stated in stored-value units, which the array does not hold (1.0 §5.10); the padding is restated (§4) |
 | private elements, all or none, at the writer's choice | as 1.0 §9 |
 
 Identifiers and acquisition facts are **kept, even where the core states a fact computed from
@@ -82,13 +87,18 @@ Per-slice tags may sit in `samples` on a regular dimension, one with a step and 
 - **Stored values** (`stored_values` `true`): `values.transforms` is the series' rescale, one
   `linear`, or `[]` where the source has none (duckn 2.0 §6: no rescale and no Modality LUT is the
   identity); `values.unit` is Rescale Type (`HU` as `{ "symbol": "HU", "scheme": "UCUM", "code":
-  "[hnsf'U]" }`).
-- **A rescale that varies by slice** is an `axis_linear` on the slice dimension: one slope and one
+  "[hnsf'U]" }`) - for CT, HU where Rescale Type is absent (PS3.3 C.8.2.1 requires it only when it
+  is not HU); for PET, Units (0054,1001) `BQML` as `Bq/mL`; never `US` (unspecified), which states
+  no unit.
+- **Materialized values** (`stored_values` `false`): the array holds the quantity, and
+  `values.transforms` is `[]`.
+- **A rescale that varies along one dimension** is an `axis_linear` on it. Along the slices: one slope and one
   intercept per slice (a number where all agree), an instance with no rescale being the identity;
   `values.unit` is the Rescale Type every slice shares. The per-slice rescale is then not repeated
-  in the record. A time series, where the rescale may vary along two dimensions, has no form yet
-  (duckn 2.0 §6): `values.transforms` is left out and each slice keeps its own rescale in its
-  `metadata.dicom`, the only statement of it.
+  in the record. Along the time points only (a dynamic PET with one slope per frame), it is an
+  `axis_linear` on the time dimension (duckn 2.0 §13.6); duckn's converter does not state that
+  case yet. Along both, it has no form yet (duckn 2.0 §6): `values.transforms` is left out and
+  each slice keeps its own rescale in its `metadata.dicom`, the only statement of it.
 - **Padding.** A single Pixel Padding Value is restated as `values.missing` (duckn 2.0 §6) under
   either policy, in the quantity's units: -2000 stored under an intercept of -1024 is `[-3024]`. It
   is restated only where §6 allows one list - the source's rescale is one for the series or none,
@@ -103,11 +113,16 @@ Instance Number) is not a time, and a dimension ordered by one states nothing.
 - **Trigger Time** (0018,1060): a world axis `{ "id": "t", "type": "time", "unit": "ms", "name":
   "time after R wave" }`, measured from the R wave as the source states it: a first phase at 20 ms
   has the time component 20 in `origin`. A trigger time is an instant, so the dimension is `node`.
-  Each phase's Trigger Time stays in its sample's `metadata.dicom`.
+  A phase's time is its first slice's Trigger Time; each phase's Trigger Time stays in its
+  sample's `metadata.dicom` where it is one value across the phase's slices, and is left out
+  where it varies across them (it varies along both dimensions, 1.0 §6.1).
 - **Acquisition Time** (0008,0032): the time of day at which the acquisition *started*, measured
-  from the first frame, in `s`. A converter that knows each frame's duration (PET's Actual Frame
-  Duration, 0018,1242) places each frame at its middle with that `thickness`; one that does not
-  writes the time with no `centering`, claiming no moment within the acquisition (duckn 2.0 §5.1).
+  from the first frame, in `s`; a series that crosses midnight keeps increasing. A converter that
+  knows each frame's duration (PET's Actual Frame Duration, 0018,1242, in ms: converted to s)
+  places each frame at its middle with that `thickness`; one that does not writes the time with no
+  `centering`, claiming no moment within the acquisition (duckn 2.0 §5.1). The two write
+  different headers for one source: the extension decides that a converter reading durations is
+  the one duckn 2.0 §9 means, and duckn's converter does not read them yet.
 - Frames whose times are evenly spaced take a step of that spacing (for PET frames, the spacing of
   their middles, `origin`'s time at the first middle); others take positions on a step of one time
   unit (duckn 2.0 §5.4, §13.6).

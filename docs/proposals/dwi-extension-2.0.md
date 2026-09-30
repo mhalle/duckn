@@ -53,13 +53,17 @@ gradients are already in the world's axes writes the identity, stating it. `fram
 ## 4. From other formats
 
 - **NRRD** (`DWMRI_gradient_NNNN` with a `measurement frame`): `frame` is the measurement frame
-  as rows (NRRD writes columns).
+  as rows (NRRD writes columns); with no `measurement frame`, the identity (dwi 1.0 §6's default,
+  stated).
 - **DICOM** (Diffusion Gradient Orientation, 0018,9089): in the patient coordinate system, so
   `frame` is the identity in a DICOM (LPS) world.
 - **FSL / BIDS** (`.bvec`): a converter brings the gradients into world axes itself - applying
-  FSL's first-component flip when the NIfTI affine's determinant is positive, then the affine's
-  rotation - and writes `frame` as the identity. Image-frame gradients have no form in 2.0.
-- **MRtrix** (`.b`, scanner coordinates): world axes, `frame` the identity.
+  FSL's first-component flip when the NIfTI affine's determinant is positive, then the rotation of
+  the affine the world came from (the sform, else the qform; nifti 2.0 §1), the orthogonal factor
+  of its polar decomposition, a sheared affine being reported - and writes `frame` as the
+  identity. Image-frame gradients have no form in 2.0.
+- **MRtrix** (`.b`): scanner coordinates, which are RAS. In an RAS world `frame` is the identity;
+  in a DICOM (LPS) world it is diag(-1, -1, 1): the map from RAS to the world's axes.
 
 ## 5. What the block leaves out
 
@@ -74,7 +78,8 @@ the file does not fix, so it is not carried from a 1.0 block; 2.0 names the arra
 
 | Field | Meaning |
 |---|---|
-| `acquisition.phase_encoding` | `{ "dimension": <index into dimensions>, "polarity": "+" or "-" }` |
+| `acquisition.phase_encoding` | `{ "dimension": <index into dimensions>, "polarity": "+" or "-" }`, `+` along increasing index |
+| `acquisition.slice_dimension` | the index into `dimensions` that `acquisition.slice_timing` is indexed along (one time per index, in index order) |
 
 `acquisition.slice_timing` stays in the block: a diffusion series' volumes are a list, with no
 time axis for the slice times to be geometry on (duckn 2.0 §5.1).
