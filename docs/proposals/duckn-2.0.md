@@ -810,7 +810,9 @@ that a reader can.
 states it in (DICOM's Trigger Time in `ms`, NIfTI's in its `xyzt_units`), and the world's axes in
 the order and with the ids §3 gives, so that two converters of one source write the same core
 metadata, up to the rounding of coordinates they compute (a coordinate copied from the source
-is written as the source states it); a series is written as a step or as positions by §5.4's
+is written as the source states it, and one computed from a value the source holds as a
+32-bit float is computed from that value's shortest decimal: three slices of a NIfTI
+`slice_duration` of 0.1 s are at 0.3 s, not 0.30000000447); a series is written as a step or as positions by §5.4's
 rule. Extension
 metadata and provenance are not held to this: a record is optional, and a step's `name` is the
 writer's own words.
