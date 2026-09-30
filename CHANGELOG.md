@@ -12,6 +12,13 @@ Converter defects found by the review of the convention 2.0 extension revisions 
   lower triangle by rows (xx xy yy xz yz zz); duckn's `3D-symmetric-matrix` is xx xy xz yy yz zz.
   0.6.3 and earlier took one for the other, so Dyy read as Dxz and Dxz as Dyy. Import and export
   now permute, and an exported tensor states intent 1005.
+- **The NIfTI affine by nifti1.h's precedence**: the sform when `sform_code` > 0, used as
+  written; else the qform; else `pixdim` alone - nifti1.h's rule and nibabel's. 0.6.3 and earlier
+  took the qform whenever the sform's column lengths disagreed with `pixdim` by more than 1 %
+  (so a scanner-space qform could be read in the sform's MNI frame), and otherwise rescaled the
+  sform's columns to `pixdim`. A disagreement is now reported, not acted on.
+- **DICOM Rescale Type `US` states no unit**: it is the defined term for *unspecified*
+  (PS3.3 C.11.1.1.2), not the Modality's ultrasound; 0.6.3 wrote "US" as `sample_units`.
 - **NIfTI scaling as nifti1_io reads it.** A usable `scl_slope` beside an intercept that is not
   finite no longer fails to load (nibabel refuses such a file): the intercept reads as 0. A slope
   that is not finite leaves the values unscaled, as 0 does; 0.6.3 failed validating it.

@@ -262,49 +262,30 @@ def nifti_to_zarr(
     ndim = data.ndim
     shape = data.shape
 
-    # --- Affine decomposition (ITK strategy) ---
-    # Spacing always comes from pixdim. The affine provides direction
-    # and origin only. When sform column magnitudes disagree with pixdim,
-    # fall back to qform for direction.
+    # --- The affine: nifti1.h's precedence ---
+    # Method 3, the sform, when sform_code > 0; else method 2, the qform (its matrix built from
+    # the quaternion, pixdim and qfac, as nibabel's get_qform builds it); else method 1 (below).
+    # This is nifti1.h's rule and nibabel's (get_best_affine). Until 0.6.4 duckn took the qform
+    # whenever the sform's column lengths disagreed with pixdim by more than 1 %, and otherwise
+    # rescaled the sform's columns to pixdim: a heuristic that silently moved a file into
+    # another frame (a scanner qform read as the sform's MNI space). Method 3 does not use
+    # pixdim at all, so a disagreement is only reported; the matrix is used as written, and a
+    # 2.0 writer keeps the other affine as a transform (nifti 2.0 §1).
     sform_code = int(hdr["sform_code"])
     qform_code = int(hdr["qform_code"])
 
     pixdims = np.array(hdr.get_zooms()[:min(3, ndim)], dtype=np.float64)
 
     if sform_code > 0:
-        sform = img.get_sform()
-        # Check if sform column magnitudes match pixdim (within 1% tolerance)
-        sform_mags = np.array([np.linalg.norm(sform[:3, i]) for i in range(min(3, ndim))])
-        pixdims_safe = np.where(pixdims > 0, pixdims, 1.0)
-        if np.allclose(sform_mags, pixdims_safe, rtol=0.01):
-            # sform is consistent — use it directly
-            affine = sform
-            active_code = sform_code
-        elif qform_code > 0:
-            # sform spacing disagrees with pixdim — fall back to qform
+        affine = img.get_sform()
+        active_code = sform_code
+        mags = np.array([np.linalg.norm(affine[:3, i]) for i in range(min(3, ndim))])
+        if not np.allclose(mags, np.where(pixdims > 0, pixdims, mags), rtol=0.01):
             import warnings
             warnings.warn(
-                f"NIfTI sform column magnitudes {sform_mags.tolist()} disagree with "
-                f"pixdim {pixdims.tolist()}; using qform for orientation",
-                stacklevel=2,
-            )
-            affine = img.get_qform()
-            active_code = qform_code
-        else:
-            # No qform available — use sform but with pixdim spacing
-            import warnings
-            warnings.warn(
-                f"NIfTI sform column magnitudes {sform_mags.tolist()} disagree with "
-                f"pixdim {pixdims.tolist()}; rescaling sform columns to match pixdim",
-                stacklevel=2,
-            )
-            affine = sform.copy()
-            for i in range(min(3, ndim)):
-                col = affine[:3, i]
-                mag = np.linalg.norm(col)
-                if mag > 0:
-                    affine[:3, i] = col / mag * pixdims_safe[i]
-            active_code = sform_code
+                f"NIfTI sform column lengths {mags.tolist()} disagree with pixdim "
+                f"{pixdims.tolist()}; the sform is used as written (nifti1.h method 3 does "
+                "not use pixdim)", stacklevel=2)
     elif qform_code > 0:
         affine = img.get_qform()
         active_code = qform_code
@@ -324,17 +305,15 @@ def nifti_to_zarr(
     # space_origin = translation column
     space_origin = affine[:3, 3].tolist()
 
-    # space_directions: direction from affine, magnitude from pixdim
+    # space_directions: the affine's columns as written (method 3's matrix, or method 2's, which
+    # already carries pixdim); a zero column (a degenerate header) takes pixdim along its axis
     space_directions: list[list[float]] = []
     for i in range(min(3, ndim)):
-        col = affine[:3, i]
-        mag = np.linalg.norm(col)
-        if mag > 0:
-            direction = col / mag
-        else:
-            direction = np.zeros(3)
-            direction[i] = 1.0
-        space_directions.append((direction * pixdims[i]).tolist())
+        col = np.array(affine[:3, i], dtype=np.float64)
+        if np.linalg.norm(col) == 0:
+            col = np.zeros(3)
+            col[i] = pixdims[i] if pixdims[i] > 0 else 1.0
+        space_directions.append(col.tolist())
 
     # Map code → space name (none for code 0: see above)
     space = _SFORM_CODE_TO_SPACE.get(active_code) if active_code else None

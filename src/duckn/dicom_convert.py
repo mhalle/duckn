@@ -1770,6 +1770,11 @@ def build_duckn_metadata(
     # claimed "HU" over them).
     if sample_units is None and geometry.rescale_type and value_transforms is not None:
         sample_units = geometry.rescale_type
+    # "US" is Rescale Type's (and Modality LUT Type's) defined term for UNSPECIFIED (PS3.3
+    # C.11.1.1.2) - not the Modality's "US" (ultrasound): it states no unit, and 0.6.3 and
+    # earlier wrote it as one.
+    if sample_units is not None and str(sample_units).strip().upper() == "US":
+        sample_units = None
 
     # DICOM extension (series-level tags only)
     extensions = None
