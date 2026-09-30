@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **A NRRD import with a measurement frame declares convention 1.1**, the version whose rule the
+  frame follows: 1.0 wrote the frame as NRRD does, by columns, and 1.1 turned it to rows (the
+  transform specification's "Change from version 1.0"). 0.5.5 to 0.6.2 wrote rows and declared
+  1.0, so a reader that honors the version read a non-symmetric frame transposed; none of those
+  files was distributed. `DucknMetadata.measurement_frame_rows()` reads a frame by its file's
+  version, and NRRD export uses it, so a genuine 1.0 file (columns) exports its vectors right.
+  Found while writing the convention 2.0 reader's §14 mapping.
+
 ## 0.6.2 — 2026-09-27
 
 - **dicom-spec §5's groups by name** (`patient`, `study`, `series`, `equipment`, `ct`, `mr`,

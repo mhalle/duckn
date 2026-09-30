@@ -82,7 +82,7 @@ class TestMeasurementFrame:
     def test_export_writes_the_columns_as_nrrd_vectors(self, tmp_path, zip_):
         z = tmp_path / ("mf.zarr.zip" if zip_ else "mf.zarr")
         m = DucknMetadata(
-            version="1.0", space="LPS", measurement_frame=_frame_from_nrrd_definition().tolist(),
+            version="1.1", space="LPS", measurement_frame=_frame_from_nrrd_definition().tolist(),
             axes=[{"kind": "3-vector"}] + [{"kind": "space", "space_direction": list(r)}
                                            for r in np.eye(3)])
         from duckn.models import duckn_attrs
@@ -93,6 +93,29 @@ class TestMeasurementFrame:
         h = nrrd.read_header(str(out))
         # pynrrd returns the header's vectors as rows, in file order
         np.testing.assert_array_equal(np.array(h["measurement frame"]), np.array(_MF_VECTORS))
+
+    @pytest.mark.parametrize("convert", [nrrd_to_zarr, nrrd_to_zarr_zerocopy])
+    def test_import_declares_the_version_whose_frame_rule_it_follows(self, tmp_path, convert):
+        # Rows are 1.1's form; 1.0 wrote columns. 0.5.5 to 0.6.2 declared 1.0 over rows.
+        z = tmp_path / "mf.zarr"
+        convert(_mf_nrrd(tmp_path), z)
+        assert _meta(z).version in ("1.1", "1.2")
+
+    def test_a_1_0_frame_is_read_by_columns(self, tmp_path):
+        # A genuine 1.0 file stores NRRD's columns; export writes them back as the vectors.
+        z = tmp_path / "mf.zarr"
+        m = DucknMetadata(
+            version="1.0", space="LPS", measurement_frame=_frame_from_nrrd_definition().T.tolist(),
+            axes=[{"kind": "3-vector"}] + [{"kind": "space", "space_direction": list(r)}
+                                           for r in np.eye(3)])
+        assert m.measurement_frame_rows() == _frame_from_nrrd_definition().tolist()
+        from duckn.models import duckn_attrs
+        with open_store(z, mode="w") as s:
+            zarr.create_array(s, data=np.zeros((3, 2, 2, 2), np.float32), attributes=duckn_attrs(m))
+        out = tmp_path / "out.nrrd"
+        zarr_to_nrrd(z, out)
+        np.testing.assert_array_equal(np.array(nrrd.read_header(str(out))["measurement frame"]),
+                                      np.array(_MF_VECTORS))
 
     def test_zero_copy_export_writes_the_file_order_back(self, tmp_path):
         z = tmp_path / "mf.zarr"

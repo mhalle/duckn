@@ -338,10 +338,13 @@ def _header_to_metadata(
     if mf_raw is not None:
         # pynrrd hands the header's vectors back as the ROWS of its array, and each NRRD vector is
         # a COLUMN of the frame (teem's format: "the vectors are the columns of the matrix"); duckn
-        # stores the matrix by rows (duckn-spec §3.1). Copying pynrrd's rows across stored the
-        # transpose, invisible to a round trip and to any symmetric frame, through 0.5.4.
+        # stores the matrix by rows (duckn-spec §3.1), 1.1's form; 1.0 wrote it as NRRD does, by
+        # columns. Through 0.5.4 duckn copied pynrrd's rows across (columns, under 1.0: right by
+        # accident); 0.5.5 to 0.6.2 wrote rows and still declared 1.0. The file declares the
+        # version whose rule its frame follows; none of the mislabeled files was distributed.
         meta_kwargs["measurement_frame"] = _transpose_matrix(
             [_clean_float_list(row) for row in mf_raw])
+        meta_kwargs["version"] = "1.1"
 
     sample_units_raw = header.get("sample units")
     if sample_units_raw:
@@ -481,8 +484,9 @@ def _metadata_to_header(
 
     # --- measurement frame ---
     if meta.measurement_frame is not None:
-        # duckn's rows back to NRRD's column vectors (see _header_to_metadata)
-        header["measurement frame"] = np.array(_transpose_matrix(meta.measurement_frame))
+        # duckn's rows back to NRRD's column vectors (see _header_to_metadata); a 1.0 file's
+        # frame is already columns, and measurement_frame_rows() reads it by its version
+        header["measurement frame"] = np.array(_transpose_matrix(meta.measurement_frame_rows()))
 
     # --- Per-axis fields ---
     axes = meta.axes or []
