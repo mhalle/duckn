@@ -38,13 +38,13 @@ Top level (`extensions.nrrd`):
 | `content` | `content` | string |
 | `min`, `max` | `min`, `max` | number |
 | `old_min`, `old_max` | `old min`, `old max` | number |
-| `measurement_frame` | `measurement frame` | a matrix as rows (duckn 2.0 §5.3's form), only when no dimension holds components it could govern |
+| `measurement_frame` | `measurement frame` | a matrix as rows (duckn 2.0 §5.3's form), only when no dimension holds components it could govern and no `dwmri` block takes it for its gradients (dwmri 2.0 §3) |
 
 Per dimension (`dimensions[i].extensions.nrrd`, read under the top-level block, duckn 2.0 §2.3):
 
 | Field | NRRD field | Type |
 |---|---|---|
-| `unit` | `units` of a range axis (one with a range kind, or no kind) | string, as NRRD wrote it |
+| `unit` | `units` of a range axis (one with a range kind, or no kind and no spacing) | string, as NRRD wrote it |
 | `kind` | `kinds`, for a domain kind the core cannot state (a `domain` axis with no spacing: the dimension states nothing) | string |
 
 A value NRRD writes as `NaN` or `???` (unknown for that axis) is left out.
@@ -56,8 +56,10 @@ A value NRRD writes as `NaN` or `???` (unknown for that axis) is left out.
   from the axis's `kinds` entry (`space` -> `space`, `time` -> `time`); a `domain` axis states no
   type (duckn 2.0 §19 item 15). A converter may take its caller's assertion that `domain` axes are
   spatial; it then states `type` `space` and records the assertion in its provenance step
-  (`"parameters": {"domain_axes": "space"}`). An unstated centering is NRRD's default, `cell`, and
-  is written.
+  (`"parameters": {"domain_axes": "space"}`). NRRD's field is `centers`, `centerings` its synonym
+  (duckn reads both, 0.6.4); an unstated centering is NRRD's default, `cell`, and is written.
+- **A spaced axis in a file with `space`** (a time axis with `spacings` beside `space directions`)
+  is a world axis of its own after the spatial ones, typed by its kind (duckn 2.0 §15.1).
 - **No value mapping is inferred**, as in 0.1: `old_min` / `old_max` are recorded as the file
   stated them, and no `values.transforms` is derived from them. A converter that writes them
   therefore cannot state the mapping, and leaves `values.transforms` absent (duckn 2.0 §6).
@@ -78,12 +80,14 @@ A value NRRD writes as `NaN` or `???` (unknown for that axis) is left out.
 | `number`, `block size` | reported (`nrrd-field-dropped`), never dropped silently |
 | `type`, `encoding`, `endian`, `data file`, `line skip`, `byte skip` | Zarr's own metadata: they describe the file, not the array |
 
-**Export.** `space units` has one entry for every world axis, including one no dimension steps
-along (NRRD requires it). With `no_space`, export writes each world axis's step as `spacings`, its
+**Export.** `space units` has one entry for every axis of the NRRD `space`, the world's spatial
+axes, including one no dimension steps along (NRRD requires it); a non-spatial world axis exports
+through `spacings`, `units` and `axis mins`. With `no_space`, export writes each world axis's step as `spacings`, its
 unit as `units`, and the lower edge of its first cell (a cell-centered axis) or its first sample
 (a node-centered one) as `axis mins`, and writes no `space`. A dimension whose world axis is of
-type `time` exports with `kinds` `time`, one of type `space` with `space`, and any other with
-`domain`.
+type `time` exports with `kinds` `time`, one of type `space` with `space` - or `domain` where the
+provenance step records the caller's assertion (§3), which the source's kind was - and any other
+with `domain`.
 
 ## 5. From 0.1
 

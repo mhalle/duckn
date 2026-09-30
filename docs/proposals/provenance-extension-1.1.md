@@ -35,7 +35,7 @@ registration of the converted image (the previous output) to an atlas (a new sou
 
 | Field | Type | Meaning |
 |---|---|---|
-| `previous` | boolean, default `false` | The step also takes the previous step's output, beside the sources its `inputs` index. With `inputs` absent it says nothing new (1.0's rule already takes the previous output). |
+| `previous` | boolean, default `false` | The step also takes the previous step's output, beside the sources its `inputs` index. With `inputs` absent it says nothing new (1.0's rule already takes the previous output). On the first step there is no previous output: it is ignored and reported. |
 
 It is a field, not a value inside `inputs`, so that a 1.0 reader, which does not know it, reads
 `inputs` as the integers 1.0 defines and misses only the addition.
@@ -48,7 +48,7 @@ A CT converted from DICOM, then registered to an atlas:
 "provenance": {
   "version": "1.1",
   "sources": [
-    { "type": "file", "format": "DICOM", "identifier": "1.2.826.0.1.3680043.8.498.10033451" },
+    { "type": "file", "format": "DICOM", "identifier": "1.2.826.0.1.3680043.8.498.40045117" },
     { "type": "file", "format": "NIfTI", "path": "mni_icbm152_t1_tal_nlin_asym_09c.nii",
       "description": "MNI152 2009c asymmetric template" }
   ],
@@ -62,6 +62,5 @@ A CT converted from DICOM, then registered to an atlas:
 
 The first step names its source: without `inputs`, 1.0's rule would have it take every source,
 the template included. The second took the first step's output (`previous`) and the template
-(`inputs: [1]`). A writer appending a step to a file whose first step has no `inputs` and one
-source adds `inputs: [0]` to that step when it appends a source, so that its meaning does not
-change.
+(`inputs: [1]`). A writer that appends a source to a block whose first step has no `inputs` first
+gives that step `inputs` naming every source then present, so that its meaning does not change.
