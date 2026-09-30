@@ -21,10 +21,13 @@ with 2.0's names.
 NIfTI's world is RAS+ for every transform code (NIfTI-1, `nifti1.h`).
 
 - **With a transform**: three axes of `type` `space`, `positive` `right`, `anterior`, `superior`,
-  ids `x`, `y`, `z`, in the spatial unit of `xyzt_units`. The affine is the sform (`sform_code` >
-  0) - unless its column lengths disagree with `pixdim` by more than 1 %, when duckn takes the
-  qform, as it has since 1.x - else the qform (`qform_code` > 0). Its translation is `origin`; its
-  columns are the steps of `i`, `j`, `k`.
+  ids `x`, `y`, `z`, in the spatial unit of `xyzt_units`. The affine follows nifti1.h's
+  precedence, as nibabel does: the sform (method 3) when `sform_code` > 0, used as written - it
+  does not use `pixdim`, so a disagreement between its column lengths and `pixdim` is reported,
+  never acted on - else the qform (method 2, its matrix from the quaternion, `pixdim` and
+  `qfac`). Its translation is `origin`; its columns are the steps of `i`, `j`, `k`. (duckn 0.6.3
+  and earlier took the qform when the sform's lengths disagreed with `pixdim`, and otherwise
+  rescaled the sform's columns: a heuristic that could move a file into another frame.)
 - **A shared frame** only where the code *of the affine used* names one: 3 (Talairach) -> `world.reference`
   `nifti:talairach`, 4 (MNI 152) -> `nifti:mni152`. Codes 1 (scanner), 2 (aligned to another
   file) and 5 (some template) name no frame another file can share, and write no reference.
