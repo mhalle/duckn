@@ -6,12 +6,13 @@ one means unknown, where 1.0 read it as the identity; a 1.0 reader ignores and r
 block, duckn 2.0 §2.3)
 **For:** duckn convention 2.0 (draft, `docs/proposals/duckn-2.0.md`). 1.x files keep 1.0
 (`docs/dwi-extension.md`).
-**Status:** Draft, 2026-09-30. Written by `duckn.convention2_write` from its NRRD DWI import
+**Status:** Draft, 2026-09-30; §4 and the DICOM rules of §5-§6 added 2026-10-01 (duckn 2.0 §19
+items 28, 29), from a review against a DICOM DWI reader (albula-diffusion). Written by `duckn.convention2_write` from its NRRD DWI import
 (`nrrd_to_zarr(convention="2.0")`, experimental).
 
 This document states what 2.0 changes in dwmri 1.0. Everything it does not mention - `b_value`,
 `b_value_units`, the per-volume `gradients`, `b_matrices` and `b_values` (1.0 §4.2), implicit
-normalization (§5), `acquisition` (§4.1) - is as 1.0 states it, read with 2.0's names.
+normalization (1.0 §5), `acquisition` (§4.1) - is as 1.0 states it, read with 2.0's names.
 
 ---
 
@@ -50,13 +51,50 @@ gradients are already in the world's axes writes the identity, stating it. `fram
 | `gradient_frame` `world` | `frame` = the identity |
 | `gradient_frame` `image` | no `frame`: FSL's convention flips the first component when the image's determinant is positive, and a 1.0 file does not record whether its converter did (duckn 2.0 §19 item 19) |
 
-## 4. From other formats
+## 4. Volumes without a direction
+
+1.0 had one kind of volume without a direction, the baseline, written as a zero gradient (or a
+zero b-matrix). Two more occur in real series, and 1.0 has no form for either: a **trace**
+(isotropic) volume, b > 0 averaged over directions, which Philips keeps in the series beside the
+directional volumes; and a volume whose b-value is known but whose **direction is not** - a
+converter's vendor rule that will not guess (GE with phase encoding along the row, a series
+without Image Orientation). Read as a baseline or as a direction, either makes a tensor fit
+silently wrong.
+
+| Field | Where | Meaning |
+|---|---|---|
+| `gradients[i]` (or `b_matrices[i]`) `null` | the DWI dimension's block | No direction is stated for volume `i`. Its b-value stands (`b_values[i]`); a reader leaves the volume out of anything that needs a direction (a tensor fit, tractography). |
+| `directionality` | the DWI dimension's block, optional | One entry per volume, in DICOM's terms (Diffusion Directionality, 0018,9075): `"none"` (a baseline: b = 0, a zero gradient), `"directional"` (a gradient, or `null` where its direction is unknown), `"isotropic"` (a trace volume: b > 0, `null`). |
+
+Rules, reported by a reader of this extension (the core does not refuse them, duckn 2.0 §10):
+
+- **A zero gradient is a baseline only**: its `b_values[i]` is 0. A zero gradient beside b > 0
+  is the ambiguity this section removes: reported, and read as `null` (no direction).
+- **`null` needs `b_values`**: under 1.0's implicit normalization (no `b_values`), the gradient's
+  length is the b-value, and a volume without one has none.
+- **`null` with no `directionality` entry says only that no direction is stated**; a converter
+  that knows why says so: `"isotropic"` for a trace volume, `"directional"` for a direction it
+  could not determine. `"none"` with anything but a zero gradient and b = 0, `"isotropic"` with
+  anything but `null` and b > 0, are reported.
+- **A 1.0 block read through duckn 2.0 §14**: a zero gradient beside a b-value above 0 in its
+  `b_values` becomes `null`, with a finding; nothing else changes.
+
+## 5. From other formats
 
 - **NRRD** (`DWMRI_gradient_NNNN` with a `measurement frame`): `frame` is the measurement frame
   as rows (NRRD writes columns); with no `measurement frame`, the identity (dwi 1.0 §6's default,
   stated).
 - **DICOM** (Diffusion Gradient Orientation, 0018,9089): in the patient coordinate system, so
-  `frame` is the identity in a DICOM (LPS) world.
+  `frame` is the identity in a DICOM (LPS) world. Diffusion Directionality (0018,9075) maps
+  per volume: `NONE` -> a zero gradient, b 0, `"none"`; `DIRECTIONAL` and `BMATRIX` -> the
+  gradient (or b-matrix), `"directional"`; `ISOTROPIC` -> `null`, `"isotropic"` - kept, not
+  filtered out as 1.0 §7.2 advised. A direction the converter cannot determine is `null`,
+  `"directional"`. A direction taken from private elements (Siemens CSA `B_value` /
+  `DiffusionGradientDirection`, (0019,100C/100E); GE (0043,1039), (0019,10BB-BD), in the image
+  frame; Philips (2005,10B0-B2); a Canon Image Comments string) is a value the converter
+  derived by a vendor rule, not one the source states: the converter records that rule and its
+  version in its provenance step (provenance 1.1), e.g. `"parameters": { "diffusion_rule":
+  "ge-image-frame", "diffusion_rule_version": 2 }`.
 - **FSL / BIDS** (`.bvec`): a converter brings the gradients into world axes itself - applying
   FSL's first-component flip when the NIfTI affine's determinant is positive, then the rotation of
   the affine the world came from (the sform, else the qform; nifti 2.0 §1), the orthogonal factor
@@ -65,13 +103,22 @@ gradients are already in the world's axes writes the identity, stating it. `fram
 - **MRtrix** (`.b`): scanner coordinates, which are RAS. In an RAS world `frame` is the identity;
   in a DICOM (LPS) world it is diag(-1, -1, 1): the map from RAS to the world's axes.
 
-## 5. What the block leaves out
+## 6. What the block leaves out
 
 1.0's `legacy.keyvalues` (the source NRRD's `DWMRI_*` key/value strings) restated the gradients
 and b-value the block states: it is left out (duckn 2.0 §2.3), and an export writes the keys again
 from the fields. `gradient_frame` is replaced by `frame` (§3).
 
-## 6. Phase encoding names a dimension
+**The same rule for DICOM:** a `dicom` record beside this block leaves out the MR Diffusion
+attributes the block states - Diffusion b-value, Diffusion Gradient Orientation, Diffusion
+Directionality, Diffusion b-value XX-ZZ (0018,9602-9607), the MR Diffusion Sequence and its
+Diffusion Gradient Direction Sequence (dicom 2.0 §3) - and an export writes them again from this
+block, in the patient frame. Two copies in two frames could disagree; one cannot. Private
+elements are kept or left out whole, at the writer's choice (dicom 1.0 §9), and are never read
+as restating this block: where the block's directions came from them, the provenance step says
+so (§5).
+
+## 7. Phase encoding names a dimension
 
 1.0's `acquisition.phase_encoding_direction` (`"i"`, `"j-"`, ...) named an image axis in a layout
 the file does not fix, so it is not carried from a 1.0 block; 2.0 names the array's dimension:
@@ -84,7 +131,7 @@ the file does not fix, so it is not carried from a 1.0 block; 2.0 names the arra
 `acquisition.slice_timing` stays in the block: a diffusion series' volumes are a list, with no
 time axis for the slice times to be geometry on (duckn 2.0 §5.1).
 
-## 7. Example
+## 8. Example
 
 Two volumes (b = 0, then b = 1000 along the patient's left), gradients in world axes:
 
