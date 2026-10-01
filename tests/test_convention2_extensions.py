@@ -108,6 +108,23 @@ class TestDwmri(unittest.TestCase):
         self.assertEqual(self._upgrade("world")["frame"], np.eye(3).tolist())
         self.assertNotIn("frame", self._upgrade("image"))  # FSL's flip unrecorded: unknown
 
+    def test_a_zero_gradient_beside_a_b_value_is_no_direction(self):
+        # dwmri 2.0 §4: a trace (isotropic) volume kept in the series is not a baseline
+        d1 = {"version": "1.1", "space": "LPS", "space_origin": [0.0, 0.0, 0.0],
+              "axes": [{"kind": "list", "extensions": {"dwmri": {
+                           "gradients": [[0, 0, 0], [1, 0, 0], [0, 0, 0]],
+                           "b_values": [0, 1000, 1000]}}},
+                       {"kind": "space", "space_direction": [0, 0, 2.0]},
+                       {"kind": "space", "space_direction": [0, 2.0, 0]},
+                       {"kind": "space", "space_direction": [2.0, 0, 0]}],
+              "extensions": {"dwmri": {"version": "1.0", "b_value": 1000,
+                                       "gradient_frame": "world"}}}
+        with self.assertWarns(UserWarning):
+            d = upgrade(d1, (3, 2, 2, 2), what="convert")
+        block = d["dimensions"][0]["extensions"]["dwmri"]
+        self.assertEqual(block["gradients"], [[0, 0, 0], [1, 0, 0], None])  # baseline kept
+        self.assertEqual(block["b_values"], [0, 1000, 1000])
+
     def test_an_image_axis_letter_is_not_carried(self):
         acq = self._upgrade("world")["acquisition"]
         self.assertNotIn("phase_encoding_direction", acq)

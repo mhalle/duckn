@@ -509,11 +509,28 @@ def _finish_dwmri(d: dict, gradient_frame) -> None:
     """A dwmri 1.0 block as 2.0 writes it: the gradients' frame as a matrix of its own (the §14
     mapping's reading of gradient_frame and the 1.x measurement_frame; absent where it is
     unknown), the DWI dimension a list, the intent stated, the key/value record that restated
-    the gradients left out (dwmri 2.0 §3, §5)."""
+    the gradients left out (dwmri 2.0 §3, §6); a zero gradient beside a b-value above 0 stated
+    as no direction (``null``), reported (dwmri 2.0 §4): 1.0 read every zero vector as a
+    baseline, and a trace volume kept in a series is not one."""
     dw = (d.get("extensions") or {}).get("dwmri")
     if not isinstance(dw, dict):
         return
     dw["version"] = "2.0"
+    for dim in d.get("dimensions", []):
+        block = (dim.get("extensions") or {}).get("dwmri")
+        if not isinstance(block, dict) or not isinstance(block.get("b_values"), list):
+            continue
+        for field in ("gradients", "b_matrices"):
+            entries = block.get(field)
+            if not isinstance(entries, list):
+                continue
+            for i, (g, b) in enumerate(zip(entries, block["b_values"])):
+                if g is not None and b is not None and b > 0 and not any(g):
+                    import warnings
+                    warnings.warn(f"dwmri: volume {i} has a zero {field[:-1].replace('_', '-')} "
+                                  f"beside b = {b}: no direction, not a baseline (dwmri 2.0 §4)",
+                                  stacklevel=3)
+                    entries[i] = None
     dw.pop("gradient_frame", None)
     dw.pop("legacy", None)
     if gradient_frame is not None:
