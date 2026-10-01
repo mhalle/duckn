@@ -73,7 +73,7 @@ spatial dimensions are `cell` (a voxel); a spatial dimension of length 1 has no 
   (duckn 2.0 §3.1); an axis of no type, id `a3`, stepped by `pixdim[4]`, with no centering.
 - **a diffusion series** when a `dwmri` block describes it (the converter had the b-values and
   gradients): a `list`, whatever `xyzt_units` says - its volumes are not a time series, and slice
-  timing stays in the `dwmri` block (dwmri 2.0 §2, §6).
+  timing stays in the `dwmri` block (dwmri 2.0 §2, §7).
 - **a spectrum** when its unit is not a time: `ppm` -> a `chemical-shift` axis only when `toffset`
   is set, placing the first bin; with `toffset` unset (0), an axis of no type, since 0 does not
   say the first bin is at 0 ppm (duckn 2.0 §3.1); `Hz` or `rad/s` -> a `frequency` axis, which has

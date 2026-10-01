@@ -6,7 +6,7 @@
 2.0 block rather than misread it, duckn 2.0 §2.3)
 **For:** duckn convention 2.0 (draft, `docs/proposals/duckn-2.0.md`). 1.x files keep 1.0
 (`docs/dicom-spec.md`).
-**Status:** Draft, 2026-09-30. Written by `duckn.convention2_write` (`dicom_to_zarr(convention="2.0")`,
+**Status:** Draft, 2026-09-30; the MR Diffusion row of §3 added 2026-10-01 (duckn 2.0 §19 item 29). Written by `duckn.convention2_write` (`dicom_to_zarr(convention="2.0")`,
 experimental); the scenario series S17, S19 and S26 convert to the review's reference headers, and
 a GE, a Siemens and a Philips series agree with pydicom voxel for voxel
 (`scripts/convention2_corpus.py`).
@@ -72,7 +72,8 @@ write the same one (a record is optional, duckn 2.0 §9).
 | (none: Color Space is kept) | Color Space is stated as the RGB dimension's `color_space` (1.0 §2's terms) and also stays in `tags` as the source's, as in 1.0 |
 | Planar Configuration; Pixel Data and the other bulk data; overlay and curve groups; group 0002; group lengths; the Per-frame Functional Groups Sequence | as dicom 1.0 §9 |
 | Bits Stored, High Bit, pixel value ranges, Pixel Padding Value and Range Limit, Real World Value Mapping, the Palette Color Lookup Table Descriptors, Data and UID - *when `stored_values` is `false`* | stated in stored-value units, which the array does not hold (1.0 §5.10); the padding is restated (§4) |
-| private elements, all or none, at the writer's choice | as 1.0 §9 |
+| The MR Diffusion attributes - Diffusion b-value (0018,9087), Diffusion Gradient Orientation (0018,9089), Diffusion Directionality (0018,9075), Diffusion b-value XX-ZZ (0018,9602-9607), the MR Diffusion Sequence (0018,9117) and its Diffusion Gradient Direction Sequence - *when a `dwmri` block states them* | the `dwmri` block (dwmri 2.0 §6), from which an export writes them again: two copies in two frames could disagree |
+| private elements, all or none, at the writer's choice | as 1.0 §9; never read as restating the core or another extension (a diffusion direction a converter derived from them is recorded as derived, dwmri 2.0 §5) |
 
 Identifiers and acquisition facts are **kept, even where the core states a fact computed from
 them**: the Frame of Reference UID beside `world.reference`, each slice's `SOPInstanceUID`,
